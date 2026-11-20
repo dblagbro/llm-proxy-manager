@@ -16,36 +16,42 @@ The function intentionally returns serializable primitives so the
 output can land directly in ``ProviderAiReview.stats_summary`` (JSON
 column) for diagnostic replay.
 """
+
 from __future__ import annotations
 
 import json
 import logging
 from collections import Counter
 from datetime import datetime, timedelta
-from typing import Optional
 
-from sqlalchemy import select, func
+from sqlalchemy import func as func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
 
 async def _window_stats(
-    db: AsyncSession, provider_id: str, since: datetime,
+    db: AsyncSession,
+    provider_id: str,
+    since: datetime,
 ) -> dict:
     """Aggregate activity_log rows for one window. Returns counts,
     sums, and severity / error-class breakdowns."""
     from app.models.db import ActivityLog
+
     cutoff = str(since)
-    rows = (await db.execute(
-        select(
-            ActivityLog.severity,
-            ActivityLog.event_meta,
+    rows = (
+        await db.execute(
+            select(
+                ActivityLog.severity,
+                ActivityLog.event_meta,
+            )
+            .where(ActivityLog.provider_id == provider_id)
+            .where(ActivityLog.event_type == "llm_request")
+            .where(ActivityLog.created_at >= cutoff)
         )
-        .where(ActivityLog.provider_id == provider_id)
-        .where(ActivityLog.event_type == "llm_request")
-        .where(ActivityLog.created_at >= cutoff)
-    )).all()
+    ).all()
 
     n = 0
     n_warn = 0
@@ -165,15 +171,16 @@ async def compute_provider_stats(
 
         if short["success_rate_pct"] is not None and long_["success_rate_pct"] is not None:
             trend["success_rate_delta_pct"] = round(
-                short["success_rate_pct"] - long_["success_rate_pct"], 1,
+                short["success_rate_pct"] - long_["success_rate_pct"],
+                1,
             )
 
-        def _delta(s_key: str) -> Optional[float]:
+        def _delta(s_key: str) -> float | None:
             s = short.get(s_key)
-            l = long_.get(s_key)
-            if s is None or l is None or l == 0:
+            baseline = long_.get(s_key)
+            if s is None or baseline is None or baseline == 0:
                 return None
-            return round((s - l) / l * 100.0, 1)
+            return round((s - baseline) / baseline * 100.0, 1)
 
         trend["avg_latency_delta_pct"] = _delta("avg_latency_ms")
         trend["cost_per_req_delta_pct"] = _delta("avg_cost_per_req_usd")
@@ -185,6 +192,7 @@ async def compute_provider_stats(
     ttft: dict = {}
     try:
         from app.routing.hedging import peak_ewma, provider_p95_ms
+
         ttft_peak = peak_ewma(provider_id)
         ttft_p95 = provider_p95_ms(provider_id)
         if ttft_peak is not None:

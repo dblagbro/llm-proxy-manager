@@ -7,16 +7,17 @@ client-visible format is identical across providers.
 
 Requires: --run-real flag  (costs API credits)
 """
-import json
+
 import time
+
 import pytest
 import requests
 import urllib3
 
 urllib3.disable_warnings()
 
-from tests.conftest import BASE_URL
-from tests.integration.conftest import collect_sse
+from tests.conftest import BASE_URL  # noqa: E402
+from tests.integration.conftest import collect_sse  # noqa: E402
 
 pytestmark = pytest.mark.real_providers
 
@@ -73,8 +74,7 @@ TASKS = {
         # The load-bearing signal is "the model gave a useful answer";
         # markup style is secondary.
         "check": lambda text: (
-            sum(1 for marker in ["1.", "2.", "3.", "•", "-", "*"]
-                if marker in text) >= 2
+            sum(1 for marker in ["1.", "2.", "3.", "•", "-", "*"] if marker in text) >= 2
             or len(text) > 200
         ),
         "description": "≥2 list markers OR a substantive answer (>200 chars)",
@@ -107,6 +107,7 @@ TOOL_DEF_OPENAI = {
 
 # ── Fixture: iterate through all real providers via CB cycling ─────────────────
 
+
 def _all_providers_with_cb_cycling(admin_session, real_providers):
     """
     Generator: for each provider in priority order, yield (provider, tripped_ids).
@@ -132,14 +133,17 @@ def _all_providers_with_cb_cycling(admin_session, real_providers):
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+
 def _post(url, headers, body, stream=False, timeout=60):
-    return requests.post(url, headers=headers, json=body,
-                         stream=stream, verify=False, timeout=timeout)
+    return requests.post(
+        url, headers=headers, json=body, stream=stream, verify=False, timeout=timeout
+    )
 
 
 def _anthropic_text(resp_json: dict) -> str:
-    return " ".join(b.get("text", "") for b in resp_json.get("content", [])
-                    if b.get("type") == "text")
+    return " ".join(
+        b.get("text", "") for b in resp_json.get("content", []) if b.get("type") == "text"
+    )
 
 
 def _openai_text(resp_json: dict) -> str:
@@ -150,16 +154,18 @@ def _assert_anthropic_shape(data: dict, context: str = ""):
     assert data.get("type") == "message", f"{context}: expected type=message, got {data}"
     assert data.get("role") == "assistant", f"{context}: expected role=assistant"
     assert isinstance(data.get("content"), list), f"{context}: content must be list"
-    assert any(b.get("type") == "text" for b in data["content"]), \
+    assert any(b.get("type") == "text" for b in data["content"]), (
         f"{context}: expected at least one text block"
+    )
     assert data.get("stop_reason"), f"{context}: missing stop_reason"
     assert "usage" in data, f"{context}: missing usage"
     assert data["usage"].get("output_tokens", 0) > 0, f"{context}: zero output tokens"
 
 
 def _assert_openai_shape(data: dict, context: str = ""):
-    assert data.get("object") == "chat.completion", \
+    assert data.get("object") == "chat.completion", (
         f"{context}: expected chat.completion, got {data.get('object')}"
+    )
     assert data.get("choices"), f"{context}: empty choices"
     msg = data["choices"][0].get("message", {})
     assert msg.get("role") == "assistant", f"{context}: expected assistant role"
@@ -200,17 +206,17 @@ _EMBED_KEYWORDS = ("embed", "vector", "rerank")
 # the provider has no scanned chat capabilities. These are the most
 # widely-served model slugs the proxy is known to accept for each type.
 _PROVIDER_TYPE_CHAT_DEFAULT = {
-    "openrouter":   "openrouter/openai/gpt-4o-mini",
-    "cohere":       "command-r",
-    "anthropic":    "claude-haiku-4-5",
-    "openai":       "gpt-4o-mini",
-    "google":       "gemini-2.5-flash",
-    "vertex":       "gemini-2.5-flash",
-    "compatible":   "gpt-4o-mini",
-    "grok":         "grok-3",
-    "grok-web":     "grok-3",
+    "openrouter": "openrouter/openai/gpt-4o-mini",
+    "cohere": "command-r",
+    "anthropic": "claude-haiku-4-5",
+    "openai": "gpt-4o-mini",
+    "google": "gemini-2.5-flash",
+    "vertex": "gemini-2.5-flash",
+    "compatible": "gpt-4o-mini",
+    "grok": "grok-3",
+    "grok-web": "grok-3",
     "claude-oauth": "claude-haiku-4-5",
-    "codex-oauth":  "gpt-4o-mini",
+    "codex-oauth": "gpt-4o-mini",
 }
 
 _chat_model_cache: dict[str, str] = {}
@@ -251,20 +257,18 @@ def _pick_chat_model(admin_session, provider: dict) -> str | None:
 
     # 2. scanned capabilities
     try:
-        r = admin_session.get(
-            f"{BASE_URL}/api/providers/{pid}/model-capabilities", timeout=15
-        )
+        r = admin_session.get(f"{BASE_URL}/api/providers/{pid}/model-capabilities", timeout=15)
         if r.status_code == 200:
             caps = r.json()
             chat_caps = [
-                (c.get("model_id") or "") for c in caps
+                (c.get("model_id") or "")
+                for c in caps
                 if "chat" in (c.get("tasks") or [])
                 and not _looks_embedding(c.get("model_id") or "")
             ]
             chat_caps = [m for m in chat_caps if m]
             if chat_caps:
-                for prefix in ("command-", "gpt-", "claude-",
-                               "gemini-", "grok-"):
+                for prefix in ("command-", "gpt-", "claude-", "gemini-", "grok-"):
                     for m in chat_caps:
                         if m.startswith(prefix):
                             _chat_model_cache[pid] = m
@@ -275,9 +279,7 @@ def _pick_chat_model(admin_session, provider: dict) -> str | None:
         pass
 
     # 3. per-type fallback
-    fallback = _PROVIDER_TYPE_CHAT_DEFAULT.get(
-        provider.get("provider_type") or ""
-    )
+    fallback = _PROVIDER_TYPE_CHAT_DEFAULT.get(provider.get("provider_type") or "")
     if fallback:
         _chat_model_cache[pid] = fallback
         return fallback
@@ -295,6 +297,7 @@ def _pick_chat_model(admin_session, provider: dict) -> str | None:
 
 # ── Wire format equivalence across providers ──────────────────────────────────
 
+
 class TestWireFormatPerProvider:
     def test_anthropic_non_stream_all_providers(self, admin_session, real_providers, test_api_key):
         _skip_if_no_providers(real_providers)
@@ -302,11 +305,15 @@ class TestWireFormatPerProvider:
         unavailable, failures = [], []
         for provider in _all_providers_with_cb_cycling(admin_session, real_providers):
             ctx = f"Provider {provider['name']}"
-            resp = _post(f"{BASE_URL}/v1/messages", headers, {
-                "model": _pick_chat_model(admin_session, provider),
-                "max_tokens": 20,
-                "messages": [{"role": "user", "content": "Say OK"}],
-            })
+            resp = _post(
+                f"{BASE_URL}/v1/messages",
+                headers,
+                {
+                    "model": _pick_chat_model(admin_session, provider),
+                    "max_tokens": 20,
+                    "messages": [{"role": "user", "content": "Say OK"}],
+                },
+            )
             if resp.status_code == 429 or 500 <= resp.status_code < 600:
                 unavailable.append(ctx)
                 continue
@@ -328,11 +335,15 @@ class TestWireFormatPerProvider:
         unavailable, failures = [], []
         for provider in _all_providers_with_cb_cycling(admin_session, real_providers):
             ctx = f"Provider {provider['name']}"
-            resp = _post(f"{BASE_URL}/v1/chat/completions", headers, {
-                "model": _pick_chat_model(admin_session, provider),
-                "max_tokens": 20,
-                "messages": [{"role": "user", "content": "Say OK"}],
-            })
+            resp = _post(
+                f"{BASE_URL}/v1/chat/completions",
+                headers,
+                {
+                    "model": _pick_chat_model(admin_session, provider),
+                    "max_tokens": 20,
+                    "messages": [{"role": "user", "content": "Say OK"}],
+                },
+            )
             if resp.status_code == 429 or 500 <= resp.status_code < 600:
                 unavailable.append(ctx)
                 continue
@@ -354,12 +365,17 @@ class TestWireFormatPerProvider:
         unavailable, failures = [], []
         for provider in _all_providers_with_cb_cycling(admin_session, real_providers):
             ctx = f"Provider {provider['name']}"
-            resp = _post(f"{BASE_URL}/v1/messages", headers, {
-                "model": _pick_chat_model(admin_session, provider),
-                "max_tokens": 20,
-                "messages": [{"role": "user", "content": "Say OK"}],
-                "stream": True,
-            }, stream=True)
+            resp = _post(
+                f"{BASE_URL}/v1/messages",
+                headers,
+                {
+                    "model": _pick_chat_model(admin_session, provider),
+                    "max_tokens": 20,
+                    "messages": [{"role": "user", "content": "Say OK"}],
+                    "stream": True,
+                },
+                stream=True,
+            )
             if resp.status_code == 429 or 500 <= resp.status_code < 600:
                 unavailable.append(ctx)
                 continue
@@ -371,8 +387,13 @@ class TestWireFormatPerProvider:
                 unavailable.append(ctx)
                 continue
             types = {e.get("type") for e in events}
-            required = {"message_start", "content_block_start", "content_block_stop",
-                        "message_delta", "message_stop"}
+            required = {
+                "message_start",
+                "content_block_start",
+                "content_block_stop",
+                "message_delta",
+                "message_stop",
+            }
             missing = required - types
             if missing:
                 failures.append(f"{ctx}: missing SSE event types: {missing}")
@@ -387,12 +408,17 @@ class TestWireFormatPerProvider:
         unavailable, failures = [], []
         for provider in _all_providers_with_cb_cycling(admin_session, real_providers):
             ctx = f"Provider {provider['name']}"
-            resp = _post(f"{BASE_URL}/v1/chat/completions", headers, {
-                "model": _pick_chat_model(admin_session, provider),
-                "max_tokens": 20,
-                "messages": [{"role": "user", "content": "Say OK"}],
-                "stream": True,
-            }, stream=True)
+            resp = _post(
+                f"{BASE_URL}/v1/chat/completions",
+                headers,
+                {
+                    "model": _pick_chat_model(admin_session, provider),
+                    "max_tokens": 20,
+                    "messages": [{"role": "user", "content": "Say OK"}],
+                    "stream": True,
+                },
+                stream=True,
+            )
             if resp.status_code == 429 or 500 <= resp.status_code < 600:
                 unavailable.append(ctx)
                 continue
@@ -420,11 +446,15 @@ class TestWireFormatPerProvider:
         unavailable, failures = [], []
         for provider in _all_providers_with_cb_cycling(admin_session, real_providers):
             ctx = f"Provider {provider['name']}"
-            resp = _post(f"{BASE_URL}/v1/messages", headers, {
-                "model": _pick_chat_model(admin_session, provider),
-                "max_tokens": 10,
-                "messages": [{"role": "user", "content": "ping"}],
-            })
+            resp = _post(
+                f"{BASE_URL}/v1/messages",
+                headers,
+                {
+                    "model": _pick_chat_model(admin_session, provider),
+                    "max_tokens": 10,
+                    "messages": [{"role": "user", "content": "ping"}],
+                },
+            )
             if resp.status_code == 429 or 500 <= resp.status_code < 600:
                 unavailable.append(ctx)
                 continue
@@ -442,20 +472,25 @@ class TestWireFormatPerProvider:
 
 # ── Task-type response quality across providers ───────────────────────────────
 
+
 class TestTaskTypePerProvider:
     @pytest.mark.parametrize("task_name,task", list(TASKS.items()))
-    def test_task_completeness(self, admin_session, real_providers, test_api_key,
-                               task_name, task):
+    def test_task_completeness(self, admin_session, real_providers, test_api_key, task_name, task):
         _skip_if_no_providers(real_providers)
         headers = {"x-api-key": test_api_key, "Content-Type": "application/json"}
         failures = []
         unavailable = []
         for provider in _all_providers_with_cb_cycling(admin_session, real_providers):
-            resp = _post(f"{BASE_URL}/v1/messages", headers, {
-                "model": _pick_chat_model(admin_session, provider),
-                "max_tokens": 400,
-                "messages": [{"role": "user", "content": task["prompt"]}],
-            }, timeout=90)
+            resp = _post(
+                f"{BASE_URL}/v1/messages",
+                headers,
+                {
+                    "model": _pick_chat_model(admin_session, provider),
+                    "max_tokens": 400,
+                    "messages": [{"role": "user", "content": task["prompt"]}],
+                },
+                timeout=90,
+            )
             ctx = f"Provider {provider['name']}, task={task_name}"
             if resp.status_code == 429 or 500 <= resp.status_code < 600:
                 unavailable.append(ctx)
@@ -465,8 +500,7 @@ class TestTaskTypePerProvider:
                 continue
             text = _anthropic_text(resp.json())
             if not task["check"](text):
-                failures.append(f"{ctx}: response doesn't {task['description']}. "
-                                 f"Got: {text[:200]}")
+                failures.append(f"{ctx}: response doesn't {task['description']}. Got: {text[:200]}")
         if failures:
             pytest.fail("\n".join(failures))
         if len(unavailable) == len(real_providers):
@@ -474,6 +508,7 @@ class TestTaskTypePerProvider:
 
 
 # ── Multi-turn context preservation across providers ──────────────────────────
+
 
 class TestMultiTurnPerProvider:
     def test_multi_turn_context(self, admin_session, real_providers, test_api_key):
@@ -489,12 +524,24 @@ class TestMultiTurnPerProvider:
             # before any literal "Stack"/"class" token landed. Push
             # max_tokens up + add a no-preamble directive so
             # verbose models still emit the target tokens.
-            r1 = _post(f"{BASE_URL}/v1/messages", headers, {
-                "model": model, "max_tokens": 256,
-                "messages": [{"role": "user",
-                               "content": "Define a Python class named `Stack` with push and pop methods. "
-                                          "Output only the code, no preamble or explanation."}],
-            }, timeout=60)
+            r1 = _post(
+                f"{BASE_URL}/v1/messages",
+                headers,
+                {
+                    "model": model,
+                    "max_tokens": 256,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": (
+                                "Define a Python class named `Stack` with push and pop methods. "
+                                "Output only the code, no preamble or explanation."
+                            ),
+                        }
+                    ],
+                },
+                timeout=60,
+            )
             if r1.status_code == 429 or 500 <= r1.status_code < 600:
                 unavailable.append(ctx)
                 continue
@@ -509,24 +556,38 @@ class TestMultiTurnPerProvider:
             # a literal token (e.g. model emits bare methods).
             t1_lower = t1_text.lower()
             if not any(k in t1_lower for k in ("stack", "class", "push", "pop", "def ")):
-                failures.append(f"{ctx}: turn1 didn't mention Stack or class methods. Got: {t1_text[:200]}")
+                failures.append(
+                    f"{ctx}: turn1 didn't mention Stack or class methods. Got: {t1_text[:200]}"
+                )
                 continue
             # Turn 2 — reference prior context.
             # v4.4.8 BUG-058 (turn 2 follow-up) — same Gemini
             # preamble pattern applies here. Raise max_tokens +
             # tell the model to skip preamble.
-            r2 = _post(f"{BASE_URL}/v1/messages", headers, {
-                "model": model, "max_tokens": 256,
-                "messages": [
-                    {"role": "user",
-                     "content": "Define a Python class named `Stack` with push and pop methods. "
-                                "Output only the code, no preamble or explanation."},
-                    {"role": "assistant", "content": t1_text},
-                    {"role": "user",
-                     "content": "Now add a `peek` method to the Stack class. "
-                                "Output only the updated code, no preamble."},
-                ],
-            }, timeout=60)
+            r2 = _post(
+                f"{BASE_URL}/v1/messages",
+                headers,
+                {
+                    "model": model,
+                    "max_tokens": 256,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": (
+                                "Define a Python class named `Stack` with push and pop methods. "
+                                "Output only the code, no preamble or explanation."
+                            ),
+                        },
+                        {"role": "assistant", "content": t1_text},
+                        {
+                            "role": "user",
+                            "content": "Now add a `peek` method to the Stack class. "
+                            "Output only the updated code, no preamble.",
+                        },
+                    ],
+                },
+                timeout=60,
+            )
             if r2.status_code == 429 or 500 <= r2.status_code < 600:
                 unavailable.append(f"{ctx} turn2")
                 continue
@@ -544,6 +605,7 @@ class TestMultiTurnPerProvider:
 
 # ── Native tool use across providers ─────────────────────────────────────────
 
+
 class TestNativeToolUsePerProvider:
     def test_tool_call_structure_all_providers(self, admin_session, real_providers, test_api_key):
         _skip_if_no_providers(real_providers)
@@ -553,13 +615,22 @@ class TestNativeToolUsePerProvider:
             if provider.get("exclude_from_tool_requests"):
                 continue
             ctx = f"Provider {provider['name']}"
-            resp = _post(f"{BASE_URL}/v1/messages", headers, {
-                "model": _pick_chat_model(admin_session, provider),
-                "max_tokens": 100,
-                "tools": [TOOL_DEF_ANTHROPIC],
-                "messages": [{"role": "user",
-                               "content": "Check the status of the nginx service using the tool."}],
-            }, timeout=60)
+            resp = _post(
+                f"{BASE_URL}/v1/messages",
+                headers,
+                {
+                    "model": _pick_chat_model(admin_session, provider),
+                    "max_tokens": 100,
+                    "tools": [TOOL_DEF_ANTHROPIC],
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "Check the status of the nginx service using the tool.",
+                        }
+                    ],
+                },
+                timeout=60,
+            )
             if resp.status_code == 429 or 500 <= resp.status_code < 600:
                 unavailable.append(ctx)
                 continue
@@ -583,8 +654,11 @@ class TestNativeToolUsePerProvider:
 
 # ── Streaming vs non-streaming consistency ────────────────────────────────────
 
+
 class TestStreamConsistencyPerProvider:
-    def test_stream_non_stream_content_equivalent(self, admin_session, real_providers, test_api_key):
+    def test_stream_non_stream_content_equivalent(
+        self, admin_session, real_providers, test_api_key
+    ):
         """
         Streamed and non-streamed responses for the same prompt should contain
         equivalent content (both mention 'sum' for a sum-list question).
@@ -595,14 +669,19 @@ class TestStreamConsistencyPerProvider:
         # verbose models (Gemini) don't burn the budget on preamble
         # before reaching the target token. Also raise max_tokens
         # from 60 → 100 for headroom.
-        prompt = ("What does sum([1, 2, 3]) return in Python? "
-                  "Reply with the digit alone, then a brief sentence.")
+        prompt = (
+            "What does sum([1, 2, 3]) return in Python? "
+            "Reply with the digit alone, then a brief sentence."
+        )
         unavailable, failures = [], []
         for provider in _all_providers_with_cb_cycling(admin_session, real_providers):
             ctx = f"Provider {provider['name']}"
             model = _pick_chat_model(admin_session, provider)
-            body = {"model": model, "max_tokens": 100,
-                    "messages": [{"role": "user", "content": prompt}]}
+            body = {
+                "model": model,
+                "max_tokens": 100,
+                "messages": [{"role": "user", "content": prompt}],
+            }
             r_plain = _post(f"{BASE_URL}/v1/messages", headers, body)
             if r_plain.status_code == 429 or 500 <= r_plain.status_code < 600:
                 unavailable.append(ctx)
@@ -611,8 +690,9 @@ class TestStreamConsistencyPerProvider:
                 failures.append(f"{ctx} plain: HTTP {r_plain.status_code}")
                 continue
             plain_text = _anthropic_text(r_plain.json()).lower()
-            r_stream = _post(f"{BASE_URL}/v1/messages", headers, {**body, "stream": True},
-                             stream=True)
+            r_stream = _post(
+                f"{BASE_URL}/v1/messages", headers, {**body, "stream": True}, stream=True
+            )
             if r_stream.status_code == 429 or 500 <= r_stream.status_code < 600:
                 unavailable.append(f"{ctx} stream")
                 continue
@@ -624,7 +704,8 @@ class TestStreamConsistencyPerProvider:
                 unavailable.append(f"{ctx} stream")
                 continue
             stream_text = "".join(
-                e["delta"]["text"] for e in events
+                e["delta"]["text"]
+                for e in events
                 if e.get("type") == "content_block_delta"
                 and e.get("delta", {}).get("type") == "text_delta"
             ).lower()
@@ -640,14 +721,16 @@ class TestStreamConsistencyPerProvider:
 
 # ── Compatibility summary report ──────────────────────────────────────────────
 
+
 class TestCompatibilitySummary:
-    def test_generate_matrix(self, admin_session, real_providers, test_api_key,
-                              settings_snapshot):
+    def test_generate_matrix(self, admin_session, real_providers, test_api_key, settings_snapshot):
         """
         Non-asserting test: runs all providers through a quick capability probe
         and prints a Markdown summary table.  Always passes.
         """
-        import os, datetime
+        import datetime
+        import os
+
         headers = {"x-api-key": test_api_key, "Content-Type": "application/json"}
         rows = []
 
@@ -658,34 +741,52 @@ class TestCompatibilitySummary:
 
             # Text
             try:
-                r = _post(f"{BASE_URL}/v1/messages", headers, {
-                    "model": model, "max_tokens": 15,
-                    "messages": [{"role": "user", "content": "Say OK"}],
-                }, timeout=30)
+                r = _post(
+                    f"{BASE_URL}/v1/messages",
+                    headers,
+                    {
+                        "model": model,
+                        "max_tokens": 15,
+                        "messages": [{"role": "user", "content": "Say OK"}],
+                    },
+                    timeout=30,
+                )
                 row["text"] = "✓" if r.status_code == 200 else f"✗({r.status_code})"
-            except Exception as e:
-                row["text"] = f"✗(err)"
+            except Exception:
+                row["text"] = "✗(err)"
 
             # Stream
             try:
-                r = _post(f"{BASE_URL}/v1/messages", headers, {
-                    "model": model, "max_tokens": 15,
-                    "messages": [{"role": "user", "content": "Say OK"}],
-                    "stream": True,
-                }, stream=True, timeout=30)
+                r = _post(
+                    f"{BASE_URL}/v1/messages",
+                    headers,
+                    {
+                        "model": model,
+                        "max_tokens": 15,
+                        "messages": [{"role": "user", "content": "Say OK"}],
+                        "stream": True,
+                    },
+                    stream=True,
+                    timeout=30,
+                )
                 evts = collect_sse(r)
-                row["stream"] = "✓" if r.status_code == 200 and evts else f"✗"
+                row["stream"] = "✓" if r.status_code == 200 and evts else "✗"
             except Exception:
                 row["stream"] = "✗"
 
             # Tools
             try:
-                r = _post(f"{BASE_URL}/v1/messages", headers, {
-                    "model": model, "max_tokens": 60,
-                    "tools": [TOOL_DEF_ANTHROPIC],
-                    "messages": [{"role": "user",
-                                  "content": "Use get_status to check nginx."}],
-                }, timeout=45)
+                r = _post(
+                    f"{BASE_URL}/v1/messages",
+                    headers,
+                    {
+                        "model": model,
+                        "max_tokens": 60,
+                        "tools": [TOOL_DEF_ANTHROPIC],
+                        "messages": [{"role": "user", "content": "Use get_status to check nginx."}],
+                    },
+                    timeout=45,
+                )
                 d = r.json()
                 has_tool = any(b.get("type") == "tool_use" for b in d.get("content", []))
                 row["tools"] = "✓(native)" if has_tool else "~(text)"
@@ -698,12 +799,20 @@ class TestCompatibilitySummary:
         header = "| Provider | Text | Stream | Tools |\n|----------|------|--------|-------|"
         lines = [header]
         for row in rows:
-            lines.append(f"| {row['provider']} | {row['text']} | {row['stream']} | {row['tools']} |")
+            lines.append(
+                f"| {row['provider']} | {row['text']} | {row['stream']} | {row['tools']} |"
+            )
         table = "\n".join(lines)
-        print(f"\n\n## Provider Compatibility Matrix — {datetime.datetime.now():%Y-%m-%d %H:%M}\n\n{table}\n")
+        print(
+            f"\n\n## Provider Compatibility Matrix — {datetime.datetime.now():%Y-%m-%d %H:%M}\n\n"
+            f"{table}\n"
+        )
 
         # Save to file
         os.makedirs("tests/results", exist_ok=True)
         ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         with open(f"tests/results/compatibility-matrix-{ts}.md", "w") as f:
-            f.write(f"# Provider Compatibility Matrix\nGenerated: {datetime.datetime.now()}\n\n{table}\n")
+            f.write(
+                f"# Provider Compatibility Matrix\nGenerated: {datetime.datetime.now()}\n\n"
+                f"{table}\n"
+            )

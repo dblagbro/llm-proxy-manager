@@ -1,15 +1,18 @@
 """Tests for the v3.10.13 fixes — BUG-001 (streaming error contract),
 BUG-037 (unregistered-model fast-fail), ARCH-A (pool-leak hardening)."""
+
 from __future__ import annotations
 
 import pytest
 
 from app.api._messages_streaming import (
-    _sse_frame_error, preflight_sse, http_status_for_stream_error,
+    _sse_frame_error,
+    http_status_for_stream_error,
+    preflight_sse,
 )
 
-
 # ── BUG-001: streaming error contract ────────────────────────────────────────
+
 
 def test_sse_frame_error_detects_anthropic_error():
     frame = b'data: {"type": "error", "error": {"message": "invalid x-api-key"}}\n\n'
@@ -22,14 +25,18 @@ def test_sse_frame_error_detects_openai_error():
 
 
 def test_sse_frame_error_passes_anthropic_message_start():
-    frame = (b'data: {"type":"message_start","message":{"id":"msg_proxy",'
-             b'"type":"message","role":"assistant","content":[]}}\n\n')
+    frame = (
+        b'data: {"type":"message_start","message":{"id":"msg_proxy",'
+        b'"type":"message","role":"assistant","content":[]}}\n\n'
+    )
     assert _sse_frame_error(frame) is None
 
 
 def test_sse_frame_error_passes_openai_chunk():
-    frame = (b'data: {"id":"x","object":"chat.completion.chunk",'
-             b'"choices":[{"delta":{"role":"assistant"}}]}\n\n')
+    frame = (
+        b'data: {"id":"x","object":"chat.completion.chunk",'
+        b'"choices":[{"delta":{"role":"assistant"}}]}\n\n'
+    )
     assert _sse_frame_error(frame) is None
 
 
@@ -78,8 +85,10 @@ def test_http_status_for_stream_error():
 
 # ── BUG-037: non-streaming claude-oauth timeout scaling ──────────────────────
 
+
 def test_oauth_complete_timeout_scales_with_max_tokens():
     from app.api._messages_streaming import _oauth_complete_timeout
+
     # a tiny request (e.g. an unregistered model that routes here and
     # hangs) is bounded near the 90s floor — not the old flat 300s.
     assert _oauth_complete_timeout(10).read < 95.0
@@ -96,6 +105,7 @@ def test_oauth_complete_timeout_scales_with_max_tokens():
 
 # ── ARCH-A: supervisor must not hold a DB connection across the LLM call ─────
 
+
 @pytest.mark.asyncio
 async def test_review_one_provider_releases_db_before_llm_call(monkeypatch):
     """ARCH-A — review_one_provider must commit (return the pooled
@@ -108,8 +118,10 @@ async def test_review_one_provider_releases_db_before_llm_call(monkeypatch):
     class FakeDB:
         async def commit(self):
             events.append("commit")
+
         async def flush(self):
             events.append("flush")
+
         def add(self, obj):
             events.append("add")
 

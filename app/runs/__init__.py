@@ -1,4 +1,4 @@
-"""Run runtime — server-mediated agent loop (v3.0, coordinator-hub spec).
+"""Run runtime — server-mediated agent loop (v3.0, integration client spec).
 
 Modules
 -------

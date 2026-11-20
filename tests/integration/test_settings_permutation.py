@@ -10,26 +10,41 @@ Pattern for each test:
 Mock-based tests (no --run-real): CoT-E on/off, circuit breaker threshold.
 Real-provider tests (require --run-real): native thinking budget, reasoning effort.
 """
+
 import time
+
 import pytest
 import requests
 import urllib3
 
 urllib3.disable_warnings()
 
-from tests.conftest import BASE_URL
-from tests.integration.conftest import collect_sse
+from tests.conftest import BASE_URL  # noqa: E402
+from tests.integration.conftest import collect_sse  # noqa: E402
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+
 def _post_messages(headers, body, stream=False, timeout=60):
-    return requests.post(f"{BASE_URL}/v1/messages", headers=headers,
-                         json=body, stream=stream, verify=False, timeout=timeout)
+    return requests.post(
+        f"{BASE_URL}/v1/messages",
+        headers=headers,
+        json=body,
+        stream=stream,
+        verify=False,
+        timeout=timeout,
+    )
 
 
 def _post_completions(headers, body, stream=False, timeout=60):
-    return requests.post(f"{BASE_URL}/v1/chat/completions", headers=headers,
-                         json=body, stream=stream, verify=False, timeout=timeout)
+    return requests.post(
+        f"{BASE_URL}/v1/chat/completions",
+        headers=headers,
+        json=body,
+        stream=stream,
+        verify=False,
+        timeout=timeout,
+    )
 
 
 def _has_thinking_blocks(resp) -> bool:
@@ -54,23 +69,33 @@ def _set(admin_session, **kwargs):
 COT_BODY = {
     "model": "claude-3-5-sonnet-20241022",
     "max_tokens": 200,
-    "messages": [{"role": "user",
-                  "content": "Write a Python function to parse a JSON config file."}],
+    "messages": [
+        {"role": "user", "content": "Write a Python function to parse a JSON config file."}
+    ],
     "stream": True,
 }
 
 
 # ── CoT-E on/off (mock-based, no real API cost) ───────────────────────────────
 
+
 class TestCoTToggle:
     def test_cot_enabled_produces_thinking_blocks(
-            self, only_mock_routing, mock_ctl, cot_headers, admin_session, settings_snapshot):
-        original = settings_snapshot["cot_enabled"]
+        self, only_mock_routing, mock_ctl, cot_headers, admin_session, settings_snapshot
+    ):
+        _original = settings_snapshot["cot_enabled"]
         _set(admin_session, cot_enabled=True, cot_max_iterations=1)
 
         # Queue plan + draft + critique for CoT pipeline
         mock_ctl.queue(type="text", content="Plan: structure the answer.")
-        mock_ctl.queue(type="text", content="def parse_config(path):\n    import json\n    with open(path) as f:\n        return json.load(f)")
+        mock_ctl.queue(
+            type="text",
+            content=(
+                "def parse_config(path):\n    import "
+                "json\n    with open(path) as f:\n     "
+                "   return json.load(f)"
+            ),
+        )
         mock_ctl.queue(type="text", content="SCORE: 8\nGAPS: none")
 
         resp = _post_messages(cot_headers, COT_BODY, stream=True)
@@ -78,7 +103,8 @@ class TestCoTToggle:
         assert _has_thinking_blocks(resp), "Expected thinking blocks when CoT is enabled"
 
     def test_cot_disabled_no_thinking_blocks(
-            self, only_mock_routing, mock_ctl, cot_headers, admin_session, settings_snapshot):
+        self, only_mock_routing, mock_ctl, cot_headers, admin_session, settings_snapshot
+    ):
         _set(admin_session, cot_enabled=False)
         mock_ctl.queue(type="text", content="def parse_config(path): ...")
 
@@ -92,7 +118,8 @@ class TestCoTToggle:
 
 class TestCoTIterations:
     def test_max_iterations_zero_skips_critique(
-            self, only_mock_routing, mock_ctl, cot_headers, admin_session, settings_snapshot):
+        self, only_mock_routing, mock_ctl, cot_headers, admin_session, settings_snapshot
+    ):
         """cot_max_iterations=0 → pipeline runs plan + draft only (2 mock calls)."""
         _set(admin_session, cot_enabled=True, cot_max_iterations=0)
 
@@ -112,8 +139,9 @@ class TestCoTIterations:
         ]
         combined = " ".join(thinking_texts)
         # With 0 iterations, no "Quality Check" thinking block should appear
-        assert "Quality Check" not in combined, \
+        assert "Quality Check" not in combined, (
             "Critique block appeared despite cot_max_iterations=0"
+        )
         assert "Planning" in combined, "Plan block should always appear"
 
         # Restore
@@ -122,9 +150,11 @@ class TestCoTIterations:
 
 # ── Circuit breaker threshold (mock-based) ────────────────────────────────────
 
+
 class TestCircuitBreakerThreshold:
     def test_cb_trips_at_configured_threshold(
-            self, admin_session, real_providers, mock_server, settings_snapshot, test_api_key):
+        self, admin_session, real_providers, mock_server, settings_snapshot, test_api_key
+    ):
         """
         Lower failure threshold to 1.  Force-open a real provider's CB.
         Verify routing falls through correctly (proxy returns 503 or routes elsewhere).
@@ -143,9 +173,17 @@ class TestCircuitBreakerThreshold:
 
         headers = {"x-api-key": test_api_key, "Content-Type": "application/json"}
         # With primary provider CB open, proxy should route to next or return 503
-        resp = requests.post(f"{BASE_URL}/v1/messages", headers=headers, verify=False, timeout=30,
-                             json={"model": "gpt-4o", "max_tokens": 10,
-                                   "messages": [{"role": "user", "content": "ping"}]})
+        resp = requests.post(
+            f"{BASE_URL}/v1/messages",
+            headers=headers,
+            verify=False,
+            timeout=30,
+            json={
+                "model": "gpt-4o",
+                "max_tokens": 10,
+                "messages": [{"role": "user", "content": "ping"}],
+            },
+        )
         # Acceptable outcomes after primary CB-open:
         #   200 — routed to another provider successfully
         #   502 — next provider also failed (e.g. unqueued mock)
@@ -164,10 +202,12 @@ class TestCircuitBreakerThreshold:
 
 # ── Native thinking budget (real providers) ───────────────────────────────────
 
+
 class TestNativeThinkingBudget:
     @pytest.mark.real_providers
     def test_budget_change_reflected_in_response(
-            self, admin_session, real_providers, test_api_key, settings_snapshot):
+        self, admin_session, real_providers, test_api_key, settings_snapshot
+    ):
         """
         Change native_thinking_budget_tokens.  For providers with native reasoning
         (Gemini 2.5), the response should still be valid.  This doesn't assert
@@ -182,16 +222,22 @@ class TestNativeThinkingBudget:
         headers = {"x-api-key": test_api_key, "Content-Type": "application/json"}
         tested = False
         for p in real_providers:
-            resp = requests.post(f"{BASE_URL}/v1/messages", headers=headers, verify=False,
-                                 timeout=60, json={
-                                     "model": p.get("default_model", "gpt-4o"),
-                                     "max_tokens": 50,
-                                     "messages": [{"role": "user", "content": "Say OK"}],
-                                 })
+            resp = requests.post(
+                f"{BASE_URL}/v1/messages",
+                headers=headers,
+                verify=False,
+                timeout=60,
+                json={
+                    "model": p.get("default_model", "gpt-4o"),
+                    "max_tokens": 50,
+                    "messages": [{"role": "user", "content": "Say OK"}],
+                },
+            )
             if resp.status_code == 502:
                 continue
-            assert resp.status_code == 200, \
+            assert resp.status_code == 200, (
                 f"Provider {p['name']} failed after budget change: {resp.text[:200]}"
+            )
             tested = True
             break
 
@@ -201,7 +247,8 @@ class TestNativeThinkingBudget:
 
     @pytest.mark.real_providers
     def test_reasoning_effort_change_reflected(
-            self, admin_session, real_providers, test_api_key, settings_snapshot):
+        self, admin_session, real_providers, test_api_key, settings_snapshot
+    ):
         """Change reasoning effort level; proxy must still return valid responses."""
         if not real_providers:
             pytest.skip("No real providers with API keys configured")
@@ -211,16 +258,22 @@ class TestNativeThinkingBudget:
             _set(admin_session, native_reasoning_effort=effort)
             tested = False
             for p in real_providers:
-                resp = requests.post(f"{BASE_URL}/v1/messages", headers=headers, verify=False,
-                                     timeout=60, json={
-                                         "model": p.get("default_model", "gpt-4o"),
-                                         "max_tokens": 50,
-                                         "messages": [{"role": "user", "content": "Say OK"}],
-                                     })
+                resp = requests.post(
+                    f"{BASE_URL}/v1/messages",
+                    headers=headers,
+                    verify=False,
+                    timeout=60,
+                    json={
+                        "model": p.get("default_model", "gpt-4o"),
+                        "max_tokens": 50,
+                        "messages": [{"role": "user", "content": "Say OK"}],
+                    },
+                )
                 if resp.status_code == 502:
                     continue
-                assert resp.status_code == 200, \
+                assert resp.status_code == 200, (
                     f"Provider {p['name']} failed with effort={effort}: {resp.text[:200]}"
+                )
                 tested = True
                 break
             if not tested:
@@ -231,10 +284,12 @@ class TestNativeThinkingBudget:
 
 # ── CoT-E + real providers: same task, different providers, same output shape ──
 
+
 class TestCoTRealProviders:
     @pytest.mark.real_providers
-    def test_cot_engaged_all_providers(self, admin_session, real_providers, cot_api_key,
-                                       settings_snapshot):
+    def test_cot_engaged_all_providers(
+        self, admin_session, real_providers, cot_api_key, settings_snapshot
+    ):
         """
         With a claude-code API key, CoT-E engages on providers without native reasoning.
         All providers must return a valid response with text content.
@@ -246,16 +301,27 @@ class TestCoTRealProviders:
         unavailable, failures = [], []
 
         from tests.integration.test_compatibility_matrix import _all_providers_with_cb_cycling
+
         for provider in _all_providers_with_cb_cycling(admin_session, real_providers):
             ctx = f"Provider {provider['name']}"
-            resp = requests.post(f"{BASE_URL}/v1/messages", headers=headers, verify=False,
-                                 timeout=120, stream=True, json={
-                                     "model": provider.get("default_model", "gpt-4o"),
-                                     "max_tokens": 300,
-                                     "messages": [{"role": "user",
-                                                   "content": "Write a Python function to parse a JSON config file."}],
-                                     "stream": True,
-                                 })
+            resp = requests.post(
+                f"{BASE_URL}/v1/messages",
+                headers=headers,
+                verify=False,
+                timeout=120,
+                stream=True,
+                json={
+                    "model": provider.get("default_model", "gpt-4o"),
+                    "max_tokens": 300,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "Write a Python function to parse a JSON config file.",
+                        }
+                    ],
+                    "stream": True,
+                },
+            )
             if resp.status_code == 502:
                 unavailable.append(ctx)
                 continue
@@ -264,7 +330,8 @@ class TestCoTRealProviders:
                 continue
             events = collect_sse(resp)
             if not events or all(
-                e.get("type") == "error" or ("error" in e and "object" not in e and "choices" not in e)
+                e.get("type") == "error"
+                or ("error" in e and "object" not in e and "choices" not in e)
                 for e in events
             ):
                 unavailable.append(ctx)

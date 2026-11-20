@@ -51,16 +51,14 @@ Behavior rules (locked):
 - Store errors → silent degrade (log, forward unchanged) so a Redis
   outage never breaks live traffic.
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-MEMORY_HEADER_PREFIX = (
-    "[Persistent caller memory — applies across providers]\n"
-)
+MEMORY_HEADER_PREFIX = "[Persistent caller memory — applies across providers]\n"
 
 
 async def maybe_inject_memory(
@@ -68,8 +66,8 @@ async def maybe_inject_memory(
     *,
     body: dict,
     api_key_id: str,
-    conversation_id: Optional[str],
-    memory_tag: Optional[str],
+    conversation_id: str | None,
+    memory_tag: str | None,
     endpoint: str,
 ) -> tuple[dict, bool]:
     """Return (possibly-modified body, injected_bool).
@@ -80,6 +78,7 @@ async def maybe_inject_memory(
     try:
         from app.config import settings
         from app.observability.prometheus import observe_memory_operation
+
         if not getattr(settings, "caller_memory_enabled", False):
             return body, False
         if not conversation_id:
@@ -93,6 +92,7 @@ async def maybe_inject_memory(
         blocked_companies = None
         try:
             from app.compliance import get_effective_blocklist
+
             blocked_companies = await get_effective_blocklist(db, api_key_id)
         except Exception:
             # Resolution failure leaves blocked_companies=None — store.get()
@@ -100,8 +100,12 @@ async def maybe_inject_memory(
             blocked_companies = None
 
         from app.memory.store import get
+
         entry = await get(
-            db, api_key_id, conversation_id, tag,
+            db,
+            api_key_id,
+            conversation_id,
+            tag,
             blocked_companies=blocked_companies or None,
         )
         # Audit the filter-out case: a row exists but was dropped by the
@@ -113,6 +117,7 @@ async def maybe_inject_memory(
                 raw = await get(db, api_key_id, conversation_id, tag)
                 if raw is not None and raw.content:
                     from app.compliance import emit_event, generate_audit_id
+
                     await emit_event(
                         db,
                         audit_id=generate_audit_id(),
@@ -133,13 +138,19 @@ async def maybe_inject_memory(
             # upstream provider. Silent degrade on any failure; the
             # noop case is cheap (no handler registered → early return).
             from app.memory.recover import maybe_recover_memory
+
             recovered = await maybe_recover_memory(
-                db, api_key_id=api_key_id,
-                conversation_id=conversation_id, memory_tag=tag,
+                db,
+                api_key_id=api_key_id,
+                conversation_id=conversation_id,
+                memory_tag=tag,
             )
             if recovered:
                 entry = await get(
-                    db, api_key_id, conversation_id, tag,
+                    db,
+                    api_key_id,
+                    conversation_id,
+                    tag,
                     blocked_companies=blocked_companies or None,
                 )
             if entry is None or not entry.content:
@@ -158,12 +169,11 @@ async def maybe_inject_memory(
     except Exception as e:
         try:
             from app.observability.prometheus import observe_memory_operation as _obs
+
             _obs("inject", "degraded")
         except Exception:
             pass
-        logger.warning(
-            f"caller_memory.inject: silent degrade ({e!r}) — forwarding unchanged"
-        )
+        logger.warning(f"caller_memory.inject: silent degrade ({e!r}) — forwarding unchanged")
         return body, False
 
 

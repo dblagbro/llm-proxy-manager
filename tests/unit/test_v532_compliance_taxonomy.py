@@ -9,6 +9,7 @@ Tests bypass FastAPI's auth dependency by calling the endpoint
 function directly with a stub admin — avoids cross-test pollution of
 ``dependency_overrides`` when run inside the full unit suite.
 """
+
 from __future__ import annotations
 
 import json
@@ -20,12 +21,12 @@ import pytest
 
 def test_endpoint_registered():
     src = Path("app/api/compliance.py").read_text()
-    assert '/api/compliance/taxonomy' in src
-    assert 'def compliance_taxonomy' in src
+    assert "/api/compliance/taxonomy" in src
+    assert "def compliance_taxonomy" in src
     # Admin-gated (parity with the rest of the policy surface)
-    idx = src.find('def compliance_taxonomy')
-    head = src[idx:idx + 400]
-    assert 'require_admin' in head
+    idx = src.find("def compliance_taxonomy")
+    head = src[idx : idx + 400]
+    assert "require_admin" in head
 
 
 @pytest.mark.asyncio
@@ -52,8 +53,7 @@ async def test_sorted_by_label():
 
     body = await compliance_taxonomy(_=None)
     labels = [c["label"].lower() for c in body["companies"]]
-    assert labels == sorted(labels), \
-        f"taxonomy not sorted by label: {labels}"
+    assert labels == sorted(labels), f"taxonomy not sorted by label: {labels}"
 
 
 @pytest.mark.asyncio
@@ -63,9 +63,11 @@ async def test_custom_companies_surface_with_source_custom():
     from app.api.compliance import compliance_taxonomy
     from app.config import settings as real_settings
 
-    custom_json = json.dumps([
-        {"id": "deepseek", "display_name": "DeepSeek", "model_prefixes": ["deepseek-"]},
-    ])
+    custom_json = json.dumps(
+        [
+            {"id": "deepseek", "display_name": "DeepSeek", "model_prefixes": ["deepseek-"]},
+        ]
+    )
     with patch.object(real_settings, "compliance_custom_companies", custom_json):
         body = await compliance_taxonomy(_=None)
 
@@ -83,9 +85,11 @@ async def test_known_entries_not_overridden_by_custom():
     from app.api.compliance import compliance_taxonomy
     from app.config import settings as real_settings
 
-    custom_json = json.dumps([
-        {"id": "anthropic", "display_name": "NotAnthropic"},
-    ])
+    custom_json = json.dumps(
+        [
+            {"id": "anthropic", "display_name": "NotAnthropic"},
+        ]
+    )
     with patch.object(real_settings, "compliance_custom_companies", custom_json):
         body = await compliance_taxonomy(_=None)
 

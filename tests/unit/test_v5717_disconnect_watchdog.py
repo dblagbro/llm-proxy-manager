@@ -6,6 +6,7 @@ handler task — ``CancelledError`` propagates through ``async with db:``
 and releases the DB connection. Closes the 2026-06-16 supervisor
 pool-leak path.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -13,7 +14,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ── structural pins ────────────────────────────────────────────────────
 
@@ -62,6 +62,7 @@ def test_completions_handler_wires_watchdog():
 
 def test_settings_exposed():
     from app.config import settings
+
     assert hasattr(settings, "disconnect_watchdog_enabled")
     assert hasattr(settings, "disconnect_watchdog_interval_sec")
 
@@ -71,6 +72,7 @@ def test_default_enabled_and_2s_interval():
     interval. Anything tighter (sub-second) wastes CPU; anything
     looser (>10s) lets the pool leak window grow back."""
     from app.config import settings
+
     assert settings.disconnect_watchdog_enabled is True
     assert 0.5 <= settings.disconnect_watchdog_interval_sec <= 5.0
 
@@ -78,6 +80,7 @@ def test_default_enabled_and_2s_interval():
 def test_version_bumped():
     """v5.7.17 minimum — later patches keep this passing."""
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     assert parts >= (5, 7, 17), f"v5.7.17 must be reachable; got {__version__}"
 
@@ -108,6 +111,7 @@ def _fake_request(disconnect_on_call=None):
 async def test_watchdog_is_noop_when_disabled():
     """Flag OFF → dependency yields immediately and spawns no task."""
     from app.utils import disconnect_watchdog as dw
+
     req, state = _fake_request(disconnect_on_call=None)
     with patch.object(dw, "_enabled", lambda: False):
         gen = dw.watch_for_disconnect(req)
@@ -125,13 +129,16 @@ async def test_watchdog_clean_handler_no_cancel():
     then exits cleanly when the dependency's finally block fires. The
     handler task is NOT cancelled."""
     from app.utils import disconnect_watchdog as dw
+
     req, state = _fake_request(disconnect_on_call=None)
 
     main_task = asyncio.current_task()
     assert main_task is not None
 
-    with patch.object(dw, "_enabled", lambda: True), \
-         patch.object(dw, "_poll_interval_sec", lambda: 0.01):
+    with (
+        patch.object(dw, "_enabled", lambda: True),
+        patch.object(dw, "_poll_interval_sec", lambda: 0.01),
+    ):
         gen = dw.watch_for_disconnect(req)
         await gen.__anext__()
         # Let the watcher tick a few times.
@@ -169,18 +176,18 @@ async def test_watchdog_cancels_handler_on_disconnect():
             except (StopAsyncIteration, asyncio.CancelledError):
                 pass
 
-    with patch.object(dw, "_enabled", lambda: True), \
-         patch.object(dw, "_poll_interval_sec", lambda: 0.01):
+    with (
+        patch.object(dw, "_enabled", lambda: True),
+        patch.object(dw, "_poll_interval_sec", lambda: 0.01),
+    ):
         task = asyncio.create_task(handler())
         try:
             await asyncio.wait_for(asyncio.wait({task}), timeout=2.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             task.cancel()
             raise AssertionError("watchdog did not cancel handler on disconnect")
 
-    assert cancelled.is_set(), (
-        "v5.7.17: handler did not receive CancelledError after disconnect"
-    )
+    assert cancelled.is_set(), "v5.7.17: handler did not receive CancelledError after disconnect"
 
 
 @pytest.mark.asyncio
@@ -199,8 +206,10 @@ async def test_is_disconnected_exception_does_not_cancel():
     req.is_disconnected = is_disconnected
 
     main_task = asyncio.current_task()
-    with patch.object(dw, "_enabled", lambda: True), \
-         patch.object(dw, "_poll_interval_sec", lambda: 0.01):
+    with (
+        patch.object(dw, "_enabled", lambda: True),
+        patch.object(dw, "_poll_interval_sec", lambda: 0.01),
+    ):
         gen = dw.watch_for_disconnect(req)
         await gen.__anext__()
         await asyncio.sleep(0.05)

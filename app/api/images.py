@@ -11,6 +11,7 @@ Subscription-OAuth providers are excluded (no image-gen surface).
 DevinGPT memo 2026-06-21 — flips ``services/image_gen.py`` to a single
 proxy client, deletes the direct OPENAI_IMG_KEY path.
 """
+
 from __future__ import annotations
 
 import logging
@@ -24,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.keys import resolve_api_key_dep
 from app.models.database import get_db
-from app.routing.router import select_provider, build_litellm_kwargs, build_litellm_model
+from app.routing.router import build_litellm_kwargs, build_litellm_model, select_provider
 from app.utils.disconnect_watchdog import watch_for_disconnect
 
 logger = logging.getLogger(__name__)
@@ -55,9 +56,13 @@ async def images_generations(
 
     try:
         route = await select_provider(
-            db, hint=None, has_tools=False, has_images=True,
+            db,
+            hint=None,
+            has_tools=False,
+            has_images=True,
             key_type=key_record.key_type,
-            pinned_provider_id=None, model_override=model,
+            pinned_provider_id=None,
+            model_override=model,
             sort_mode=None,
             excluded_provider_types=_EXCLUDED_TYPES,
         )
@@ -81,10 +86,14 @@ async def images_generations(
     t0 = time.monotonic()
     try:
         result = await litellm.aimage_generation(
-            model=litellm_model, prompt=prompt, **kwargs, **extra,
+            model=litellm_model,
+            prompt=prompt,
+            **kwargs,
+            **extra,
         )
     except Exception as e:
-        from app.routing.circuit_breaker import record_failure, is_billing_error
+        from app.routing.circuit_breaker import is_billing_error, record_failure
+
         err_str = str(e)
         billing = is_billing_error(err_str)
         await record_failure(provider.id, billing_error=billing)
@@ -92,6 +101,7 @@ async def images_generations(
         raise HTTPException(502, f"Image-gen upstream error: {short}")
 
     from app.routing.circuit_breaker import record_success
+
     await record_success(provider.id)
     elapsed_ms = (time.monotonic() - t0) * 1000.0
 
@@ -110,7 +120,8 @@ async def images_generations(
     }
     # v5.14.1 — response-shaping hook runner. Same contract as messages.py.
     try:
-        from app.api._response_hook_runner import apply_response_hooks, HookContext
+        from app.api._response_hook_runner import HookContext, apply_response_hooks
+
         await apply_response_hooks(
             handler_id="images",
             resp_headers=headers,

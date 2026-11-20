@@ -15,6 +15,7 @@ content delta; a stream that exhausts with none records a circuit-breaker
 failure and fails over to the next provider — mirroring the non-streaming
 guard + the grok-web failover pattern.
 """
+
 import json
 
 import pytest
@@ -34,74 +35,119 @@ def _frame(payload) -> bytes:
 # ── captured shapes ──────────────────────────────────────────────────────
 
 # OpenAI chunk shapes (what _stream_openai emits)
-ROLE_CHUNK = _frame({
-    "id": "msg", "object": "chat.completion.chunk",
-    "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
-})
-CONTENT_CHUNK = _frame({
-    "id": "msg", "object": "chat.completion.chunk",
-    "choices": [{"index": 0, "delta": {"content": "Hello"}, "finish_reason": None}],
-})
-EMPTY_CONTENT_CHUNK = _frame({
-    "id": "msg", "object": "chat.completion.chunk",
-    "choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": None}],
-})
-TOOL_CHUNK = _frame({
-    "id": "msg", "object": "chat.completion.chunk",
-    "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "function": {"name": "f"}}]}, "finish_reason": None}],
-})
-FINISH_CHUNK = _frame({
-    "id": "msg", "object": "chat.completion.chunk",
-    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-    "usage": {"prompt_tokens": 0, "completion_tokens": 0},
-})
+ROLE_CHUNK = _frame(
+    {
+        "id": "msg",
+        "object": "chat.completion.chunk",
+        "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+    }
+)
+CONTENT_CHUNK = _frame(
+    {
+        "id": "msg",
+        "object": "chat.completion.chunk",
+        "choices": [{"index": 0, "delta": {"content": "Hello"}, "finish_reason": None}],
+    }
+)
+EMPTY_CONTENT_CHUNK = _frame(
+    {
+        "id": "msg",
+        "object": "chat.completion.chunk",
+        "choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": None}],
+    }
+)
+TOOL_CHUNK = _frame(
+    {
+        "id": "msg",
+        "object": "chat.completion.chunk",
+        "choices": [
+            {
+                "index": 0,
+                "delta": {"tool_calls": [{"index": 0, "function": {"name": "f"}}]},
+                "finish_reason": None,
+            }
+        ],
+    }
+)
+FINISH_CHUNK = _frame(
+    {
+        "id": "msg",
+        "object": "chat.completion.chunk",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+    }
+)
 DONE_FRAME = b"data: [DONE]\n\n"
 
 # Anthropic event shapes (what _stream_anthropic emits)
-MESSAGE_START = _frame({
-    "type": "message_start",
-    "message": {"id": "msg_proxy", "type": "message", "role": "assistant",
-                "content": [], "model": "m", "stop_reason": None,
-                "stop_sequence": None,
-                "usage": {"input_tokens": 0, "output_tokens": 0}},
-})
-TEXT_DELTA = _frame({
-    "type": "content_block_delta", "index": 0,
-    "delta": {"type": "text_delta", "text": "Hi"},
-})
-EMPTY_TEXT_DELTA = _frame({
-    "type": "content_block_delta", "index": 0,
-    "delta": {"type": "text_delta", "text": ""},
-})
-TOOL_BLOCK_START = _frame({
-    "type": "content_block_start", "index": 0,
-    "content_block": {"type": "tool_use", "id": "toolu_1", "name": "f", "input": {}},
-})
-TEXT_BLOCK_START = _frame({
-    "type": "content_block_start", "index": 0,
-    "content_block": {"type": "text", "text": ""},
-})
+MESSAGE_START = _frame(
+    {
+        "type": "message_start",
+        "message": {
+            "id": "msg_proxy",
+            "type": "message",
+            "role": "assistant",
+            "content": [],
+            "model": "m",
+            "stop_reason": None,
+            "stop_sequence": None,
+            "usage": {"input_tokens": 0, "output_tokens": 0},
+        },
+    }
+)
+TEXT_DELTA = _frame(
+    {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {"type": "text_delta", "text": "Hi"},
+    }
+)
+EMPTY_TEXT_DELTA = _frame(
+    {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {"type": "text_delta", "text": ""},
+    }
+)
+TOOL_BLOCK_START = _frame(
+    {
+        "type": "content_block_start",
+        "index": 0,
+        "content_block": {"type": "tool_use", "id": "toolu_1", "name": "f", "input": {}},
+    }
+)
+TEXT_BLOCK_START = _frame(
+    {
+        "type": "content_block_start",
+        "index": 0,
+        "content_block": {"type": "text", "text": ""},
+    }
+)
 MESSAGE_STOP = _frame({"type": "message_stop"})
 
 
 # ── _sse_frame_has_content ───────────────────────────────────────────────
 
-@pytest.mark.parametrize("frame,expected", [
-    (ROLE_CHUNK, False),
-    (CONTENT_CHUNK, True),
-    (EMPTY_CONTENT_CHUNK, False),
-    (TOOL_CHUNK, True),
-    (FINISH_CHUNK, False),
-    (DONE_FRAME, False),
-    (MESSAGE_START, False),
-    (TEXT_DELTA, True),
-    (EMPTY_TEXT_DELTA, False),
-    (TOOL_BLOCK_START, True),
-    (TEXT_BLOCK_START, False),
-    (MESSAGE_STOP, False),
-    (b"event: compliance_substitution\ndata: {\"type\":\"compliance\"}\n\n", False),
-    (b"", False),
-])
+
+@pytest.mark.parametrize(
+    "frame,expected",
+    [
+        (ROLE_CHUNK, False),
+        (CONTENT_CHUNK, True),
+        (EMPTY_CONTENT_CHUNK, False),
+        (TOOL_CHUNK, True),
+        (FINISH_CHUNK, False),
+        (DONE_FRAME, False),
+        (MESSAGE_START, False),
+        (TEXT_DELTA, True),
+        (EMPTY_TEXT_DELTA, False),
+        (TOOL_BLOCK_START, True),
+        (TEXT_BLOCK_START, False),
+        (MESSAGE_STOP, False),
+        (b'event: compliance_substitution\ndata: {"type":"compliance"}\n\n', False),
+        (b"", False),
+    ],
+)
 def test_frame_content_detection(frame, expected):
     assert _sse_frame_has_content(frame) is expected
 
@@ -109,14 +155,20 @@ def test_frame_content_detection(frame, expected):
 def test_reasoning_content_counts_as_alive():
     # A provider streaming only reasoning is alive — must NOT be
     # classified as empty-success (avoid failover during long thinking).
-    frame = _frame({
-        "id": "msg", "object": "chat.completion.chunk",
-        "choices": [{"index": 0, "delta": {"reasoning_content": "thinking..."}, "finish_reason": None}],
-    })
+    frame = _frame(
+        {
+            "id": "msg",
+            "object": "chat.completion.chunk",
+            "choices": [
+                {"index": 0, "delta": {"reasoning_content": "thinking..."}, "finish_reason": None}
+            ],
+        }
+    )
     assert _sse_frame_has_content(frame) is True
 
 
 # ── buffer_sse_until_content ─────────────────────────────────────────────
+
 
 async def _gen_from(frames):
     for f in frames:
@@ -147,16 +199,14 @@ async def test_content_midstream_passes_with_frames_preserved():
 @pytest.mark.asyncio
 async def test_anthropic_empty_stream_detected():
     frames = [MESSAGE_START, TEXT_BLOCK_START, EMPTY_TEXT_DELTA, MESSAGE_STOP]
-    buffered, has_content, _ = await buffer_sse_until_content(
-        frames[0], _gen_from(frames[1:]))
+    buffered, has_content, _ = await buffer_sse_until_content(frames[0], _gen_from(frames[1:]))
     assert has_content is False
 
 
 @pytest.mark.asyncio
 async def test_anthropic_tool_use_counts_as_content():
     frames = [MESSAGE_START, TOOL_BLOCK_START]
-    _, has_content, _ = await buffer_sse_until_content(
-        frames[0], _gen_from(frames[1:]))
+    _, has_content, _ = await buffer_sse_until_content(frames[0], _gen_from(frames[1:]))
     assert has_content is True
 
 
@@ -165,12 +215,14 @@ async def test_frame_cap_passes_through_alive_stream():
     # A slow-but-alive stream past the cap must NEVER be classified empty.
     many = [ROLE_CHUNK] * 100
     buffered, has_content, _ = await buffer_sse_until_content(
-        many[0], _gen_from(many[1:]), max_frames=64)
+        many[0], _gen_from(many[1:]), max_frames=64
+    )
     assert has_content is True
     assert len(buffered) == 64
 
 
 # ── stream_with_empty_guard failover ─────────────────────────────────────
+
 
 class _FakeProvider:
     def __init__(self, pid, name, ptype="openai"):
@@ -208,6 +260,7 @@ async def test_failover_from_empty_provider(monkeypatch):
 
     import app.routing.circuit_breaker as cb
     import app.routing.router as router
+
     monkeypatch.setattr(cb, "record_failure", fake_record_failure)
     monkeypatch.setattr(router, "select_provider", fake_select_provider)
 
@@ -215,9 +268,15 @@ async def test_failover_from_empty_provider(monkeypatch):
         return _gen_from(EMPTY_STREAM if route.provider.id == "dead-1" else GOOD_STREAM)
 
     frames, gen, served = await stream_with_empty_guard(
-        start_stream=start_stream, route=dead, db=None, hint=None,
-        has_tools=False, has_images=False, key_type="standard",
-        api_key_id="k1", model_override=None,
+        start_stream=start_stream,
+        route=dead,
+        db=None,
+        hint=None,
+        has_tools=False,
+        has_images=False,
+        key_type="standard",
+        api_key_id="k1",
+        model_override=None,
     )
     assert served is alive
     assert failures == ["dead-1"]
@@ -249,15 +308,21 @@ async def test_all_empty_raises_502(monkeypatch):
 
     import app.routing.circuit_breaker as cb
     import app.routing.router as router
+
     monkeypatch.setattr(cb, "record_failure", fake_record_failure)
     monkeypatch.setattr(router, "select_provider", fake_select_provider)
 
     with pytest.raises(HTTPException) as exc:
         await stream_with_empty_guard(
             start_stream=lambda r: _gen_from(EMPTY_STREAM),
-            route=dead1, db=None, hint=None,
-            has_tools=False, has_images=False, key_type="standard",
-            api_key_id="k1", model_override=None,
+            route=dead1,
+            db=None,
+            hint=None,
+            has_tools=False,
+            has_images=False,
+            key_type="standard",
+            api_key_id="k1",
+            model_override=None,
         )
     assert exc.value.status_code == 502
     assert "empty-success" in exc.value.detail
@@ -298,6 +363,7 @@ async def test_cumulative_exclusion_escapes_same_family_pingpong(monkeypatch):
 
     import app.routing.circuit_breaker as cb
     import app.routing.router as router
+
     monkeypatch.setattr(cb, "record_failure", fake_record_failure)
     monkeypatch.setattr(router, "select_provider", fake_select_provider)
 
@@ -305,9 +371,15 @@ async def test_cumulative_exclusion_escapes_same_family_pingpong(monkeypatch):
         return _gen_from(GOOD_STREAM if route.provider.id == "alive-1" else EMPTY_STREAM)
 
     frames, gen, served = await stream_with_empty_guard(
-        start_stream=start_stream, route=dead1, db=None, hint=None,
-        has_tools=False, has_images=False, key_type="standard",
-        api_key_id="k1", model_override=None,
+        start_stream=start_stream,
+        route=dead1,
+        db=None,
+        hint=None,
+        has_tools=False,
+        has_images=False,
+        key_type="standard",
+        api_key_id="k1",
+        model_override=None,
     )
     assert served is alive
     # Each dead provider recorded EXACTLY ONE empty-success failure —
@@ -328,9 +400,15 @@ async def test_preflight_error_still_raises_http_status(monkeypatch):
 
     with pytest.raises(HTTPException) as exc:
         await stream_with_empty_guard(
-            start_stream=lambda r: err_gen(), route=rt, db=None, hint=None,
-            has_tools=False, has_images=False, key_type="standard",
-            api_key_id="k1", model_override=None,
+            start_stream=lambda r: err_gen(),
+            route=rt,
+            db=None,
+            hint=None,
+            has_tools=False,
+            has_images=False,
+            key_type="standard",
+            api_key_id="k1",
+            model_override=None,
         )
     assert exc.value.status_code == 401
 
@@ -339,9 +417,15 @@ async def test_preflight_error_still_raises_http_status(monkeypatch):
 async def test_healthy_stream_untouched(monkeypatch):
     rt = _FakeRoute("p1", "p1")
     frames, gen, served = await stream_with_empty_guard(
-        start_stream=lambda r: _gen_from(GOOD_STREAM), route=rt, db=None,
-        hint=None, has_tools=False, has_images=False, key_type="standard",
-        api_key_id="k1", model_override=None,
+        start_stream=lambda r: _gen_from(GOOD_STREAM),
+        route=rt,
+        db=None,
+        hint=None,
+        has_tools=False,
+        has_images=False,
+        key_type="standard",
+        api_key_id="k1",
+        model_override=None,
     )
     assert served is rt
     assert frames + [f async for f in gen] == GOOD_STREAM

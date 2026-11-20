@@ -12,24 +12,26 @@ the diagnostic toolkit:
   - ``scripts/archa_pool_leak_harness.py`` — a load harness that
     isolates which request path leaks.
 """
+
 from __future__ import annotations
 
 import time
 from pathlib import Path
 
-
 # ── tracer registry + accessor ─────────────────────────────────────
 
 
 def test_get_pool_checkout_trace_empty():
-    from app.models.database import get_pool_checkout_trace, _pool_checkouts
+    from app.models.database import _pool_checkouts, get_pool_checkout_trace
+
     _pool_checkouts.clear()
     assert get_pool_checkout_trace() == []
 
 
 def test_get_pool_checkout_trace_sorted_oldest_first():
     """The oldest checkout — the suspected leak — must sort first."""
-    from app.models.database import get_pool_checkout_trace, _pool_checkouts
+    from app.models.database import _pool_checkouts, get_pool_checkout_trace
+
     _pool_checkouts.clear()
     now = time.monotonic()
     _pool_checkouts[1] = {"since": now - 5.0, "stack": "recent-frame"}
@@ -38,7 +40,9 @@ def test_get_pool_checkout_trace_sorted_oldest_first():
     try:
         trace = get_pool_checkout_trace()
         assert [e["stack"] for e in trace] == [
-            "OLD-LEAK-frame", "mid-frame", "recent-frame",
+            "OLD-LEAK-frame",
+            "mid-frame",
+            "recent-frame",
         ]
         assert trace[0]["age_sec"] >= 800.0
         assert all("age_sec" in e and "stack" in e for e in trace)
@@ -51,6 +55,7 @@ def test_get_pool_checkout_trace_sorted_oldest_first():
 
 def test_db_pool_trace_setting_exists_and_defaults_off():
     from app.config import settings
+
     assert hasattr(settings, "db_pool_trace")
     # Default OFF — traceback capture per checkout has overhead.
     assert settings.db_pool_trace is False
@@ -88,6 +93,7 @@ def test_health_snapshot_includes_trace_summary():
 
 def test_harness_script_exists_and_compiles(tmp_path):
     import py_compile
+
     p = Path("scripts/archa_pool_leak_harness.py")
     assert p.exists(), "harness script missing"
     # Compile to a temp path: the default writes scripts/__pycache__/, which
@@ -117,6 +123,6 @@ def test_health_cache_hit_path_includes_dbpool():
     polls and depends on."""
     src = Path("app/api/cluster.py").read_text()
     idx = src.index('_HEALTH_CACHE["body"] is not None')
-    block = src[idx:idx + 1000]
+    block = src[idx : idx + 1000]
     assert '"dbPool": _db_pool_snapshot()' in block
     assert '"circuitBreakers": get_all_states()' in block

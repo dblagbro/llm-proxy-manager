@@ -13,10 +13,10 @@ Coverage:
 - bucket reset on hour/day rollover
 - absent caps → no enforcement (default behavior preserved)
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi import HTTPException
@@ -28,16 +28,16 @@ from app.budget.tracker import (
     record_cost,
 )
 
-
 # ── Test fixture ──────────────────────────────────────────────────────
 
 
 @pytest.fixture
 async def fresh_key(request):
     """Insert a single ApiKey row and return it. Cleanup at teardown."""
-    from app.models.database import engine, AsyncSessionLocal
-    from app.models.db import Base, ApiKey
     from sqlalchemy import delete
+
+    from app.models.database import AsyncSessionLocal, engine
+    from app.models.db import ApiKey, Base
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -65,6 +65,7 @@ async def fresh_key(request):
 async def _get_key():
     from app.models.database import AsyncSessionLocal
     from app.models.db import ApiKey
+
     async with AsyncSessionLocal() as db:
         return (await db.execute(select(ApiKey).where(ApiKey.id == "test-budget-key"))).scalar_one()
 
@@ -77,8 +78,15 @@ async def test_no_caps_no_enforcement(fresh_key):
     """A key with no caps should sail through, returning a BudgetStatus
     that signals 'no cap' (None on day_remaining and hour_remaining)."""
     from app.models.database import AsyncSessionLocal
+
     async with AsyncSessionLocal() as db:
-        key = (await db.execute(select(__import__("app.models.db", fromlist=["ApiKey"]).ApiKey).where(__import__("app.models.db", fromlist=["ApiKey"]).ApiKey.id == "test-budget-key"))).scalar_one()
+        key = (
+            await db.execute(
+                select(__import__("app.models.db", fromlist=["ApiKey"]).ApiKey).where(
+                    __import__("app.models.db", fromlist=["ApiKey"]).ApiKey.id == "test-budget-key"
+                )
+            )
+        ).scalar_one()
         status = await check_budget_pre_request(db, key)
         await db.commit()
     assert isinstance(status, BudgetStatus)
@@ -96,10 +104,11 @@ async def test_daily_hard_cap_blocks_at_threshold(fresh_key):
     402. Set up: day cost = $10.00, hard cap = $10.00 → blocked."""
     from app.models.database import AsyncSessionLocal
     from app.models.db import ApiKey
+
     async with AsyncSessionLocal() as db:
         key = (await db.execute(select(ApiKey).where(ApiKey.id == "test-budget-key"))).scalar_one()
         # Pre-set day bucket already at cap
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         key.day_bucket_ts = now.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
         key.day_cost_usd = 10.0
         key.daily_hard_cap_usd = 10.0
@@ -116,9 +125,10 @@ async def test_daily_hard_cap_allows_under_threshold(fresh_key):
     """day_cost < daily_hard_cap → no exception."""
     from app.models.database import AsyncSessionLocal
     from app.models.db import ApiKey
+
     async with AsyncSessionLocal() as db:
         key = (await db.execute(select(ApiKey).where(ApiKey.id == "test-budget-key"))).scalar_one()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         key.day_bucket_ts = now.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
         key.day_cost_usd = 9.99
         key.daily_hard_cap_usd = 10.0
@@ -138,9 +148,10 @@ async def test_hourly_cap_blocks_at_threshold(fresh_key):
     callers retry-after-an-hour rather than tight-loop."""
     from app.models.database import AsyncSessionLocal
     from app.models.db import ApiKey
+
     async with AsyncSessionLocal() as db:
         key = (await db.execute(select(ApiKey).where(ApiKey.id == "test-budget-key"))).scalar_one()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         key.hour_bucket_ts = now.replace(minute=0, second=0, microsecond=0, tzinfo=None)
         key.hour_cost_usd = 5.0
         key.hourly_cap_usd = 5.0
@@ -162,9 +173,10 @@ async def test_daily_soft_cap_sets_warning_flag(fresh_key):
     an X-Budget-Warning header. Acts as an early-alert before hard cap."""
     from app.models.database import AsyncSessionLocal
     from app.models.db import ApiKey
+
     async with AsyncSessionLocal() as db:
         key = (await db.execute(select(ApiKey).where(ApiKey.id == "test-budget-key"))).scalar_one()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         key.day_bucket_ts = now.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
         key.day_cost_usd = 5.0
         key.daily_soft_cap_usd = 5.0
@@ -187,10 +199,13 @@ async def test_stale_hourly_bucket_resets(fresh_key):
     the operator make another call."""
     from app.models.database import AsyncSessionLocal
     from app.models.db import ApiKey
+
     async with AsyncSessionLocal() as db:
         key = (await db.execute(select(ApiKey).where(ApiKey.id == "test-budget-key"))).scalar_one()
         # Bucket from 3 hours ago; cost was at the cap
-        old = (datetime.now(timezone.utc) - timedelta(hours=3)).replace(minute=0, second=0, microsecond=0, tzinfo=None)
+        old = (datetime.now(UTC) - timedelta(hours=3)).replace(
+            minute=0, second=0, microsecond=0, tzinfo=None
+        )
         key.hour_bucket_ts = old
         key.hour_cost_usd = 5.0
         key.hourly_cap_usd = 5.0
@@ -206,9 +221,12 @@ async def test_stale_daily_bucket_resets(fresh_key):
     """Bucket from yesterday → reset, cost zeroed."""
     from app.models.database import AsyncSessionLocal
     from app.models.db import ApiKey
+
     async with AsyncSessionLocal() as db:
         key = (await db.execute(select(ApiKey).where(ApiKey.id == "test-budget-key"))).scalar_one()
-        old = (datetime.now(timezone.utc) - timedelta(days=2)).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+        old = (datetime.now(UTC) - timedelta(days=2)).replace(
+            hour=0, minute=0, second=0, microsecond=0, tzinfo=None
+        )
         key.day_bucket_ts = old
         key.day_cost_usd = 100.0
         key.daily_hard_cap_usd = 10.0
@@ -229,9 +247,10 @@ async def test_record_cost_increments_buckets(fresh_key):
     reset; check_budget_pre_request does)."""
     from app.models.database import AsyncSessionLocal
     from app.models.db import ApiKey
+
     async with AsyncSessionLocal() as db:
         key = (await db.execute(select(ApiKey).where(ApiKey.id == "test-budget-key"))).scalar_one()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         key.hour_bucket_ts = now.replace(minute=0, second=0, microsecond=0, tzinfo=None)
         key.day_bucket_ts = now.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
         key.hour_cost_usd = 1.0
@@ -241,7 +260,9 @@ async def test_record_cost_increments_buckets(fresh_key):
         await record_cost(db, key.id, 0.50)
         await db.commit()
 
-        refreshed = (await db.execute(select(ApiKey).where(ApiKey.id == "test-budget-key"))).scalar_one()
+        refreshed = (
+            await db.execute(select(ApiKey).where(ApiKey.id == "test-budget-key"))
+        ).scalar_one()
     assert refreshed.hour_cost_usd == pytest.approx(1.50)
     assert refreshed.day_cost_usd == pytest.approx(5.50)
 
@@ -253,6 +274,7 @@ async def test_record_cost_zero_is_noop(fresh_key):
     counters don't drift on every subscription call."""
     from app.models.database import AsyncSessionLocal
     from app.models.db import ApiKey
+
     async with AsyncSessionLocal() as db:
         key = (await db.execute(select(ApiKey).where(ApiKey.id == "test-budget-key"))).scalar_one()
         key.hour_cost_usd = 1.0
@@ -261,5 +283,7 @@ async def test_record_cost_zero_is_noop(fresh_key):
         await record_cost(db, key.id, 0.0)
         await db.commit()
 
-        refreshed = (await db.execute(select(ApiKey).where(ApiKey.id == "test-budget-key"))).scalar_one()
+        refreshed = (
+            await db.execute(select(ApiKey).where(ApiKey.id == "test-budget-key"))
+        ).scalar_one()
     assert refreshed.hour_cost_usd == 1.0  # unchanged

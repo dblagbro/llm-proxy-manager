@@ -1,6 +1,7 @@
 """v3.7.20 — BUG-020 fix: utilization bucket filter applies BEFORE
 the P2C/PeakEWMA random sample, so the v3.7.4 reorder is no longer
 silently overridden by score re-sort + EWMA-with-samples preference."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -29,7 +30,7 @@ def test_bucket_filter_runs_before_p2c_random_sample():
     src = Path("app/routing/router.py").read_text()
     # Find the P2C block
     idx = src.index("# Wave 3 #13 — PeakEWMA + P2C")
-    block = src[idx:idx + 3000]
+    block = src[idx : idx + 3000]
     # The bucket filter must appear BEFORE the random.sample call
     bucket_idx = block.index("BUG-020 fix")
     random_idx = block.index("_random.sample")
@@ -69,7 +70,7 @@ def test_fall_through_uses_top_tier_not_ranked_scored():
     ranked_scored (the original list — would yield the wrong candidate)."""
     src = Path("app/routing/router.py").read_text()
     # Find the else branch after the if len(top_tier) >= 2:
-    block = src[src.index("# Wave 3 #13 — PeakEWMA + P2C"):]
+    block = src[src.index("# Wave 3 #13 — PeakEWMA + P2C") :]
     # Locate the else: line after the sample block
     # Look specifically for `best_profile, unmet, _ = top_tier[0]`
     assert "best_profile, unmet, _ = top_tier[0]" in block
@@ -134,5 +135,6 @@ def test_simulated_p2c_same_bucket_does_not_narrow():
 
 def test_version_bumped():
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     assert parts >= (3, 7, 20)

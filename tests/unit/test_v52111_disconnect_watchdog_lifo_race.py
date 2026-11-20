@@ -20,7 +20,9 @@ gets reordered: /cluster/sync inbound leaks 1 DB session per peer POST
 again → chronic ~2/24h fill on TMR nodes → login stops working
 mid-day.
 """
+
 from __future__ import annotations
+
 from pathlib import Path
 
 
@@ -61,7 +63,7 @@ def test_watcher_rechecks_after_await():
     idx = src.find("disconnected = await request.is_disconnected()")
     assert idx > 0
     # Between the await and the `if disconnected:` the flag must be rechecked
-    window = src[idx:idx + 800]
+    window = src[idx : idx + 800]
     assert "if handler_done[0] or stop.is_set():" in window, (
         "watcher must recheck handler_done after the is_disconnected() "
         "await, before the cancel-decision"
@@ -75,16 +77,15 @@ def test_early_return_on_handler_done():
     idx = src.find("while not stop.is_set():")
     assert idx > 0
     body_start = src.find("\n", idx) + 1
-    body_snippet = src[body_start:body_start + 200]
+    body_snippet = src[body_start : body_start + 200]
     assert "if handler_done[0]:" in body_snippet
 
 
 def test_version_bumped():
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m
     major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    assert (major, minor, patch) >= (5, 21, 11), (
-        f"expected >= 5.21.11, got {major}.{minor}.{patch}"
-    )
+    assert (major, minor, patch) >= (5, 21, 11), f"expected >= 5.21.11, got {major}.{minor}.{patch}"

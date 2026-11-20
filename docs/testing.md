@@ -15,7 +15,11 @@ and **`qa-notes.md`** — this file does not duplicate them.
   suites: `tests/known_integration_failures.txt`, `tests/known_ui_failures.txt`.
 
 ## How to run
-- Lint (must be clean): `make lint` (`ruff check` + `ruff format --check`).
+- Run `make lint` using the development dependencies. It checks both lint and
+  formatting across `app/` and `tests/` with Ruff 0.17.6.
+- After building the gateway, run `make test-gateway-container GATEWAY_IMAGE=<local-image>`
+  on a Docker host. It starts and replaces a gateway using its image-local
+  account and checks that both containers see the same stored data and log marker.
 - Import smoke: `python -c "import app.main"`.
 - Focused area: `pytest tests/unit/test_<...>.py -q`.
 
@@ -23,7 +27,7 @@ and **`qa-notes.md`** — this file does not duplicate them.
 `ci.yml` runs on every push to `main` and every pull request to `main`. All four jobs block
 (Python 3.13, `ubuntu-24.04`, pinned action versions):
 
-- **`guard`**: builds the frontend (`npm ci` + `npm run build`), import smoke
+- **`guard`**: runs `make lint`, builds the frontend (`npm ci` + `npm run build`), import smoke
   (`python -c "import app.main"`), the **full unit suite** (`pytest tests/unit -q`, blocking since
   v5.22.38), then `tools/run_unit_suite_hermetic.py`, which fails the build on any connect to a
   non-loopback address.
@@ -42,8 +46,7 @@ Path-filtered workflows run only when their area (or the `Makefile`) changes:
 lint-grok-release`, plus a host-compatibility job), `whisper-runtime.yml` (`make lint-whisper
 build-whisper test-whisper`).
 
-Not in CI: `make lint` for the gateway (`app/`, `tests/`). The inherited lint findings are tracked
-debt (see `AGENTS.md`). Local checks that mirror CI: `make verify-ci` (unit suite on the image's
+Other local checks include `make verify-ci` (unit suite on the image's
 Python 3.13), `make secret-scan`, and the `.githooks/` pre-commit and pre-push hooks
 (`make install-hooks`).
 

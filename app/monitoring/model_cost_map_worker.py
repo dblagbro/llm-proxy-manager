@@ -21,27 +21,26 @@ Design:
 The URL is configurable (``model_cost_map_url`` setting) so a fork /
 mirror can be swapped in without a code change.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 logger = logging.getLogger(__name__)
 
 
 DEFAULT_URL = (
-    "https://raw.githubusercontent.com/BerriAI/litellm/main/"
-    "model_prices_and_context_window.json"
+    "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 )
 DEFAULT_INTERVAL_SEC = 86400  # 24h
 _HTTPX_TIMEOUT_SEC = 30
 
-_TASK: Optional[asyncio.Task] = None
+_TASK: asyncio.Task | None = None
 
 
-def _parse_entry(name: str, entry: dict) -> Optional[dict]:
+def _parse_entry(name: str, entry: dict) -> dict | None:
     """Normalize a single model entry from the LiteLLM JSON.
 
     LiteLLM's JSON has a top-level ``sample_spec`` key that's just an
@@ -75,14 +74,16 @@ async def _fetch_and_upsert() -> tuple[int, int, int]:
     Returns ``(added, updated, skipped)`` counts. Raises on network /
     parse failure so the caller can log + back off.
     """
+    from sqlalchemy import select
+
     from app.config import settings
     from app.models.database import AsyncSessionLocal
     from app.models.db_model_pricing import ModelPricingEntry
-    from sqlalchemy import select
 
     url = getattr(settings, "model_cost_map_url", None) or DEFAULT_URL
 
     import httpx
+
     async with httpx.AsyncClient(timeout=_HTTPX_TIMEOUT_SEC) as client:
         resp = await client.get(url)
         resp.raise_for_status()
@@ -91,7 +92,7 @@ async def _fetch_and_upsert() -> tuple[int, int, int]:
     if not isinstance(payload, dict):
         raise ValueError(f"unexpected root type: {type(payload).__name__}")
 
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = datetime.now(UTC).replace(tzinfo=None)
     added = 0
     updated = 0
     skipped = 0
@@ -109,16 +110,18 @@ async def _fetch_and_upsert() -> tuple[int, int, int]:
                 continue
             existing_row = existing.get(normalized["model_key"])
             if existing_row is None:
-                db.add(ModelPricingEntry(
-                    model_key=normalized["model_key"],
-                    input_cost_per_token=normalized["input_cost_per_token"],
-                    output_cost_per_token=normalized["output_cost_per_token"],
-                    max_input_tokens=normalized["max_input_tokens"],
-                    max_output_tokens=normalized["max_output_tokens"],
-                    provider_family=normalized["provider_family"],
-                    source="litellm_upstream",
-                    synced_at=now,
-                ))
+                db.add(
+                    ModelPricingEntry(
+                        model_key=normalized["model_key"],
+                        input_cost_per_token=normalized["input_cost_per_token"],
+                        output_cost_per_token=normalized["output_cost_per_token"],
+                        max_input_tokens=normalized["max_input_tokens"],
+                        max_output_tokens=normalized["max_output_tokens"],
+                        provider_family=normalized["provider_family"],
+                        source="litellm_upstream",
+                        synced_at=now,
+                    )
+                )
                 added += 1
             else:
                 # Only mark as updated when values actually differed —
@@ -142,6 +145,7 @@ async def _fetch_and_upsert() -> tuple[int, int, int]:
     # cost lookups pick up the fresh values without a proxy restart.
     try:
         from app.monitoring.pricing import invalidate_catalog_cache
+
         invalidate_catalog_cache()
     except Exception:
         pass
@@ -150,33 +154,37 @@ async def _fetch_and_upsert() -> tuple[int, int, int]:
 
 
 async def _sync_worker_loop(interval_sec: int) -> None:
-    from app.models.db import ActivityLog
     from app.models.database import AsyncSessionLocal
+    from app.models.db import ActivityLog
 
     while True:
         try:
             added, updated, skipped = await _fetch_and_upsert()
             logger.info(
                 "model_cost_map.synced added=%d updated=%d skipped=%d",
-                added, updated, skipped,
+                added,
+                updated,
+                skipped,
             )
             try:
                 async with AsyncSessionLocal() as db:
-                    db.add(ActivityLog(
-                        created_at=datetime.now(timezone.utc).replace(tzinfo=None),
-                        severity="info",
-                        event_type="model_cost_map.synced",
-                        message=(
-                            f"Model cost-map synced: added={added} "
-                            f"updated={updated} skipped={skipped}"
-                        ),
-                        event_meta={
-                            "added": added,
-                            "updated": updated,
-                            "skipped": skipped,
-                            "interval_sec": interval_sec,
-                        },
-                    ))
+                    db.add(
+                        ActivityLog(
+                            created_at=datetime.now(UTC).replace(tzinfo=None),
+                            severity="info",
+                            event_type="model_cost_map.synced",
+                            message=(
+                                f"Model cost-map synced: added={added} "
+                                f"updated={updated} skipped={skipped}"
+                            ),
+                            event_meta={
+                                "added": added,
+                                "updated": updated,
+                                "skipped": skipped,
+                                "interval_sec": interval_sec,
+                            },
+                        )
+                    )
                     await db.commit()
             except Exception:
                 # activity_log write failure is non-fatal
@@ -186,7 +194,7 @@ async def _sync_worker_loop(interval_sec: int) -> None:
         await asyncio.sleep(interval_sec)
 
 
-def start(interval_sec: Optional[int] = None) -> None:
+def start(interval_sec: int | None = None) -> None:
     """Kick off the sync loop as a background task. Idempotent — if the
     task is already running, returns without re-scheduling."""
     global _TASK

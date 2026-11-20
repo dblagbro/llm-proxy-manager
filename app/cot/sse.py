@@ -5,22 +5,29 @@ All SSE event byte production lives here so format changes require one edit.
 Used by cot/pipeline.py (thinking block primitives) and both endpoint handlers
 (tool emulation response generators).
 """
+
 from __future__ import annotations
 
 import json
 import secrets
-from typing import AsyncIterator
-
+from collections.abc import AsyncIterator
 
 # ── Anthropic SSE primitives (used by pipeline.py) ───────────────────────────
 
+
 def sse_thinking_start(index: int) -> bytes:
-    return f'data: {{"type":"content_block_start","index":{index},"content_block":{{"type":"thinking","thinking":""}}}}\n\n'.encode()
+    return (
+        f'data: {{"type":"content_block_start","index":{index},'
+        f'"content_block":{{"type":"thinking","thinking":""}}}}\n\n'
+    ).encode()
 
 
 def sse_thinking_delta(index: int, text: str) -> bytes:
     escaped = json.dumps(text)[1:-1]
-    return f'data: {{"type":"content_block_delta","index":{index},"delta":{{"type":"thinking_delta","thinking":"{escaped}"}}}}\n\n'.encode()
+    return (
+        f'data: {{"type":"content_block_delta","index":{index},'
+        f'"delta":{{"type":"thinking_delta","thinking":"{escaped}"}}}}\n\n'
+    ).encode()
 
 
 def sse_thinking_stop(index: int) -> bytes:
@@ -28,12 +35,18 @@ def sse_thinking_stop(index: int) -> bytes:
 
 
 def sse_text_start(index: int) -> bytes:
-    return f'data: {{"type":"content_block_start","index":{index},"content_block":{{"type":"text","text":""}}}}\n\n'.encode()
+    return (
+        f'data: {{"type":"content_block_start","index":{index},'
+        f'"content_block":{{"type":"text","text":""}}}}\n\n'
+    ).encode()
 
 
 def sse_text_delta(index: int, text: str) -> bytes:
     escaped = json.dumps(text)[1:-1]
-    return f'data: {{"type":"content_block_delta","index":{index},"delta":{{"type":"text_delta","text":"{escaped}"}}}}\n\n'.encode()
+    return (
+        f'data: {{"type":"content_block_delta","index":{index},'
+        f'"delta":{{"type":"text_delta","text":"{escaped}"}}}}\n\n'
+    ).encode()
 
 
 def sse_text_stop(index: int) -> bytes:
@@ -42,7 +55,8 @@ def sse_text_stop(index: int) -> bytes:
 
 def sse_message_delta(stop_reason: str, input_tokens: int, output_tokens: int) -> bytes:
     return (
-        f'data: {{"type":"message_delta","delta":{{"stop_reason":"{stop_reason}","stop_sequence":null}},'
+        f'data: {{"type":"message_delta",'
+        f'"delta":{{"stop_reason":"{stop_reason}","stop_sequence":null}},'
         f'"usage":{{"input_tokens":{input_tokens},"output_tokens":{output_tokens}}}}}\n\n'
     ).encode()
 
@@ -52,6 +66,7 @@ def sse_done() -> bytes:
 
 
 # ── Anthropic response generators (tool emulation) ───────────────────────────
+
 
 def sse_message_start(model: str, input_tokens: int = 0) -> bytes:
     """The opening frame of an Anthropic stream.
@@ -86,30 +101,47 @@ def _usage_tokens(usage: dict | None) -> tuple[int, int]:
 
 
 async def anthropic_tool_sse(
-    tool_name: str, tool_input: dict, usage: dict | None = None,
+    tool_name: str,
+    tool_input: dict,
+    usage: dict | None = None,
     model: str = "unknown",
 ) -> AsyncIterator[bytes]:
     tool_id = f"toolu_{secrets.token_hex(8)}"
     yield sse_message_start(model, _usage_tokens(usage)[0])
     input_json = json.dumps(tool_input)
     escaped = json.dumps(input_json)[1:-1]
-    yield f'data: {{"type":"content_block_start","index":0,"content_block":{{"type":"tool_use","id":"{tool_id}","name":"{tool_name}","input":{{}}}}}}\n\n'.encode()
-    yield f'data: {{"type":"content_block_delta","index":0,"delta":{{"type":"input_json_delta","partial_json":"{escaped}"}}}}\n\n'.encode()
+    yield (
+        f'data: {{"type":"content_block_start","index":0,'
+        f'"content_block":{{"type":"tool_use","id":"{tool_id}",'
+        f'"name":"{tool_name}","input":{{}}}}}}\n\n'
+    ).encode()
+    yield (
+        f'data: {{"type":"content_block_delta","index":0,'
+        f'"delta":{{"type":"input_json_delta",'
+        f'"partial_json":"{escaped}"}}}}\n\n'
+    ).encode()
     yield b'data: {"type":"content_block_stop","index":0}\n\n'
     yield sse_message_delta("tool_use", *_usage_tokens(usage))
     yield b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'
 
 
 async def anthropic_text_sse(
-    text: str, usage: dict | None = None,
+    text: str,
+    usage: dict | None = None,
     model: str = "unknown",
 ) -> AsyncIterator[bytes]:
-    yield b'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n'
+    yield (
+        b'data: {"type":"content_block_start","index":0,'
+        b'"content_block":{"type":"text","text":""}}\n\n'
+    )
     yield sse_message_start(model, _usage_tokens(usage)[0])
     chunk = 80
     for i in range(0, len(text), chunk):
-        piece = json.dumps(text[i:i + chunk])[1:-1]
-        yield f'data: {{"type":"content_block_delta","index":0,"delta":{{"type":"text_delta","text":"{piece}"}}}}\n\n'.encode()
+        piece = json.dumps(text[i : i + chunk])[1:-1]
+        yield (
+            f'data: {{"type":"content_block_delta","index":0,'
+            f'"delta":{{"type":"text_delta","text":"{piece}"}}}}\n\n'
+        ).encode()
     yield b'data: {"type":"content_block_stop","index":0}\n\n'
     yield sse_message_delta("end_turn", *_usage_tokens(usage))
     yield b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'
@@ -123,13 +155,23 @@ async def anthropic_text_sse(
 # makes ``has_tools`` true even for a caller that sent none, and emulation
 # engages for any provider without native tool support.
 def anthropic_tool_response(
-    tool_name: str, tool_input: dict, model: str, usage: dict | None = None,
+    tool_name: str,
+    tool_input: dict,
+    model: str,
+    usage: dict | None = None,
 ) -> dict:
     return {
         "id": f"msg_emul_{secrets.token_hex(4)}",
         "type": "message",
         "role": "assistant",
-        "content": [{"type": "tool_use", "id": f"toolu_{secrets.token_hex(8)}", "name": tool_name, "input": tool_input}],
+        "content": [
+            {
+                "type": "tool_use",
+                "id": f"toolu_{secrets.token_hex(8)}",
+                "name": tool_name,
+                "input": tool_input,
+            }
+        ],
         "model": model,
         "stop_reason": "tool_use",
         "stop_sequence": None,
@@ -141,7 +183,9 @@ def anthropic_tool_response(
 
 
 def anthropic_tools_response(
-    tool_calls: list[dict], model: str, usage: dict | None = None,
+    tool_calls: list[dict],
+    model: str,
+    usage: dict | None = None,
 ) -> dict:
     """Wave 5 #23 — emit MULTIPLE tool_use blocks for parallel tool calling."""
     content = [
@@ -169,7 +213,8 @@ def anthropic_tools_response(
 
 
 async def anthropic_tools_sse(
-    tool_calls: list[dict], usage: dict | None = None,
+    tool_calls: list[dict],
+    usage: dict | None = None,
     model: str = "unknown",
 ) -> AsyncIterator[bytes]:
     """Stream MULTIPLE tool_use content blocks (one block index per tool)."""
@@ -193,7 +238,9 @@ async def anthropic_tools_sse(
 
 
 def anthropic_text_response(
-    text: str, model: str, usage: dict | None = None,
+    text: str,
+    model: str,
+    usage: dict | None = None,
 ) -> dict:
     return {
         "id": f"msg_emul_{secrets.token_hex(4)}",
@@ -211,6 +258,7 @@ def anthropic_text_response(
 
 
 # ── OpenAI response generators (tool emulation) ──────────────────────────────
+
 
 async def openai_tool_sse(tool_name: str, tool_input: dict) -> AsyncIterator[bytes]:
     call_id = f"call_{secrets.token_hex(8)}"
@@ -232,30 +280,37 @@ async def openai_tool_sse(tool_name: str, tool_input: dict) -> AsyncIterator[byt
         f'data: {{"id":"{msg_id}","object":"chat.completion.chunk","choices":[{{"index":0,'
         f'"delta":{{}},"finish_reason":"tool_calls"}}]}}\n\n'
     ).encode()
-    yield b'data: [DONE]\n\n'
+    yield b"data: [DONE]\n\n"
 
 
 def openai_tool_response(
-    tool_name: str, tool_input: dict, model: str, usage: dict | None = None,
+    tool_name: str,
+    tool_input: dict,
+    model: str,
+    usage: dict | None = None,
 ) -> dict:
     call_id = f"call_{secrets.token_hex(8)}"
     return {
         "id": f"chatcmpl-emul-{secrets.token_hex(4)}",
         "object": "chat.completion",
         "model": model,
-        "choices": [{
-            "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [{
-                    "id": call_id,
-                    "type": "function",
-                    "function": {"name": tool_name, "arguments": json.dumps(tool_input)},
-                }],
-            },
-            "finish_reason": "tool_calls",
-        }],
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {"name": tool_name, "arguments": json.dumps(tool_input)},
+                        }
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ],
         "usage": {
             "prompt_tokens": int((usage or {}).get("prompt_tokens", 0) or 0),
             "completion_tokens": int((usage or {}).get("completion_tokens", 0) or 0),
@@ -265,32 +320,36 @@ def openai_tool_response(
 
 
 def openai_tools_response(
-    tool_calls: list[dict], model: str, usage: dict | None = None,
+    tool_calls: list[dict],
+    model: str,
+    usage: dict | None = None,
 ) -> dict:
     """Wave 5 #23 — emit multiple tool_calls for parallel tool calling."""
     return {
         "id": f"chatcmpl-emul-{secrets.token_hex(4)}",
         "object": "chat.completion",
         "model": model,
-        "choices": [{
-            "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [
-                    {
-                        "id": f"call_{secrets.token_hex(8)}",
-                        "type": "function",
-                        "function": {
-                            "name": tc["name"],
-                            "arguments": json.dumps(tc.get("input", {})),
-                        },
-                    }
-                    for tc in tool_calls
-                ],
-            },
-            "finish_reason": "tool_calls",
-        }],
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": f"call_{secrets.token_hex(8)}",
+                            "type": "function",
+                            "function": {
+                                "name": tc["name"],
+                                "arguments": json.dumps(tc.get("input", {})),
+                            },
+                        }
+                        for tc in tool_calls
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ],
         "usage": {
             "prompt_tokens": int((usage or {}).get("prompt_tokens", 0) or 0),
             "completion_tokens": int((usage or {}).get("completion_tokens", 0) or 0),
@@ -305,28 +364,44 @@ async def openai_tools_sse(tool_calls: list[dict]) -> AsyncIterator[bytes]:
     call_headers = []
     for idx, tc in enumerate(tool_calls):
         call_id = f"call_{secrets.token_hex(8)}"
-        call_headers.append({
-            "index": idx, "id": call_id, "type": "function",
-            "function": {"name": tc["name"], "arguments": ""},
-        })
+        call_headers.append(
+            {
+                "index": idx,
+                "id": call_id,
+                "type": "function",
+                "function": {"name": tc["name"], "arguments": ""},
+            }
+        )
     first_chunk = {
-        "id": msg_id, "object": "chat.completion.chunk",
-        "choices": [{"index": 0, "delta": {"role": "assistant", "tool_calls": call_headers},
-                     "finish_reason": None}],
+        "id": msg_id,
+        "object": "chat.completion.chunk",
+        "choices": [
+            {
+                "index": 0,
+                "delta": {"role": "assistant", "tool_calls": call_headers},
+                "finish_reason": None,
+            }
+        ],
     }
     yield f"data: {json.dumps(first_chunk)}\n\n".encode()
     # Stream arguments one tool at a time
     for idx, tc in enumerate(tool_calls):
         args_json = json.dumps(tc.get("input", {}))
         delta = {
-            "id": msg_id, "object": "chat.completion.chunk",
-            "choices": [{"index": 0,
-                         "delta": {"tool_calls": [{"index": idx, "function": {"arguments": args_json}}]},
-                         "finish_reason": None}],
+            "id": msg_id,
+            "object": "chat.completion.chunk",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"tool_calls": [{"index": idx, "function": {"arguments": args_json}}]},
+                    "finish_reason": None,
+                }
+            ],
         }
         yield f"data: {json.dumps(delta)}\n\n".encode()
     final = {
-        "id": msg_id, "object": "chat.completion.chunk",
+        "id": msg_id,
+        "object": "chat.completion.chunk",
         "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
     }
     yield f"data: {json.dumps(final)}\n\n".encode()
@@ -334,17 +409,21 @@ async def openai_tools_sse(tool_calls: list[dict]) -> AsyncIterator[bytes]:
 
 
 def openai_text_response(
-    text: str, model: str, usage: dict | None = None,
+    text: str,
+    model: str,
+    usage: dict | None = None,
 ) -> dict:
     return {
         "id": f"chatcmpl-emul-{secrets.token_hex(4)}",
         "object": "chat.completion",
         "model": model,
-        "choices": [{
-            "index": 0,
-            "message": {"role": "assistant", "content": text},
-            "finish_reason": "stop",
-        }],
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": text},
+                "finish_reason": "stop",
+            }
+        ],
         "usage": {
             "prompt_tokens": int((usage or {}).get("prompt_tokens", 0) or 0),
             "completion_tokens": int((usage or {}).get("completion_tokens", 0) or 0),
@@ -361,7 +440,7 @@ async def openai_text_sse(text: str) -> AsyncIterator[bytes]:
     ).encode()
     chunk = 80
     for i in range(0, len(text), chunk):
-        piece = json.dumps(text[i:i + chunk])[1:-1]
+        piece = json.dumps(text[i : i + chunk])[1:-1]
         yield (
             f'data: {{"id":"{msg_id}","object":"chat.completion.chunk","choices":[{{"index":0,'
             f'"delta":{{"content":"{piece}"}},"finish_reason":null}}]}}\n\n'
@@ -370,27 +449,27 @@ async def openai_text_sse(text: str) -> AsyncIterator[bytes]:
         f'data: {{"id":"{msg_id}","object":"chat.completion.chunk","choices":[{{"index":0,'
         f'"delta":{{}},"finish_reason":"stop"}}]}}\n\n'
     ).encode()
-    yield b'data: [DONE]\n\n'
+    yield b"data: [DONE]\n\n"
 
 
 # ── Non-streaming Anthropic response builder ──────────────────────────────────
 
 FINISH_TO_STOP = {
     # OpenAI chat-completions finish_reason → Anthropic stop_reason
-    "stop":           "end_turn",
-    "length":         "max_tokens",
-    "tool_calls":     "tool_use",
-    "function_call":  "tool_use",   # legacy OpenAI function-call (pre-tool_calls)
+    "stop": "end_turn",
+    "length": "max_tokens",
+    "tool_calls": "tool_use",
+    "function_call": "tool_use",  # legacy OpenAI function-call (pre-tool_calls)
     "content_filter": "end_turn",
-    "end_turn":       "end_turn",   # identity pass-through
-    "max_tokens":     "max_tokens",
-    "tool_use":       "tool_use",
-    "stop_sequence":  "stop_sequence",
+    "end_turn": "end_turn",  # identity pass-through
+    "max_tokens": "max_tokens",
+    "tool_use": "tool_use",
+    "stop_sequence": "stop_sequence",
     # Gemini-ish
-    "MAX_TOKENS":     "max_tokens",
-    "STOP":           "end_turn",
-    "SAFETY":         "end_turn",
-    "RECITATION":     "end_turn",
+    "MAX_TOKENS": "max_tokens",
+    "STOP": "end_turn",
+    "SAFETY": "end_turn",
+    "RECITATION": "end_turn",
 }
 
 
@@ -425,8 +504,7 @@ def to_anthropic_response(litellm_response) -> dict:
     # providers will likely block the same content).
     if not getattr(litellm_response, "choices", None):
         raise ValueError(
-            "upstream returned no choices — likely safety-block or refusal "
-            "(no content generated)"
+            "upstream returned no choices — likely safety-block or refusal (no content generated)"
         )
     choice = litellm_response.choices[0]
     finish = choice.finish_reason or "stop"
@@ -442,12 +520,14 @@ def to_anthropic_response(litellm_response) -> dict:
             tool_input = json.loads(getattr(fn, "arguments", "{}") or "{}")
         except (ValueError, TypeError):
             tool_input = {}
-        content.append({
-            "type": "tool_use",
-            "id": getattr(tc, "id", None) or f"toolu_{secrets.token_hex(8)}",
-            "name": getattr(fn, "name", "") or "",
-            "input": tool_input,
-        })
+        content.append(
+            {
+                "type": "tool_use",
+                "id": getattr(tc, "id", None) or f"toolu_{secrets.token_hex(8)}",
+                "name": getattr(fn, "name", "") or "",
+                "input": tool_input,
+            }
+        )
     if not content:
         content = [{"type": "text", "text": ""}]
     cache_creation, cache_read = extract_cache_tokens(litellm_response.usage)

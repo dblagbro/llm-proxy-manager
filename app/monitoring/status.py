@@ -3,14 +3,16 @@ External provider status page monitor.
 Polls official status pages every 5 minutes and auto-degrades circuit
 breakers when a provider reports an incident.
 """
+
 import asyncio
 import logging
 import time
-from typing import Optional
 
 import httpx
 
-from app.routing.circuit_breaker import force_open, force_close, CBState, get_all_states
+from app.routing.circuit_breaker import CBState as CBState
+from app.routing.circuit_breaker import force_close as force_close
+from app.routing.circuit_breaker import force_open, get_all_states
 
 logger = logging.getLogger(__name__)
 
@@ -20,31 +22,34 @@ logger = logging.getLogger(__name__)
 # incident mentions Vertex/AI/Gemini.
 STATUS_PAGES: dict[str, str] = {
     "anthropic": "https://status.anthropic.com/api/v2/status.json",
-    "openai":    "https://status.openai.com/api/v2/status.json",
-    "google":    "https://status.cloud.google.com/incidents.json",
-    "vertex":    "https://status.cloud.google.com/incidents.json",
-    "groq":      "https://groqstatus.com/api/v2/status.json",
-    "grok":      "https://status.x.ai/api/v2/status.json",
-    "cohere":    "https://status.cohere.com/api/v2/status.json",
-    "mistral":   "https://status.mistral.ai/api/v2/status.json",
-    "together":  "https://status.together.ai/api/v2/status.json",
+    "openai": "https://status.openai.com/api/v2/status.json",
+    "google": "https://status.cloud.google.com/incidents.json",
+    "vertex": "https://status.cloud.google.com/incidents.json",
+    "groq": "https://groqstatus.com/api/v2/status.json",
+    "grok": "https://status.x.ai/api/v2/status.json",
+    "cohere": "https://status.cohere.com/api/v2/status.json",
+    "mistral": "https://status.mistral.ai/api/v2/status.json",
+    "together": "https://status.together.ai/api/v2/status.json",
     "fireworks": "https://status.fireworks.ai/api/v2/status.json",
-    "perplexity":"https://status.perplexity.com/api/v2/status.json",
-    "deepseek":  "https://status.deepseek.com/api/v2/status.json",
+    "perplexity": "https://status.perplexity.com/api/v2/status.json",
+    "deepseek": "https://status.deepseek.com/api/v2/status.json",
     "replicate": "https://replicatestatus.com/api/v2/status.json",
 }
 
 _cache: dict[str, dict] = {}
 _POLL_INTERVAL = 300  # 5 minutes
-_task: Optional[asyncio.Task] = None
+_task: asyncio.Task | None = None
 
 # provider_id → provider_type mapping (populated at startup)
 _provider_type_map: dict[str, str] = {}
 
 
-def register_provider(provider_id: str, provider_type: str, hold_down_sec=None, failure_threshold=None):
+def register_provider(
+    provider_id: str, provider_type: str, hold_down_sec=None, failure_threshold=None
+):
     _provider_type_map[provider_id] = provider_type
     from app.routing.circuit_breaker import set_provider_config
+
     set_provider_config(provider_id, hold_down_sec, failure_threshold)
 
 
@@ -88,10 +93,7 @@ async def _check_one(provider_type: str) -> tuple[bool, str]:
             #      and Gemini circuits.
             # Filter to incidents whose ``affected_products`` mentions a
             # product we actually depend on.
-            active = [
-                i for i in (data if isinstance(data, list) else [])
-                if not i.get("end")
-            ]
+            active = [i for i in (data if isinstance(data, list) else []) if not i.get("end")]
             relevant_titles = {
                 "Vertex AI",
                 "Vertex AI Online Prediction",
@@ -101,6 +103,7 @@ async def _check_one(provider_type: str) -> tuple[bool, str]:
                 "Gemini",
                 "AI Platform",
             }
+
             def _touches_llm(inc: dict) -> bool:
                 for p in inc.get("affected_products") or []:
                     title = (p.get("title") or "").strip()
@@ -109,12 +112,10 @@ async def _check_one(provider_type: str) -> tuple[bool, str]:
                 # Fallback: if affected_products absent but service_name
                 # is one of the relevant ones (older incidents).
                 return (inc.get("service_name") or "") in relevant_titles
+
             relevant = [i for i in active if _touches_llm(i)]
             degraded = len(relevant) > 0
-            desc = (
-                relevant[0].get("external_desc", "")
-                if relevant else ""
-            )
+            desc = relevant[0].get("external_desc", "") if relevant else ""
         else:
             degraded = _is_degraded_statuspage(data, provider_type)
             desc = data.get("status", {}).get("description", "")
@@ -137,9 +138,16 @@ async def _monitor_loop(notify_fn=None):
             current = states.get(provider_id, {}).get("state", "closed")
             if degraded and current == "closed":
                 await force_open(provider_id)
-                logger.warning(f"Status monitor: {provider_type} degraded — {desc}; opening circuit for {provider_id}")
+                logger.warning(
+                    f"Status monitor: {provider_type} degraded — {desc}; "
+                    f"opening circuit for {provider_id}"
+                )
                 if notify_fn:
-                    await notify_fn("warning", f"Provider {provider_type} status page reports incident: {desc}", provider_id)
+                    await notify_fn(
+                        "warning",
+                        f"Provider {provider_type} status page reports incident: {desc}",
+                        provider_id,
+                    )
             elif not degraded and current == "open":
                 # Only auto-close if the status page says it's recovered
                 # (normal circuit recovery is handled by the half-open mechanism)

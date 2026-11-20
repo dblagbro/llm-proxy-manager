@@ -9,19 +9,18 @@ screen-scraped chat, not a function-calling API.
 Phases 4 and 5 (probe worker + router weighting) consume the data
 this phase produces.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
 
-
 # ── _extract_tool_call_stats helper ───────────────────────────────
-
-
-from tests.unit._handler_surface import messages_handler_source
+from tests.unit._handler_surface import completions_handler_source, messages_handler_source
 
 
 def test_extract_anthropic_shape_counts_tool_use_blocks():
     from app.monitoring.helpers import _extract_tool_call_stats
+
     body = {
         "content": [
             {"type": "text", "text": "I'll check the weather."},
@@ -36,6 +35,7 @@ def test_extract_anthropic_shape_counts_tool_use_blocks():
 
 def test_extract_anthropic_invalid_when_input_not_dict():
     from app.monitoring.helpers import _extract_tool_call_stats
+
     body = {
         "content": [
             {"type": "tool_use", "name": "broken", "input": "not a dict"},
@@ -48,6 +48,7 @@ def test_extract_anthropic_invalid_when_input_not_dict():
 
 def test_extract_anthropic_invalid_when_name_missing():
     from app.monitoring.helpers import _extract_tool_call_stats
+
     body = {"content": [{"type": "tool_use", "input": {}}]}
     count, valid = _extract_tool_call_stats(body)
     assert count == 1
@@ -56,15 +57,18 @@ def test_extract_anthropic_invalid_when_name_missing():
 
 def test_extract_openai_shape_counts_tool_calls():
     from app.monitoring.helpers import _extract_tool_call_stats
+
     body = {
-        "choices": [{
-            "message": {
-                "tool_calls": [
-                    {"function": {"name": "get_weather", "arguments": '{"city":"SF"}'}},
-                    {"function": {"name": "get_time", "arguments": '{"tz":"PT"}'}},
-                ],
-            },
-        }],
+        "choices": [
+            {
+                "message": {
+                    "tool_calls": [
+                        {"function": {"name": "get_weather", "arguments": '{"city":"SF"}'}},
+                        {"function": {"name": "get_time", "arguments": '{"tz":"PT"}'}},
+                    ],
+                },
+            }
+        ],
     }
     count, valid = _extract_tool_call_stats(body)
     assert count == 2
@@ -73,14 +77,17 @@ def test_extract_openai_shape_counts_tool_calls():
 
 def test_extract_openai_invalid_when_arguments_not_json():
     from app.monitoring.helpers import _extract_tool_call_stats
+
     body = {
-        "choices": [{
-            "message": {
-                "tool_calls": [
-                    {"function": {"name": "broken", "arguments": "not json"}},
-                ],
-            },
-        }],
+        "choices": [
+            {
+                "message": {
+                    "tool_calls": [
+                        {"function": {"name": "broken", "arguments": "not json"}},
+                    ],
+                },
+            }
+        ],
     }
     count, valid = _extract_tool_call_stats(body)
     assert count == 1
@@ -91,6 +98,7 @@ def test_extract_no_tool_calls_returns_zero_valid_true():
     """A response with no tool calls is trivially valid (validated=True)
     — the field is only meaningful when count > 0."""
     from app.monitoring.helpers import _extract_tool_call_stats
+
     # Anthropic shape — just text
     assert _extract_tool_call_stats({"content": [{"type": "text", "text": "hi"}]}) == (0, True)
     # OpenAI shape — no tool_calls
@@ -107,7 +115,9 @@ def test_record_outcome_accepts_tool_call_format_param():
     """The new param must be optional (no breaking change) AND default
     to None so callers that don't pass it produce no tool telemetry."""
     import inspect
+
     from app.monitoring.helpers import record_outcome
+
     sig = inspect.signature(record_outcome)
     assert "tool_call_format" in sig.parameters
     assert sig.parameters["tool_call_format"].default is None
@@ -120,7 +130,7 @@ def test_record_outcome_only_stamps_meta_when_format_set():
     assert "if tool_call_format is not None:" in src
     # Three fields stamped together
     idx = src.index("if tool_call_format is not None:")
-    block = src[idx:idx + 800]
+    block = src[idx : idx + 800]
     assert 'meta["tool_call_format"]' in block
     assert 'meta["tool_calls_emitted"]' in block
     assert 'meta["tool_call_validated"]' in block
@@ -140,7 +150,7 @@ def test_messages_native_path_passes_tool_call_format():
 
 
 def test_messages_emulated_path_passes_tool_call_format():
-    src = Path("app/api/messages.py").read_text()
+    src = messages_handler_source()
     assert 'tool_call_format="emulated"' in src
 
 
@@ -150,7 +160,7 @@ def test_completions_native_path_passes_tool_call_format():
 
 
 def test_completions_emulated_path_passes_tool_call_format():
-    src = Path("app/api/completions.py").read_text()
+    src = completions_handler_source()
     assert 'tool_call_format="emulated"' in src
 
 
@@ -158,11 +168,13 @@ def test_completions_emulated_path_passes_tool_call_format():
 
 
 def test_grok_web_native_tools_backfill_migration_present():
-    src = Path("app/models/database.py").read_text()
+    from tests.unit._migration_source import migration_sql
+
+    constants = migration_sql(Path("app/models/database.py").read_text())
     assert (
         "UPDATE model_capabilities SET native_tools=0 "
         "WHERE provider_id IN (SELECT id FROM providers WHERE provider_type='grok-web')"
-        in src
+        in constants
     )
 
 
@@ -173,12 +185,13 @@ def test_grok_web_backfill_safe_to_rerun():
     only (no DELETE / no schema change)."""
     src = Path("app/models/database.py").read_text()
     idx = src.index("UPDATE model_capabilities SET native_tools=0")
-    stmt = src[idx:idx + 300]
+    stmt = src[idx : idx + 300]
     assert "DELETE" not in stmt.upper()
     assert "provider_type='grok-web'" in stmt
 
 
 def test_version_bumped():
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     assert parts >= (3, 8, 3)

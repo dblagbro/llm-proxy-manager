@@ -22,12 +22,13 @@ FastMCP root. The MCP sub-server runs the tool and the proxy returns
 the result to the outer messages handler, which builds a
 ``tool_result`` block and re-issues the conversation.
 """
+
 from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
-from typing import Any, Optional
+from dataclasses import dataclass as dataclass
+from typing import Any
 
 from app.proxy_tools import ProxyTool
 
@@ -65,6 +66,7 @@ async def _list_mcp_tools_cached() -> list[Any]:
         return _cache["tools"]
     try:
         from app.main import _mcp_sub_app  # type: ignore
+
         if _mcp_sub_app is None:
             return []
         mcp = _mcp_sub_app.state.mcp
@@ -89,6 +91,7 @@ async def _run_via_mcp(tool_name: str, input_obj: dict) -> str:
     tool-injection loop expects a string."""
     try:
         from app.main import _mcp_sub_app  # type: ignore
+
         if _mcp_sub_app is None:
             return "error: mcp aggregator not running"
         mcp = _mcp_sub_app.state.mcp
@@ -138,10 +141,12 @@ async def get_bridge_proxy_tools() -> list[ProxyTool]:
         async def _runner(input_obj: dict, _name=name) -> str:
             return await _run_via_mcp(_name, input_obj)
 
-        out.append(ProxyTool(
-            name=name,
-            anthropic_schema=anthropic_schema,
-            openai_schema={},  # v5.6.2 will fill when /v1/chat/completions lands
-            run=_runner,
-        ))
+        out.append(
+            ProxyTool(
+                name=name,
+                anthropic_schema=anthropic_schema,
+                openai_schema={},  # v5.6.2 will fill when /v1/chat/completions lands
+                run=_runner,
+            )
+        )
     return out

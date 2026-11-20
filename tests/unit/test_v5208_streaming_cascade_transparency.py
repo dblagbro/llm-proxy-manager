@@ -10,7 +10,9 @@ cascade wasn't attempted.
 
 Full buffered-cascade for streaming is deferred to v5.20.9+.
 """
+
 from __future__ import annotations
+
 from pathlib import Path
 
 
@@ -38,8 +40,8 @@ def test_gate_requires_both_streaming_and_retry_enabled():
     # Gate is now expressed as `stream and getattr(key_record, "refusal_retry_enabled", False)`
     # inside the _buffered_cascade_stream assignment. Match on the getattr shape
     # since string exact-match would over-fit.
-    assert 'refusal_retry_enabled' in src
-    assert '_buffered_cascade_stream' in src
+    assert "refusal_retry_enabled" in src
+    assert "_buffered_cascade_stream" in src
 
 
 def test_v5201_cascade_is_non_streaming_only():
@@ -87,10 +89,9 @@ def test_docstring_mentions_streaming_gap():
 
 def test_version_bumped():
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m
     major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    assert (major, minor, patch) >= (5, 20, 8), (
-        f"expected >= 5.20.8, got {major}.{minor}.{patch}"
-    )
+    assert (major, minor, patch) >= (5, 20, 8), f"expected >= 5.20.8, got {major}.{minor}.{patch}"

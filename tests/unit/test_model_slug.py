@@ -1,4 +1,5 @@
 """Unit tests for the v2.8.0 :floor/:nitro/:exacto slug shortcut parser."""
+
 from __future__ import annotations
 
 from app.routing.model_slug import parse_model_slug
@@ -68,28 +69,34 @@ class TestParseModelSlug:
 class TestIsAutoModel:
     def test_auto_lowercase(self):
         from app.routing.model_slug import is_auto_model
+
         assert is_auto_model("auto") is True
 
     def test_auto_uppercase(self):
         from app.routing.model_slug import is_auto_model
+
         assert is_auto_model("AUTO") is True
 
     def test_llmp_auto(self):
         from app.routing.model_slug import is_auto_model
+
         assert is_auto_model("llmp-auto") is True
 
     def test_real_model(self):
         from app.routing.model_slug import is_auto_model
+
         assert is_auto_model("claude-sonnet-4-6") is False
 
     def test_empty(self):
         from app.routing.model_slug import is_auto_model
+
         assert is_auto_model("") is False
         assert is_auto_model(None) is False
 
     def test_auto_with_suffix_must_be_parsed_first(self):
         # is_auto_model expects the suffix-stripped bare model
         from app.routing.model_slug import is_auto_model, parse_model_slug
+
         # "auto:floor" stays a non-auto string until parse_model_slug strips it
         assert is_auto_model("auto:floor") is False
         # After parsing → bare="auto" is auto

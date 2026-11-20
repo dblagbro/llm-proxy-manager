@@ -1,4 +1,5 @@
 """v5.6.1 — streaming /v1/messages tool injection + inbound tool_result patcher tests."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -22,11 +23,12 @@ def test_patch_inbound_tool_results_hook_wired():
     before upstream dispatch."""
     src = Path("app/api/messages.py").read_text()
     assert "from app.proxy_tools import patch_inbound_tool_results" in src
-    assert "await patch_inbound_tool_results(body.get(\"messages\")" in src
+    assert 'await patch_inbound_tool_results(body.get("messages")' in src
 
 
 def test_patch_inbound_function_exported():
     from app.proxy_tools import patch_inbound_tool_results
+
     assert callable(patch_inbound_tool_results)
 
 
@@ -40,6 +42,7 @@ async def test_patch_inbound_replaces_placeholder_for_proxy_tool():
     # Mock get_registry_async to return a stub proxy tool
     class _StubTool:
         name = "read_xlsx_to_markdown"
+
     stub = _StubTool()
 
     monkeyed_run = AsyncMock(return_value="| col1 | col2 |\n|------|------|\n| 1 | 2 |")
@@ -59,14 +62,23 @@ async def test_patch_inbound_replaces_placeholder_for_proxy_tool():
         proxy_tools.run_tool = fake_run
         messages = [
             {"role": "user", "content": [{"type": "text", "text": "summarise the file"}]},
-            {"role": "assistant", "content": [
-                {"type": "tool_use", "id": "toolu_xyz",
-                 "name": "read_xlsx_to_markdown",
-                 "input": {"file_b64": "abc"}},
-            ]},
-            {"role": "user", "content": [
-                {"type": "tool_result", "tool_use_id": "toolu_xyz", "content": "PLACEHOLDER"},
-            ]},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_xyz",
+                        "name": "read_xlsx_to_markdown",
+                        "input": {"file_b64": "abc"},
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_xyz", "content": "PLACEHOLDER"},
+                ],
+            },
         ]
         n = await proxy_tools.patch_inbound_tool_results(messages)
         assert n == 1
@@ -85,10 +97,12 @@ async def test_patch_inbound_skips_when_caller_already_has_real_result():
 
     class _StubTool:
         name = "read_xlsx_to_markdown"
+
     stub = _StubTool()
 
     async def fake_registry():
         return [stub]
+
     async def fake_run(tool, input_obj):
         return "PROXY_EXECUTED"
 
@@ -98,14 +112,27 @@ async def test_patch_inbound_skips_when_caller_already_has_real_result():
         proxy_tools.get_registry_async = fake_registry
         proxy_tools.run_tool = fake_run
         messages = [
-            {"role": "assistant", "content": [
-                {"type": "tool_use", "id": "toolu_xyz",
-                 "name": "read_xlsx_to_markdown", "input": {}},
-            ]},
-            {"role": "user", "content": [
-                {"type": "tool_result", "tool_use_id": "toolu_xyz",
-                 "content": "real markdown table from client"},
-            ]},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_xyz",
+                        "name": "read_xlsx_to_markdown",
+                        "input": {},
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_xyz",
+                        "content": "real markdown table from client",
+                    },
+                ],
+            },
         ]
         n = await proxy_tools.patch_inbound_tool_results(messages)
         assert n == 0
@@ -123,17 +150,28 @@ async def test_patch_inbound_no_op_when_no_proxy_tool_use():
 
     async def fake_registry():
         return []
+
     orig_registry = proxy_tools.get_registry_async
     try:
         proxy_tools.get_registry_async = fake_registry
         messages = [
-            {"role": "assistant", "content": [
-                {"type": "tool_use", "id": "toolu_1",
-                 "name": "custom_caller_tool", "input": {}},
-            ]},
-            {"role": "user", "content": [
-                {"type": "tool_result", "tool_use_id": "toolu_1", "content": "PLACEHOLDER"},
-            ]},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_1",
+                        "name": "custom_caller_tool",
+                        "input": {},
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_1", "content": "PLACEHOLDER"},
+                ],
+            },
         ]
         n = await proxy_tools.patch_inbound_tool_results(messages)
         assert n == 0
@@ -144,6 +182,7 @@ async def test_patch_inbound_no_op_when_no_proxy_tool_use():
 @pytest.mark.asyncio
 async def test_patch_inbound_handles_empty_messages():
     from app.proxy_tools import patch_inbound_tool_results
+
     assert await patch_inbound_tool_results([]) == 0
     assert await patch_inbound_tool_results(None) == 0
     assert await patch_inbound_tool_results([{"role": "user", "content": "hi"}]) == 0
@@ -156,6 +195,7 @@ async def test_patch_inbound_handles_multiple_tool_uses():
 
     class _StubA:
         name = "read_xlsx_to_markdown"
+
     class _StubB:
         name = "fetch_url"
 
@@ -171,14 +211,20 @@ async def test_patch_inbound_handles_multiple_tool_uses():
         proxy_tools.get_registry_async = fake_registry
         proxy_tools.run_tool = fake_run
         messages = [
-            {"role": "assistant", "content": [
-                {"type": "tool_use", "id": "t1", "name": "read_xlsx_to_markdown", "input": {}},
-                {"type": "tool_use", "id": "t2", "name": "fetch_url", "input": {"url": "x"}},
-            ]},
-            {"role": "user", "content": [
-                {"type": "tool_result", "tool_use_id": "t1", "content": "PLACEHOLDER"},
-                {"type": "tool_result", "tool_use_id": "t2", "content": ""},
-            ]},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "t1", "name": "read_xlsx_to_markdown", "input": {}},
+                    {"type": "tool_use", "id": "t2", "name": "fetch_url", "input": {"url": "x"}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "PLACEHOLDER"},
+                    {"type": "tool_result", "tool_use_id": "t2", "content": ""},
+                ],
+            },
         ]
         n = await proxy_tools.patch_inbound_tool_results(messages)
         assert n == 2

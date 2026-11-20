@@ -8,11 +8,12 @@ Two layers:
 Gateway-layer, not litellm-native: we need tenant-aware namespacing and
 quality gates that the litellm built-in doesn't expose.
 """
+
 from app.cache.keys import (
     build_namespace,
+    contains_pii,
     extract_query_text,
     is_cacheable_temperature,
-    contains_pii,
 )
 from app.cache.semantic import SemanticCache, get_cache
 

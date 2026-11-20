@@ -1,4 +1,5 @@
 """Unit tests for cascade routing verdict parser (Wave 3 #14)."""
+
 import sys
 import types
 
@@ -8,7 +9,7 @@ _stub.acompletion = lambda **kwargs: None
 sys.modules.setdefault("litellm", _stub)
 sys.modules.setdefault("litellm.exceptions", _stub)
 
-from app.routing.cascade import parse_verdict, cascade_requested, CascadeVerdict
+from app.routing.cascade import cascade_requested, parse_verdict  # noqa: E402
 
 
 class TestParseVerdict:

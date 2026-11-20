@@ -10,6 +10,7 @@ Story: a caller asked Cohere for ``max_tokens=32000`` against an 8192 cap.
 
 All hermetic — no network, no DB, no live deployment.
 """
+
 import pytest
 
 from app.routing.circuit_breaker import classify_error
@@ -31,25 +32,31 @@ def test_wrapped_client_error_is_not_an_upstream_failure():
     assert classify_error(REAL_COHERE_502) == "bad_request"
 
 
-@pytest.mark.parametrize("msg", [
-    "litellm.BadRequestError: invalid_request_error",
-    "500: ContextWindowExceededError from provider",
-    "503: litellm.BadRequestError: ContentPolicyViolationError",
-])
+@pytest.mark.parametrize(
+    "msg",
+    [
+        "litellm.BadRequestError: invalid_request_error",
+        "500: ContextWindowExceededError from provider",
+        "503: litellm.BadRequestError: ContentPolicyViolationError",
+    ],
+)
 def test_client_error_markers_beat_a_wrapping_status(msg):
     assert classify_error(msg) == "bad_request"
 
 
-@pytest.mark.parametrize("msg,expected", [
-    ("502 Bad Gateway from upstream", "upstream_5xx"),
-    ("503 Service Unavailable", "upstream_5xx"),
-    ("529 overloaded_error", "upstream_5xx"),
-    ("500 internal server error", "upstream_5xx"),
-    ("401 invalid api key", "auth"),
-    ("ReadTimeout: timed out", "timeout"),
-    ("429 rate limit exceeded", "rate_limit"),
-    ("connection refused", "network"),
-])
+@pytest.mark.parametrize(
+    "msg,expected",
+    [
+        ("502 Bad Gateway from upstream", "upstream_5xx"),
+        ("503 Service Unavailable", "upstream_5xx"),
+        ("529 overloaded_error", "upstream_5xx"),
+        ("500 internal server error", "upstream_5xx"),
+        ("401 invalid api key", "auth"),
+        ("ReadTimeout: timed out", "timeout"),
+        ("429 rate limit exceeded", "rate_limit"),
+        ("connection refused", "network"),
+    ],
+)
 def test_genuine_classes_are_unchanged(msg, expected):
     """The override must not swallow real upstream/auth/timeout errors."""
     assert classify_error(msg) == expected
@@ -57,13 +64,14 @@ def test_genuine_classes_are_unchanged(msg, expected):
 
 def _profile(cap):
     return CapabilityProfile(
-        provider_id="p", provider_type="cohere",
-        model_id="command-r", max_output_tokens=cap,
+        provider_id="p",
+        provider_type="cohere",
+        model_id="command-r",
+        max_output_tokens=cap,
     )
 
 
-_FIT = dict(has_tools=False, needs_reasoning=False,
-            has_images=False, est_input_tokens=None)
+_FIT = dict(has_tools=False, needs_reasoning=False, has_images=False, est_input_tokens=None)
 
 
 def test_provider_skipped_when_output_cap_too_small():

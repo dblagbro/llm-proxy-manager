@@ -1,6 +1,8 @@
 """Unit tests for RBAC (Wave 6)."""
+
 import sys
 import types
+
 import pytest
 
 _stub = types.ModuleType("litellm")
@@ -9,12 +11,20 @@ sys.modules.setdefault("litellm", _stub)
 if not hasattr(sys.modules["litellm"], "RateLimitError"):
     sys.modules["litellm"].RateLimitError = type("RateLimitError", (Exception,), {})
 
-from app.auth.rbac import (
-    get_role, list_roles, permissions_for, has_permission,
+from app.auth.rbac import (  # noqa: E402
     ALL_PERMISSIONS,
-    PROVIDERS_READ, PROVIDERS_WRITE, KEYS_READ, KEYS_WRITE, KEYS_REVEAL,
-    USERS_READ, USERS_WRITE, SETTINGS_READ, SETTINGS_WRITE,
-    AUDIT_READ, AUDIT_EXPORT,
+    AUDIT_EXPORT,
+    KEYS_REVEAL,
+    KEYS_WRITE,
+    PROVIDERS_READ,
+    PROVIDERS_WRITE,
+    SETTINGS_READ,
+    SETTINGS_WRITE,
+    USERS_WRITE,
+    get_role,
+    has_permission,
+    list_roles,
+    permissions_for,
 )
 
 

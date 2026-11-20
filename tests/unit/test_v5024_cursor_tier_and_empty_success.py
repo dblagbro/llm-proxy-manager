@@ -18,19 +18,17 @@ Implementation:
      and converts to HTTP 502 so callers see the real failure and
      the circuit breaker fires.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timedelta
 from pathlib import Path
-
-import pytest
-
 
 # ── Schema pins ─────────────────────────────────────────────────────
 
 
 def test_external_usage_snapshot_has_membership_tier():
     from app.models.db import ExternalUsageSnapshot
+
     cols = {c.name for c in ExternalUsageSnapshot.__table__.columns}
     assert "membership_tier" in cols, (
         "ExternalUsageSnapshot.membership_tier missing — BUG-053 "
@@ -40,10 +38,7 @@ def test_external_usage_snapshot_has_membership_tier():
 
 def test_alter_table_external_usage_snapshot_in_bootstrap():
     src = Path("app/models/database.py").read_text()
-    assert (
-        "ALTER TABLE external_usage_snapshot ADD COLUMN membership_tier"
-        in src
-    )
+    assert "ALTER TABLE external_usage_snapshot ADD COLUMN membership_tier" in src
 
 
 # ── Source pins ─────────────────────────────────────────────────────
@@ -62,7 +57,7 @@ def test_cursor_billing_downgrade_sets_auto_skip():
     src = Path("app/providers/cursor_billing.py").read_text()
     assert "auto_skip_until = datetime.utcnow() + timedelta(hours=24)" in src
     assert "cursor membership downgraded" in src
-    assert 'membership_tier.is_not(None)' in src, (
+    assert "membership_tier.is_not(None)" in src, (
         "prev-tier lookup must only consider snapshots that captured "
         "membership_tier (early v5.0.24 rows had NULL)."
     )
@@ -79,9 +74,10 @@ def test_response_validator_module_exists():
     """The empty-success guard module must exist and expose the two
     public callables wired in completions.py."""
     from app.api._response_validators import (
-        looks_like_empty_success_failure,
         empty_success_failure_message,
+        looks_like_empty_success_failure,
     )
+
     assert callable(looks_like_empty_success_failure)
     assert callable(empty_success_failure_message)
 
@@ -103,28 +99,27 @@ def test_validator_flags_cursor_empty_success_pattern():
     from app.api._response_validators import (
         looks_like_empty_success_failure,
     )
+
     resp = {
         "choices": [{"message": {"content": ""}, "finish_reason": "stop"}],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0,
-                  "total_tokens": 0},
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
-    raw = ('{"error":{"code":"resource_exhausted",'
-           '"details":[{"debug":{"error":'
-           '"ERROR_RATE_LIMITED_CHANGEABLE"}}]}}')
-    assert looks_like_empty_success_failure(
-        response_dict=resp, raw_body=raw
+    raw = (
+        '{"error":{"code":"resource_exhausted",'
+        '"details":[{"debug":{"error":'
+        '"ERROR_RATE_LIMITED_CHANGEABLE"}}]}}'
     )
+    assert looks_like_empty_success_failure(response_dict=resp, raw_body=raw)
 
 
 def test_validator_does_not_flag_real_success():
     from app.api._response_validators import (
         looks_like_empty_success_failure,
     )
+
     resp = {
-        "choices": [{"message": {"content": "Hello"},
-                     "finish_reason": "stop"}],
-        "usage": {"prompt_tokens": 5, "completion_tokens": 1,
-                  "total_tokens": 6},
+        "choices": [{"message": {"content": "Hello"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
     }
     assert not looks_like_empty_success_failure(response_dict=resp)
 
@@ -136,10 +131,10 @@ def test_validator_does_not_flag_legit_empty_no_marker():
     from app.api._response_validators import (
         looks_like_empty_success_failure,
     )
+
     resp = {
         "choices": [{"message": {"content": ""}, "finish_reason": "stop"}],
-        "usage": {"prompt_tokens": 5, "completion_tokens": 0,
-                  "total_tokens": 5},
+        "usage": {"prompt_tokens": 5, "completion_tokens": 0, "total_tokens": 5},
     }
     assert not looks_like_empty_success_failure(response_dict=resp)
 
@@ -149,6 +144,7 @@ def test_validator_flags_anthropic_shape_with_error():
     from app.api._response_validators import (
         looks_like_empty_success_failure,
     )
+
     resp = {
         "content": [{"type": "text", "text": ""}],
         "usage": {"input_tokens": 0, "output_tokens": 0},

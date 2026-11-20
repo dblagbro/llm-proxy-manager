@@ -26,12 +26,12 @@ Extracted from ``app/api/providers.py`` (which was 1136 lines) in the
 v3.0.x architectural refactor. ~250 lines of near-duplicate code became
 ~190 lines of shared logic plus a 6-endpoint shell.
 """
+
 from __future__ import annotations
 
 import importlib
 import secrets
 from dataclasses import dataclass
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -58,6 +58,7 @@ class OAuthProviderSpec:
     pull in OAuth-flow code paths until an admin actually clicks the
     button.
     """
+
     provider_type: str
     default_model: str
     flow_module_name: str
@@ -111,18 +112,19 @@ class OAuthExchangeRequest(BaseModel):
     """Same shape as ``ProviderCreate`` minus ``api_key`` /
     ``oauth_credentials_blob`` — the access_token comes from the code
     exchange."""
+
     state: str
     callback: str  # full callback URL, query fragment, or bare ?code=… value
     name: str
-    default_model: Optional[str] = None
-    base_url: Optional[str] = None
+    default_model: str | None = None
+    base_url: str | None = None
     priority: int = 10
     enabled: bool = True
     timeout_sec: int = 30
     exclude_from_tool_requests: bool = False
-    hold_down_sec: Optional[int] = None
-    failure_threshold: Optional[int] = None
-    daily_budget_usd: Optional[float] = None
+    hold_down_sec: int | None = None
+    failure_threshold: int | None = None
+    daily_budget_usd: float | None = None
     extra_config: dict = {}
 
 
@@ -138,15 +140,15 @@ class OAuthRotateRequest(BaseModel):
 class OAuthPollRequest(BaseModel):
     state: str
     name: str
-    default_model: Optional[str] = None
-    base_url: Optional[str] = None
+    default_model: str | None = None
+    base_url: str | None = None
     priority: int = 10
     enabled: bool = True
     timeout_sec: int = 30
     exclude_from_tool_requests: bool = False
-    hold_down_sec: Optional[int] = None
-    failure_threshold: Optional[int] = None
-    daily_budget_usd: Optional[float] = None
+    hold_down_sec: int | None = None
+    failure_threshold: int | None = None
+    daily_budget_usd: float | None = None
     extra_config: dict = {}
 
 
@@ -179,16 +181,20 @@ async def _do_exchange_create(
         raise HTTPException(400, f"Couldn't parse callback: {e}")
     try:
         result = await flow.exchange_code(
-            body.state, code, expected_state=callback_state,
+            body.state,
+            code,
+            expected_state=callback_state,
         )
     except flow.OAuthFlowError as e:
         raise HTTPException(400, str(e))
 
     # v3.0.12 dedup guard — same as the standard create path.
     from app.providers.dedup import name_is_taken
+
     if await name_is_taken(db, body.name):
         raise HTTPException(
-            409, f"A provider named {body.name!r} already exists.",
+            409,
+            f"A provider named {body.name!r} already exists.",
         )
 
     data = body.model_dump(exclude={"state", "callback"})
@@ -206,10 +212,14 @@ async def _do_exchange_create(
     # name), respect it.
     if spec.provider_type == "cursor-oauth" and not data.get("base_url"):
         import os as _os
-        data["base_url"] = _os.environ.get(
-            "CURSOR_BRIDGE_URL",
-            "http://llm-proxy2-cursor-bridge:3010",
-        ).rstrip("/") + "/v1"
+
+        data["base_url"] = (
+            _os.environ.get(
+                "CURSOR_BRIDGE_URL",
+                "http://llm-proxy2-cursor-bridge:3010",
+            ).rstrip("/")
+            + "/v1"
+        )
 
     # Vendor-specific: copy result fields into extra_config (codex carries
     # chatgpt_account_id / chatgpt_plan_type; claude carries nothing extra).
@@ -224,8 +234,11 @@ async def _do_exchange_create(
     # Helpers live in providers.py; import locally to avoid a circular
     # import at module load time.
     from app.api.providers import (
-        _bump_priority_conflicts, _stamp_user_edit, _serialize,
+        _bump_priority_conflicts,
+        _serialize,
+        _stamp_user_edit,
     )
+
     # v3.0.17: chain-bump existing providers at this priority so the new
     # OAuth provider takes the slot it asked for.
     await _bump_priority_conflicts(db, data["priority"])
@@ -236,8 +249,10 @@ async def _do_exchange_create(
     await db.commit()
     await db.refresh(provider)
     register_provider(
-        provider.id, provider.provider_type,
-        provider.hold_down_sec, provider.failure_threshold,
+        provider.id,
+        provider.provider_type,
+        provider.hold_down_sec,
+        provider.failure_threshold,
     )
     return _serialize(provider)
 
@@ -253,7 +268,7 @@ async def _do_rotate(
     revoked or the refresh chain breaks; admin re-auths via the UI's
     "Re-auth" button."""
     flow = _flow_module(spec)
-    from app.api.providers import _get_or_404, _stamp_user_edit, _serialize
+    from app.api.providers import _get_or_404, _serialize, _stamp_user_edit
 
     p = await _get_or_404(db, provider_id)
     if p.provider_type != spec.provider_type:
@@ -268,7 +283,9 @@ async def _do_rotate(
         raise HTTPException(400, f"Couldn't parse callback: {e}")
     try:
         result = await flow.exchange_code(
-            body.state, code, expected_state=callback_state,
+            body.state,
+            code,
+            expected_state=callback_state,
         )
     except flow.OAuthFlowError as e:
         raise HTTPException(400, str(e))
@@ -289,12 +306,19 @@ async def _do_rotate(
     await db.commit()
     await db.refresh(p)
     register_provider(
-        p.id, p.provider_type, p.hold_down_sec, p.failure_threshold,
+        p.id,
+        p.provider_type,
+        p.hold_down_sec,
+        p.failure_threshold,
     )
     # v2.7.8 BUG-002: fresh tokens — clear stale auth-failure + close breaker
     from app.routing.circuit_breaker import (
-        clear_auth_failure as _clear_af, force_close,
+        clear_auth_failure as _clear_af,
     )
+    from app.routing.circuit_breaker import (
+        force_close,
+    )
+
     _clear_af(p.id)
     await force_close(p.id)
     return _serialize(p)
@@ -324,6 +348,7 @@ async def _do_poll_create(
         raise HTTPException(400, str(e))
 
     from app.providers.dedup import name_is_taken
+
     if await name_is_taken(db, body.name):
         raise HTTPException(409, f"A provider named {body.name!r} already exists.")
 
@@ -337,10 +362,14 @@ async def _do_poll_create(
 
     if spec.provider_type == "cursor-oauth" and not data.get("base_url"):
         import os as _os
-        data["base_url"] = _os.environ.get(
-            "CURSOR_BRIDGE_URL",
-            "http://llm-proxy2-cursor-bridge:3010",
-        ).rstrip("/") + "/v1"
+
+        data["base_url"] = (
+            _os.environ.get(
+                "CURSOR_BRIDGE_URL",
+                "http://llm-proxy2-cursor-bridge:3010",
+            ).rstrip("/")
+            + "/v1"
+        )
 
     if spec.extra_config_keys:
         cfg = dict(data.get("extra_config") or {})
@@ -351,8 +380,11 @@ async def _do_poll_create(
         data["extra_config"] = cfg
 
     from app.api.providers import (
-        _bump_priority_conflicts, _stamp_user_edit, _serialize,
+        _bump_priority_conflicts,
+        _serialize,
+        _stamp_user_edit,
     )
+
     await _bump_priority_conflicts(db, data["priority"])
 
     provider = Provider(id=secrets.token_hex(8), **data)
@@ -361,8 +393,10 @@ async def _do_poll_create(
     await db.commit()
     await db.refresh(provider)
     register_provider(
-        provider.id, provider.provider_type,
-        provider.hold_down_sec, provider.failure_threshold,
+        provider.id,
+        provider.provider_type,
+        provider.hold_down_sec,
+        provider.failure_threshold,
     )
     return _serialize(provider)
 
@@ -380,7 +414,7 @@ async def _do_poll_rotate(
             400,
             f"{spec.provider_type} flow doesn't support poll-based auth",
         )
-    from app.api.providers import _get_or_404, _stamp_user_edit, _serialize
+    from app.api.providers import _get_or_404, _serialize, _stamp_user_edit
 
     p = await _get_or_404(db, provider_id)
     if p.provider_type != spec.provider_type:
@@ -410,11 +444,18 @@ async def _do_poll_rotate(
     await db.commit()
     await db.refresh(p)
     register_provider(
-        p.id, p.provider_type, p.hold_down_sec, p.failure_threshold,
+        p.id,
+        p.provider_type,
+        p.hold_down_sec,
+        p.failure_threshold,
     )
     from app.routing.circuit_breaker import (
-        clear_auth_failure as _clear_af, force_close,
+        clear_auth_failure as _clear_af,
     )
+    from app.routing.circuit_breaker import (
+        force_close,
+    )
+
     _clear_af(p.id)
     await force_close(p.id)
     return _serialize(p)

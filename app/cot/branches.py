@@ -8,19 +8,24 @@ delegates to one of these when a ``task_branch`` hint is present.
 Extracted from ``pipeline.py`` in the 2026-04-23 refactor; the logic
 and public callable names are unchanged.
 """
+
 from __future__ import annotations
 
 import asyncio
 import re as _re
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
-from app.routing.retry import acompletion_with_retry
 from app.cot.sse import (
-    sse_thinking_start, sse_thinking_delta, sse_thinking_stop,
-    sse_text_start, sse_text_delta, sse_text_stop,
-    sse_message_delta, sse_done,
+    sse_done,
+    sse_message_delta,
+    sse_text_delta,
+    sse_text_start,
+    sse_text_stop,
+    sse_thinking_delta,
+    sse_thinking_start,
+    sse_thinking_stop,
 )
-
+from app.routing.retry import acompletion_with_retry
 
 # Refine system prompt duplicated here to keep branches.py self-contained;
 # pipeline.py owns the authoritative copy. Keeping a local alias avoids
@@ -37,10 +42,14 @@ def _chunk_text_sse(text: str, block_index: int) -> list:
 
 
 async def run_summarize_branch(
-    model: str, messages: list[dict], user_text: str, extra_kwargs: dict,
+    model: str,
+    messages: list[dict],
+    user_text: str,
+    extra_kwargs: dict,
 ) -> AsyncIterator[bytes]:
     """task=summarize — single pass, no plan, no critique."""
     from app.cot.task_adaptive import SUMMARIZE_SYSTEM
+
     draft_kwargs = {k: v for k, v in extra_kwargs.items() if k not in ("max_tokens", "system")}
     resp = await acompletion_with_retry(
         model=model,
@@ -52,14 +61,15 @@ async def run_summarize_branch(
 
     yield sse_thinking_start(0)
     yield sse_thinking_delta(
-        0, "## Task: Summarize (single-pass)\nSkipping plan/critique/refine for summarization tasks."
+        0,
+        "## Task: Summarize (single-pass)\nSkipping plan/critique/refine for summarization tasks.",
     )
     yield sse_thinking_stop(0)
 
     yield sse_text_start(1)
     chunk_size = 50
     for i in range(0, len(answer), chunk_size):
-        yield sse_text_delta(1, answer[i:i + chunk_size])
+        yield sse_text_delta(1, answer[i : i + chunk_size])
         await asyncio.sleep(0)
     yield sse_text_stop(1)
     input_tokens = sum(len(m.get("content", "")) for m in messages) // 4
@@ -68,12 +78,19 @@ async def run_summarize_branch(
 
 
 async def run_math_branch(
-    model: str, messages: list[dict], user_text: str, extra_kwargs: dict,
+    model: str,
+    messages: list[dict],
+    user_text: str,
+    extra_kwargs: dict,
 ) -> AsyncIterator[bytes]:
     """task=math — Program-of-Thought: generate Python, run it, report."""
     from app.cot.task_adaptive import (
-        POT_SYSTEM, POT_REPORT_SYSTEM, extract_python, run_python_sandbox,
+        POT_REPORT_SYSTEM,
+        POT_SYSTEM,
+        extract_python,
+        run_python_sandbox,
     )
+
     draft_kwargs = {k: v for k, v in extra_kwargs.items() if k not in ("max_tokens", "system")}
 
     gen = await acompletion_with_retry(
@@ -96,12 +113,18 @@ async def run_math_branch(
     exec_result_text = ""
     if code:
         result = await asyncio.get_event_loop().run_in_executor(None, run_python_sandbox, code)
-        status = "✓ success" if result.ok else ("⚠ timed out" if result.timed_out else f"✗ exit {result.returncode}")
+        status = (
+            "✓ success"
+            if result.ok
+            else ("⚠ timed out" if result.timed_out else f"✗ exit {result.returncode}")
+        )
         exec_result_text = f"```\n{result.stdout[:1000]}\n```"
         if result.stderr:
             exec_result_text += f"\n\nstderr:\n```\n{result.stderr[:500]}\n```"
         yield sse_thinking_start(1)
-        yield sse_thinking_delta(1, f"## Execution ({status}, {result.duration_ms:.0f}ms)\n{exec_result_text}")
+        yield sse_thinking_delta(
+            1, f"## Execution ({status}, {result.duration_ms:.0f}ms)\n{exec_result_text}"
+        )
         yield sse_thinking_stop(1)
 
         report = await acompletion_with_retry(
@@ -122,7 +145,7 @@ async def run_math_branch(
     yield sse_text_start(2)
     chunk_size = 50
     for i in range(0, len(answer), chunk_size):
-        yield sse_text_delta(2, answer[i:i + chunk_size])
+        yield sse_text_delta(2, answer[i : i + chunk_size])
         await asyncio.sleep(0)
     yield sse_text_stop(2)
     input_tokens = sum(len(m.get("content", "")) for m in messages) // 4
@@ -131,12 +154,17 @@ async def run_math_branch(
 
 
 async def run_code_branch(
-    model: str, messages: list[dict], user_text: str, extra_kwargs: dict,
+    model: str,
+    messages: list[dict],
+    user_text: str,
+    extra_kwargs: dict,
 ) -> AsyncIterator[bytes]:
     """task=code — generate implementation + tests, run tests, refine on failure."""
     from app.cot.task_adaptive import (
-        CODEGEN_TESTS_SYSTEM, extract_python, run_python_sandbox,
+        CODEGEN_TESTS_SYSTEM,
+        run_python_sandbox,
     )
+
     draft_kwargs = {k: v for k, v in extra_kwargs.items() if k not in ("max_tokens", "system")}
 
     gen = await acompletion_with_retry(
@@ -160,7 +188,9 @@ async def run_code_branch(
     yield sse_thinking_stop(0)
 
     if impl_code and test_code:
-        import tempfile, os
+        import os
+        import tempfile
+
         with tempfile.TemporaryDirectory() as tmpdir:
             with open(os.path.join(tmpdir, "impl.py"), "w") as f:
                 f.write(impl_code)
@@ -170,14 +200,21 @@ async def run_code_branch(
             runner = (
                 f"import sys, subprocess\n"
                 f"sys.path.insert(0, {tmpdir!r})\n"
-                f"r = subprocess.run([sys.executable, '-m', 'pytest', '-x', '--tb=short', {os.path.join(tmpdir, 'test_impl.py')!r}],"
+                f"r = subprocess.run([sys.executable, '-m', 'pytest', '-x', '--tb=short', "
+                f"{os.path.join(tmpdir, 'test_impl.py')!r}],"
                 f" capture_output=True, timeout=5)\n"
                 f"print(r.stdout.decode()); print('---STDERR---'); print(r.stderr.decode())\n"
                 f"sys.exit(r.returncode)\n"
             )
-            result = await asyncio.get_event_loop().run_in_executor(None, run_python_sandbox, runner)
+            result = await asyncio.get_event_loop().run_in_executor(
+                None, run_python_sandbox, runner
+            )
 
-        status = "✓ tests pass" if result.ok else ("⚠ timed out" if result.timed_out else "✗ tests failed")
+        status = (
+            "✓ tests pass"
+            if result.ok
+            else ("⚠ timed out" if result.timed_out else "✗ tests failed")
+        )
         yield sse_thinking_start(1)
         yield sse_thinking_delta(
             1,
@@ -194,18 +231,25 @@ async def run_code_branch(
                     {"role": "system", "content": _REFINE_SYSTEM},
                     {"role": "user", "content": user_text},
                     {"role": "assistant", "content": gen_text},
-                    {"role": "user", "content": (
-                        f"The generated tests FAILED when executed. Output below — fix the "
-                        f"implementation or the tests, whichever is wrong.\n\n{result.stdout[:1500]}\n"
-                        f"{result.stderr[:500]}"
-                    )},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"The generated tests FAILED when executed. Output below — fix the "
+                            f"implementation or the tests, whichever is wrong.\n\n"
+                            f"{result.stdout[:1500]}\n"
+                            f"{result.stderr[:500]}"
+                        ),
+                    },
                 ],
                 stream=False,
                 **draft_kwargs,
             )
             answer = refined.choices[0].message.content or gen_text
             yield sse_thinking_start(2)
-            yield sse_thinking_delta(2, "## Refinement (post-test-failure)\nAnswer revised based on actual pytest output.")
+            yield sse_thinking_delta(
+                2,
+                "## Refinement (post-test-failure)\nAnswer revised based on actual pytest output.",
+            )
             yield sse_thinking_stop(2)
         else:
             answer = gen_text
@@ -215,7 +259,7 @@ async def run_code_branch(
     yield sse_text_start(3)
     chunk_size = 50
     for i in range(0, len(answer), chunk_size):
-        yield sse_text_delta(3, answer[i:i + chunk_size])
+        yield sse_text_delta(3, answer[i : i + chunk_size])
         await asyncio.sleep(0)
     yield sse_text_stop(3)
     input_tokens = sum(len(m.get("content", "")) for m in messages) // 4

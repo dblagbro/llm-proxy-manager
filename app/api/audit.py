@@ -1,39 +1,40 @@
 """Audit log export endpoints — Wave 6."""
-from datetime import datetime, timezone
-from typing import Optional
+
+from datetime import UTC, datetime
+from datetime import timezone as timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.admin import require_admin, AdminUser
+from app.auth.admin import AdminUser, require_admin
+from app.config import settings
 from app.models.database import get_db
 from app.monitoring.audit_export import (
+    EXPORT_DIR,
     export_activity_log,
     list_exports,
     prune_old_exports,
-    EXPORT_DIR,
 )
-from app.config import settings
 
 router = APIRouter(prefix="/api/audit", tags=["audit"])
 
 
 class ExportRequest(BaseModel):
-    since: Optional[str] = None   # ISO 8601 UTC timestamp
-    until: Optional[str] = None
-    s3_bucket: Optional[str] = None
+    since: str | None = None  # ISO 8601 UTC timestamp
+    until: str | None = None
+    s3_bucket: str | None = None
 
 
-def _parse_iso(ts: Optional[str]) -> Optional[datetime]:
+def _parse_iso(ts: str | None) -> datetime | None:
     if not ts:
         return None
     try:
         # Accept both "...Z" and "...+00:00"
         if ts.endswith("Z"):
             ts = ts[:-1] + "+00:00"
-        return datetime.fromisoformat(ts).astimezone(timezone.utc)
+        return datetime.fromisoformat(ts).astimezone(UTC)
     except ValueError as e:
         raise HTTPException(400, f"Invalid timestamp {ts!r}: {e}")
 
@@ -48,7 +49,10 @@ async def trigger_export(
     since = _parse_iso(body.since)
     until = _parse_iso(body.until)
     result = await export_activity_log(
-        db, since=since, until=until, s3_bucket=body.s3_bucket,
+        db,
+        since=since,
+        until=until,
+        s3_bucket=body.s3_bucket,
     )
     return {
         "filename": result.path.name,

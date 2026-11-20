@@ -1,4 +1,5 @@
 """Unit tests for async webhook delivery with HMAC signing."""
+
 import json
 import sys
 import types
@@ -11,7 +12,7 @@ sys.modules.setdefault("litellm", _stub)
 if not hasattr(sys.modules["litellm"], "RateLimitError"):
     sys.modules["litellm"].RateLimitError = type("RateLimitError", (Exception,), {})
 
-from app.api.webhook import post_webhook
+from app.api.webhook import post_webhook  # noqa: E402
 
 
 class _FakeResp:
@@ -21,6 +22,7 @@ class _FakeResp:
 
 class _FakeClient:
     """Captures request bodies and returns a configurable response."""
+
     captured: list[dict] = []
 
     def __init__(self, *args, **kwargs):
@@ -60,6 +62,7 @@ class TestPostWebhook:
     @pytest.mark.asyncio
     async def test_sends_signed_post(self, monkeypatch):
         import httpx
+
         monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
         _require_signing_secret(monkeypatch)
 
@@ -76,6 +79,7 @@ class TestPostWebhook:
     async def test_body_is_sorted_json(self, monkeypatch):
         """Body must use sort_keys=True so signatures are deterministic."""
         import httpx
+
         monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
         _require_signing_secret(monkeypatch)
 
@@ -91,6 +95,7 @@ class TestPostWebhook:
     async def test_signature_deterministic_for_same_payload(self, monkeypatch):
         """Same payload → same signature (barring key rotation)."""
         import httpx
+
         monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
         _require_signing_secret(monkeypatch)
 
@@ -105,6 +110,7 @@ class TestPostWebhook:
     @pytest.mark.asyncio
     async def test_different_payloads_different_sigs(self, monkeypatch):
         import httpx
+
         monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
         _require_signing_secret(monkeypatch)
 
@@ -118,14 +124,22 @@ class TestPostWebhook:
     @pytest.mark.asyncio
     async def test_network_failure_swallowed(self, monkeypatch):
         """A raising httpx client must not propagate the exception."""
+
         class _RaisingClient:
-            def __init__(self, *args, **kwargs): pass
-            async def __aenter__(self): return self
-            async def __aexit__(self, *args): pass
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
             async def post(self, *args, **kwargs):
                 raise RuntimeError("connection refused")
 
         import httpx
+
         monkeypatch.setattr(httpx, "AsyncClient", _RaisingClient)
 
         # Should complete without raising
@@ -134,6 +148,7 @@ class TestPostWebhook:
     @pytest.mark.asyncio
     async def test_4xx_response_logs_but_does_not_raise(self, monkeypatch):
         import httpx
+
         _FakeClient.next_status = 404
         monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
         _require_signing_secret(monkeypatch)
@@ -145,6 +160,7 @@ class TestPostWebhook:
     @pytest.mark.asyncio
     async def test_5xx_response_logs_but_does_not_raise(self, monkeypatch):
         import httpx
+
         _FakeClient.next_status = 503
         monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
         _require_signing_secret(monkeypatch)

@@ -2,25 +2,25 @@
 Admin session authentication.
 Web UI uses cookie-based sessions (persisted to SQLite); API callers use x-api-key.
 """
+
+import logging
+import os
 import secrets
 import time
-import logging
-from typing import Optional
 from dataclasses import dataclass
 
 import bcrypt as _bcrypt_lib
-
 from fastapi import HTTPException, Request
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
 
 from app.models.database import AsyncSessionLocal
-from app.models.db import User, Session
+from app.models.db import Session, User
 
 logger = logging.getLogger(__name__)
 
-SESSION_TTL_SEC = 86400 * 7   # 7-day rolling sessions
-SESSION_IDLE_SEC = 86400      # Extend last_seen on each /me call
+SESSION_TTL_SEC = 86400 * 7  # 7-day rolling sessions
+SESSION_IDLE_SEC = 86400  # Extend last_seen on each /me call
 
 # v2.6.1: unique cookie name + path scoped to this app. The old values
 # (name="session", path="/") collided with other apps on the same domain
@@ -38,7 +38,6 @@ SESSION_IDLE_SEC = 86400      # Extend last_seen on each /me call
 # login clobbered the other's cookie. Now: the clone runs with
 # SESSION_COOKIE_NAME=llmproxy_clone_session (set in compose env), the
 # original keeps the default, and both can be logged in concurrently.
-import os
 SESSION_COOKIE_NAME = os.environ.get("SESSION_COOKIE_NAME", "llmproxy_session")
 SESSION_COOKIE_PATH = os.environ.get("SESSION_COOKIE_PATH", "/")
 
@@ -53,7 +52,10 @@ SESSION_COOKIE_PATH = os.environ.get("SESSION_COOKIE_PATH", "/")
 # SESSION_COOKIE_SECURE=false relaxes it, and only the ephemeral test harness
 # sets that (tests/_ephemeral.py). Do not set it in compose.
 SESSION_COOKIE_SECURE = os.environ.get("SESSION_COOKIE_SECURE", "true").strip().lower() not in (
-    "false", "0", "no", "off",
+    "false",
+    "0",
+    "no",
+    "off",
 )
 _LEGACY_COOKIE_NAME = "session"  # accepted during migration window
 
@@ -73,14 +75,16 @@ async def create_session(user_id: str, username: str, role: str) -> str:
     token = secrets.token_urlsafe(32)
     now = time.time()
     async with AsyncSessionLocal() as db:
-        db.add(Session(
-            token=token,
-            user_id=user_id,
-            username=username,
-            role=role,
-            created_at=now,
-            last_seen_at=now,
-        ))
+        db.add(
+            Session(
+                token=token,
+                user_id=user_id,
+                username=username,
+                role=role,
+                created_at=now,
+                last_seen_at=now,
+            )
+        )
         await db.commit()
     return token
 
@@ -91,7 +95,7 @@ async def destroy_session(token: str):
         await db.commit()
 
 
-async def _get_session(token: str) -> Optional[dict]:
+async def _get_session(token: str) -> dict | None:
     now = time.time()
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(Session).where(Session.token == token))
@@ -111,7 +115,9 @@ async def _get_session(token: str) -> Optional[dict]:
         if now - s.last_seen_at > SESSION_TTL_SEC:
             # v4.4.16: also DEBUG — idle-expiry is normal lifecycle, not an
             # anomaly. (Kept the username + idle_sec detail for debugging.)
-            logger.debug("session_expired username=%s idle_sec=%s", s.username, int(now - s.last_seen_at))
+            logger.debug(
+                "session_expired username=%s idle_sec=%s", s.username, int(now - s.last_seen_at)
+            )
             await db.delete(s)
             await db.commit()
             return None
@@ -142,7 +148,7 @@ class AdminUser:
     role: str
 
 
-def _extract_token(request: Request) -> Optional[str]:
+def _extract_token(request: Request) -> str | None:
     # Prefer the new scoped cookie; fall back to the legacy name during the
     # migration window so users mid-session don't get bounced to the login
     # page the moment v2.6.1 rolls out.

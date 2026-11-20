@@ -11,6 +11,7 @@ Two bugs to pin:
    (snake) — every warning log emitted an empty description.
 2. No filtering: any active incident → all Google providers degraded.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -23,18 +24,20 @@ async def test_google_non_llm_incident_not_degraded(monkeypatch):
     """The India-ingress packet-loss incident has affected_products
     ['Hybrid Connectivity','Media CDN','VPC'] — none are LLM APIs.
     The monitor must NOT flag Google as degraded."""
-    fake_incidents = [{
-        "uri": "incidents/test-india-ingress",
-        "service_name": "Multiple Products",
-        "external_desc": "Network traffic to GCP from India experiencing latency",
-        "affected_products": [
-            {"title": "Hybrid Connectivity", "id": "x"},
-            {"title": "Media CDN", "id": "y"},
-            {"title": "Virtual Private Cloud (VPC)", "id": "z"},
-        ],
-        "begin": "2026-06-09T18:22:00+00:00",
-        # no "end" → active
-    }]
+    fake_incidents = [
+        {
+            "uri": "incidents/test-india-ingress",
+            "service_name": "Multiple Products",
+            "external_desc": "Network traffic to GCP from India experiencing latency",
+            "affected_products": [
+                {"title": "Hybrid Connectivity", "id": "x"},
+                {"title": "Media CDN", "id": "y"},
+                {"title": "Virtual Private Cloud (VPC)", "id": "z"},
+            ],
+            "begin": "2026-06-09T18:22:00+00:00",
+            # no "end" → active
+        }
+    ]
 
     class _StubResp:
         def json(self):
@@ -43,15 +46,21 @@ async def test_google_non_llm_incident_not_degraded(monkeypatch):
     class _StubClient:
         async def __aenter__(self):
             return self
+
         async def __aexit__(self, *a):
             return None
+
         async def get(self, url):
             return _StubResp()
 
-    monkeypatch.setattr(status_mod, "httpx", type("H", (), {"AsyncClient": lambda *a, **k: _StubClient()})())
+    monkeypatch.setattr(
+        status_mod, "httpx", type("H", (), {"AsyncClient": lambda *a, **k: _StubClient()})()
+    )
     status_mod._cache.clear()
     degraded, desc = await status_mod._check_one("google")
-    assert degraded is False, f"India-ingress incident must NOT flag Google degraded (got desc={desc!r})"
+    assert degraded is False, (
+        f"India-ingress incident must NOT flag Google degraded (got desc={desc!r})"
+    )
 
 
 @pytest.mark.asyncio
@@ -59,15 +68,17 @@ async def test_google_vertex_incident_flags_degraded(monkeypatch):
     """A real Vertex AI incident WITH external_desc populated MUST be
     flagged AND surface the correct description (not empty — the
     pre-fix code read external-desc with a hyphen)."""
-    fake_incidents = [{
-        "uri": "incidents/test-vertex",
-        "service_name": "Vertex AI",
-        "external_desc": "Vertex AI prediction errors in us-central1",
-        "affected_products": [
-            {"title": "Vertex AI", "id": "v1"},
-        ],
-        "begin": "2026-06-15T01:00:00+00:00",
-    }]
+    fake_incidents = [
+        {
+            "uri": "incidents/test-vertex",
+            "service_name": "Vertex AI",
+            "external_desc": "Vertex AI prediction errors in us-central1",
+            "affected_products": [
+                {"title": "Vertex AI", "id": "v1"},
+            ],
+            "begin": "2026-06-15T01:00:00+00:00",
+        }
+    ]
 
     class _StubResp:
         def json(self):
@@ -76,12 +87,16 @@ async def test_google_vertex_incident_flags_degraded(monkeypatch):
     class _StubClient:
         async def __aenter__(self):
             return self
+
         async def __aexit__(self, *a):
             return None
+
         async def get(self, url):
             return _StubResp()
 
-    monkeypatch.setattr(status_mod, "httpx", type("H", (), {"AsyncClient": lambda *a, **k: _StubClient()})())
+    monkeypatch.setattr(
+        status_mod, "httpx", type("H", (), {"AsyncClient": lambda *a, **k: _StubClient()})()
+    )
     status_mod._cache.clear()
     degraded, desc = await status_mod._check_one("google")
     assert degraded is True
@@ -91,14 +106,16 @@ async def test_google_vertex_incident_flags_degraded(monkeypatch):
 @pytest.mark.asyncio
 async def test_google_generative_language_incident_flags(monkeypatch):
     """Gemini API incidents should also be caught."""
-    fake_incidents = [{
-        "uri": "incidents/test-gemini",
-        "external_desc": "Generative Language API elevated latency",
-        "affected_products": [
-            {"title": "Generative Language API", "id": "g1"},
-        ],
-        "begin": "2026-06-15T01:00:00+00:00",
-    }]
+    fake_incidents = [
+        {
+            "uri": "incidents/test-gemini",
+            "external_desc": "Generative Language API elevated latency",
+            "affected_products": [
+                {"title": "Generative Language API", "id": "g1"},
+            ],
+            "begin": "2026-06-15T01:00:00+00:00",
+        }
+    ]
 
     class _StubResp:
         def json(self):
@@ -107,12 +124,16 @@ async def test_google_generative_language_incident_flags(monkeypatch):
     class _StubClient:
         async def __aenter__(self):
             return self
+
         async def __aexit__(self, *a):
             return None
+
         async def get(self, url):
             return _StubResp()
 
-    monkeypatch.setattr(status_mod, "httpx", type("H", (), {"AsyncClient": lambda *a, **k: _StubClient()})())
+    monkeypatch.setattr(
+        status_mod, "httpx", type("H", (), {"AsyncClient": lambda *a, **k: _StubClient()})()
+    )
     status_mod._cache.clear()
     degraded, desc = await status_mod._check_one("google")
     assert degraded is True
@@ -130,12 +151,16 @@ async def test_google_no_active_incidents_clean(monkeypatch):
     class _StubClient:
         async def __aenter__(self):
             return self
+
         async def __aexit__(self, *a):
             return None
+
         async def get(self, url):
             return _StubResp()
 
-    monkeypatch.setattr(status_mod, "httpx", type("H", (), {"AsyncClient": lambda *a, **k: _StubClient()})())
+    monkeypatch.setattr(
+        status_mod, "httpx", type("H", (), {"AsyncClient": lambda *a, **k: _StubClient()})()
+    )
     status_mod._cache.clear()
     degraded, desc = await status_mod._check_one("google")
     assert degraded is False

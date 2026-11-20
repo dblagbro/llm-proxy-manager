@@ -9,10 +9,11 @@ are applied to describe routing decisions and CoT-E engagement.
 If `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, `init_tracer()` is a no-op and
 `llm_span()` returns a no-op context manager — zero cost in dev/test.
 """
+
 import logging
 import os
 from contextlib import contextmanager
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -20,10 +21,17 @@ _tracer = None  # set by init_tracer() when OTLP endpoint configured
 
 
 class _NoopSpan:
-    def set_attribute(self, *_args, **_kwargs): pass
-    def set_status(self, *_args, **_kwargs): pass
-    def record_exception(self, *_args, **_kwargs): pass
-    def end(self): pass
+    def set_attribute(self, *_args, **_kwargs):
+        pass
+
+    def set_status(self, *_args, **_kwargs):
+        pass
+
+    def record_exception(self, *_args, **_kwargs):
+        pass
+
+    def end(self):
+        pass
 
 
 NOOP_SPAN = _NoopSpan()
@@ -40,15 +48,17 @@ def init_tracer(service_name: str = "llm-proxy", version: str = "0") -> None:
 
     try:
         from opentelemetry import trace
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
-        from opentelemetry.sdk.resources import Resource
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
-        resource = Resource.create({
-            "service.name": service_name,
-            "service.version": version,
-        })
+        resource = Resource.create(
+            {
+                "service.name": service_name,
+                "service.version": version,
+            }
+        )
         provider = TracerProvider(resource=resource)
         provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
         trace.set_tracer_provider(provider)
@@ -65,15 +75,15 @@ def llm_span(
     provider_type: str,
     requested_model: str,
     resolved_model: str,
-    lmrh_hint: Optional[str] = None,
+    lmrh_hint: str | None = None,
     cot_engaged: bool = False,
-    unmet_hints: Optional[list[str]] = None,
-    extra: Optional[dict[str, Any]] = None,
+    unmet_hints: list[str] | None = None,
+    extra: dict[str, Any] | None = None,
 ):
     """Emit a GenAI span. Usage:
-        with llm_span(...) as span:
-            ...
-            span.set_attribute("gen_ai.usage.input_tokens", 42)
+    with llm_span(...) as span:
+        ...
+        span.set_attribute("gen_ai.usage.input_tokens", 42)
     """
     if _tracer is None:
         yield NOOP_SPAN

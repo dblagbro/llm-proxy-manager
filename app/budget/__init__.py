@@ -12,11 +12,12 @@ and current-day bucket_ts is stored; if it doesn't match "now", the
 corresponding cost is reset to zero before the cap check. This keeps the
 check O(1) with no background sweep needed.
 """
+
 from app.budget.tracker import (
+    BudgetStatus,
     check_budget_pre_request,
     record_cost,
     warnings_for,
-    BudgetStatus,
 )
 
 __all__ = [

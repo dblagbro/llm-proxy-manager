@@ -7,6 +7,7 @@ These are pure registration tests — they assert the routes exist on
 integration suite (the upstream calls can't be exercised in CI without
 provider credentials).
 """
+
 from __future__ import annotations
 
 # v5.22.38 — route introspection goes through tests/unit/_route_introspection.py.
@@ -21,18 +22,21 @@ from tests.unit._route_introspection import ordered_paths, route_methods  # noqa
 
 def test_audio_speech_route_registered_post_only():
     from app.main import app
+
     methods = route_methods(app, "/v1/audio/speech")
     assert "POST" in methods, "POST /v1/audio/speech must be registered"
 
 
 def test_audio_transcriptions_route_registered_post_only():
     from app.main import app
+
     methods = route_methods(app, "/v1/audio/transcriptions")
     assert "POST" in methods, "POST /v1/audio/transcriptions must be registered"
 
 
 def test_images_generations_route_registered_post_only():
     from app.main import app
+
     methods = route_methods(app, "/v1/images/generations")
     assert "POST" in methods, "POST /v1/images/generations must be registered"
 
@@ -41,4 +45,5 @@ def test_audio_fallback_setting_defaults_true():
     """v5.9.0 default: whisper-bridge fallback ON. Operator can flip via
     AUDIO_FALLBACK_TO_WHISPER_BRIDGE=false env."""
     from app.config import settings
+
     assert settings.audio_fallback_to_whisper_bridge is True

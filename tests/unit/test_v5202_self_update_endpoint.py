@@ -5,7 +5,9 @@ the AI Integration Protocol so the caller's AI can update its own
 key settings (bounded by pre-authorized permissions) AND propose new
 protocols via a structured feedback channel.
 """
+
 from __future__ import annotations
+
 from pathlib import Path
 
 
@@ -120,10 +122,9 @@ def test_activity_log_always_written():
 
 def test_version_bumped():
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m
     major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    assert (major, minor, patch) >= (5, 20, 2), (
-        f"expected >= 5.20.2, got {major}.{minor}.{patch}"
-    )
+    assert (major, minor, patch) >= (5, 20, 2), f"expected >= 5.20.2, got {major}.{minor}.{patch}"

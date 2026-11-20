@@ -28,11 +28,11 @@ This test pins:
   shortening the ``claude-code/`` pattern to ``code/`` would catch
   OpenCode + many other tools).
 """
+
 import pytest
 
 from app.compliance import detect_client_company
 from app.compliance.company_map import KNOWN_COMPANIES
-
 
 # ── Empirically captured ──────────────────────────────────────────────
 
@@ -53,16 +53,19 @@ def test_captured_opencode_ua_does_not_match_any_banned_pattern():
 # ── Forward-compat ──────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("ua", [
-    "opencode/1.15.13",
-    "opencode/1.15.14",
-    "opencode/1.16.0",
-    "opencode/2.0.0",
-    "opencode/2.0.0-rc.1",
-    "opencode/2.0.0+build.123",
-    # Bundled-Stainless suffix variant some AI-SDK consumers carry — paranoid
-    "opencode/1.15.13 (Stainless)",
-])
+@pytest.mark.parametrize(
+    "ua",
+    [
+        "opencode/1.15.13",
+        "opencode/1.15.14",
+        "opencode/1.16.0",
+        "opencode/2.0.0",
+        "opencode/2.0.0-rc.1",
+        "opencode/2.0.0+build.123",
+        # Bundled-Stainless suffix variant some AI-SDK consumers carry — paranoid
+        "opencode/1.15.13 (Stainless)",
+    ],
+)
 def test_opencode_version_variants_pass(ua):
     """A range of plausible future OpenCode versions must keep passing.
     Catches the case where a future contributor adds a pattern that

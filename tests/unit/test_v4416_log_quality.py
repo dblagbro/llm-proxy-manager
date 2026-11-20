@@ -17,10 +17,10 @@ B. ``auth/admin.py`` logged ``session_not_found`` + ``session_expired``
    burying real warnings. Downgraded both to DEBUG — the 401 response
    is the real signal; the log line is noise.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-
 
 # ── A: cluster-peer-unreachable empty-exception fix ──────────────
 
@@ -28,8 +28,8 @@ from pathlib import Path
 def test_unreachable_log_handles_empty_exception():
     src = Path("app/cluster/manager.py").read_text()
     # Locate the unreachable log emission
-    idx = src.index('Cluster peer %s unreachable')
-    window = src[idx - 300:idx + 200]
+    idx = src.index("Cluster peer %s unreachable")
+    window = src[idx - 300 : idx + 200]
     # Uses type name + non-empty fallback (same pattern as push_sync)
     assert "type(e).__name__" in window
     assert "(no message)" in window
@@ -41,6 +41,7 @@ def test_unreachable_fallback_behavior():
     """Behavioral: replicate the inline fallback for an empty-message
     exception (the logic lives inline in the except block)."""
     import httpx
+
     e = httpx.ConnectError("")
     msg = str(e) if str(e) else f"{type(e).__name__} (no message)"
     assert msg == "ConnectError (no message)"
@@ -57,7 +58,7 @@ def test_session_not_found_logged_at_debug():
     idx = src.index("session_not_found")
     # The logger call on/around that line must be .debug, not .warning
     line_start = src.rfind("logger.", 0, idx)
-    call = src[line_start:idx + 40]
+    call = src[line_start : idx + 40]
     assert "logger.debug(" in call, (
         "session_not_found should log at DEBUG (expected condition), not WARNING"
     )
@@ -67,7 +68,7 @@ def test_session_expired_logged_at_debug():
     src = Path("app/auth/admin.py").read_text()
     idx = src.index("session_expired")
     line_start = src.rfind("logger.", 0, idx)
-    call = src[line_start:idx + 40]
+    call = src[line_start : idx + 40]
     assert "logger.debug(" in call, (
         "session_expired should log at DEBUG (normal lifecycle), not WARNING"
     )

@@ -1,7 +1,8 @@
 """Unit tests for _check_rpd / _check_burst / in-flight tracking (Wave 6)."""
+
 import sys
 import types
-import time
+
 import pytest
 
 _stub = types.ModuleType("litellm")
@@ -10,12 +11,15 @@ sys.modules.setdefault("litellm", _stub)
 if not hasattr(sys.modules["litellm"], "RateLimitError"):
     sys.modules["litellm"].RateLimitError = type("RateLimitError", (Exception,), {})
 
-from fastapi import HTTPException
+from fastapi import HTTPException  # noqa: E402
 
-import app.auth.keys as keys_mod
-import app.auth.rate_limit_state as rl_state  # monkeypatch target after 2026-04-23 refactor
-from app.auth.keys import (
-    _check_rpd, _check_burst, begin_in_flight, end_in_flight,
+import app.auth.keys as keys_mod  # noqa: E402
+import app.auth.rate_limit_state as rl_state  # monkeypatch target after 2026-04-23 refactor  # noqa: E402
+from app.auth.keys import (  # noqa: E402
+    _check_burst,
+    _check_rpd,
+    begin_in_flight,
+    end_in_flight,
 )
 
 
@@ -100,7 +104,10 @@ class TestCheckBurst:
         with pytest.raises(HTTPException) as exc_info:
             _check_burst("k1", 5)
         assert exc_info.value.status_code == 429
-        assert "concurren" in exc_info.value.detail.lower() or "in-flight" in exc_info.value.detail.lower()
+        assert (
+            "concurren" in exc_info.value.detail.lower()
+            or "in-flight" in exc_info.value.detail.lower()
+        )
 
     def test_end_in_flight_frees_slot(self):
         for _ in range(5):

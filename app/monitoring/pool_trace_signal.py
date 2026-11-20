@@ -1,6 +1,6 @@
 """v5.21.6 — SIGUSR2 handler dumps the DB-pool trace to container logs.
 
-Chronic outage since 2026-07-09: tmrwww01 and tmrwww02 llm-proxy2 pool
+Chronic outage since 2026-07-09: the first gateway and the second gateway llm-proxy2 pool
 exhausts every 24-48h and login stops working. Root cause unknown
 because forensics require admin session cookies — which requires
 login — which requires the pool — which is exhausted. Chicken/egg.
@@ -18,6 +18,7 @@ so leaked sessions bubble to the top.
 
 Wired at app startup — see ``main.py`` ``lifespan``.
 """
+
 from __future__ import annotations
 
 import logging
@@ -34,28 +35,36 @@ def _dump_pool_trace(_signum: int, _frame: Any) -> None:
     """
     try:
         from app.models.database import (
-            get_async_session_trace, get_pool_checkout_trace,
+            get_async_session_trace,
+            get_pool_checkout_trace,
         )
+
         async_sessions = get_async_session_trace()
         pool_checkouts = get_pool_checkout_trace()
 
         logger.info(
             "SIGUSR2 db-pool dump: async_sessions=%d sync_checkouts=%d",
-            len(async_sessions), len(pool_checkouts),
+            len(async_sessions),
+            len(pool_checkouts),
         )
 
         top_n = 20
         for i, entry in enumerate(async_sessions[:top_n]):
             stack = entry.get("stack", "")
             app_frames = [
-                line.strip() for line in stack.split("\n")
-                if "/app/" in line or "app/api" in line or "app/routing" in line
-                or "app/monitoring" in line or "app/models" in line
+                line.strip()
+                for line in stack.split("\n")
+                if "/app/" in line
+                or "app/api" in line
+                or "app/routing" in line
+                or "app/monitoring" in line
+                or "app/models" in line
             ]
             leaf_frames = app_frames[-6:] if len(app_frames) > 6 else app_frames
             logger.info(
                 "  #%d age=%.1fs session_id=%s",
-                i, entry.get("age_sec", 0.0),
+                i,
+                entry.get("age_sec", 0.0),
                 entry.get("session_id", "?")[:12],
             )
             for line in leaf_frames:
@@ -63,7 +72,8 @@ def _dump_pool_trace(_signum: int, _frame: Any) -> None:
         if len(async_sessions) > top_n:
             logger.info(
                 "  … +%d more async sessions (dump capped at %d)",
-                len(async_sessions) - top_n, top_n,
+                len(async_sessions) - top_n,
+                top_n,
             )
     except Exception as exc:
         logger.warning("SIGUSR2 dump handler failed: %r", exc)

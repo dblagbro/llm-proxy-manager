@@ -6,14 +6,13 @@
 Split out from the monolithic ``routing/lmrh.py`` in the 2026-04-23
 refactor.
 """
-from __future__ import annotations
 
-from typing import Optional
+from __future__ import annotations
 
 from app.routing.lmrh.types import CapabilityProfile, LMRHHint
 
 
-def build_hint_set_header(hint: Optional[LMRHHint], unmet: list[str]) -> str:
+def build_hint_set_header(hint: LMRHHint | None, unmet: list[str]) -> str:
     """Wave 4 #20 — LLM-Hint-Set echo: which hint dims were HONORED.
 
     Parallels the HTTP ``Vary:`` header pattern. Absent when no hint was
@@ -33,7 +32,7 @@ def build_capability_header(
     tool_emulation: bool = False,
     chosen_because: str = "score",
     model_override: str = "",
-    hint: Optional[LMRHHint] = None,
+    hint: LMRHHint | None = None,
 ) -> str:
     """Build the LLM-Capability response header.
 
@@ -73,7 +72,8 @@ def build_capability_header(
         region_dim = hint.get("region")
         if region_dim and "region" not in (unmet or []) and profile.regions:
             wanted = {v.strip().lower() for v in region_dim.value.split(",") if v.strip()}
-            wanted.discard("any"); wanted.discard("*")
+            wanted.discard("any")
+            wanted.discard("*")
             profile_regions_lower = [r.lower() for r in profile.regions]
             served = profile_regions_lower[0]
             if wanted:
@@ -83,8 +83,12 @@ def build_capability_header(
                     honored = "strict"
                 else:
                     served = next(
-                        (pr for w in wanted for pr in profile_regions_lower
-                         if pr.startswith(w + "-")),
+                        (
+                            pr
+                            for w in wanted
+                            for pr in profile_regions_lower
+                            if pr.startswith(w + "-")
+                        ),
                         served,
                     )
                     honored = "loose"

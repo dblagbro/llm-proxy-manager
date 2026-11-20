@@ -1,4 +1,5 @@
 """Unit tests for structured-output JSON-Schema repair loop (Wave 5 #24)."""
+
 import sys
 import types
 
@@ -7,13 +8,13 @@ _stub.RateLimitError = type("RateLimitError", (Exception,), {})
 sys.modules.setdefault("litellm", _stub)
 sys.modules.setdefault("litellm.exceptions", _stub)
 
-from app.cot.structured_output import (
+from app.cot.structured_output import (  # noqa: E402
+    build_repair_prompt,
+    build_schema_system_prompt,
+    extract_anthropic_schema,
     extract_json,
     extract_openai_schema,
-    extract_anthropic_schema,
     validate_against_schema,
-    build_schema_system_prompt,
-    build_repair_prompt,
 )
 
 
@@ -40,8 +41,18 @@ class TestExtractOpenAISchema:
         assert extract_openai_schema(body) == {"type": "object"}
 
     def test_json_schema_mode(self):
-        body = {"response_format": {"type": "json_schema", "json_schema": {"schema": {"type": "object", "properties": {"x": {"type": "integer"}}}}}}
-        assert extract_openai_schema(body) == {"type": "object", "properties": {"x": {"type": "integer"}}}
+        body = {
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "schema": {"type": "object", "properties": {"x": {"type": "integer"}}}
+                },
+            }
+        }
+        assert extract_openai_schema(body) == {
+            "type": "object",
+            "properties": {"x": {"type": "integer"}},
+        }
 
     def test_none_when_absent(self):
         assert extract_openai_schema({}) is None

@@ -7,34 +7,38 @@ PROVIDER_TYPE_TO_LITELLM, PROVIDER_DEFAULT_MODELS, etc.) were extracted
 to ``app.routing.litellm_binding`` 2026-06-02 and are re-exported here
 for callers that import them from ``app.routing.router``.
 """
+
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Optional, Any, Set
+from datetime import UTC, datetime
 
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
 
 from app.config import settings
-from app.models.db import Provider, ModelCapability, ProviderMetric
-from app.routing.circuit_breaker import is_available
-from app.routing.lmrh import (
-    LMRHHint, CapabilityProfile, rank_candidates_with_scores, build_capability_header
-)
+from app.models.db import ModelCapability, Provider, ProviderMetric
 from app.routing.capability_inference import infer_capability_profile
+from app.routing.circuit_breaker import is_available
+
 # Re-export the litellm-binding helpers from their new home so every
 # existing ``from app.routing.router import build_litellm_model, …``
 # call site keeps working unchanged.
 from app.routing.litellm_binding import (  # noqa: F401  (re-export)
-    PROVIDER_TYPE_TO_LITELLM,
+    _O_SERIES,
     PROVIDER_DEFAULT_MODELS,
-    build_litellm_model,
-    build_litellm_kwargs,
-    resolve_chat_model_for_provider,
+    PROVIDER_TYPE_TO_LITELLM,
     _is_embedding_model,
     _model_family_provider_types,
     _native_thinking_params,
-    _O_SERIES,
+    build_litellm_kwargs,
+    build_litellm_model,
+    resolve_chat_model_for_provider,
+)
+from app.routing.lmrh import (
+    CapabilityProfile,
+    LMRHHint,
+    build_capability_header,
+    rank_candidates_with_scores,
 )
 
 logger = logging.getLogger(__name__)
@@ -81,14 +85,21 @@ def _max_output_for(model_id: str) -> int | None:
     """v5.22.13 — model output cap from the pricing catalog, or None."""
     try:
         from app.monitoring.pricing import max_output_tokens_for
+
         return max_output_tokens_for(model_id)
     except Exception:
         return None
 
 
-def _capability_fit(profile, *, has_tools: bool, needs_reasoning: bool,
-                    has_images: bool, est_input_tokens: Optional[int],
-                    requested_max_tokens: int | None = None) -> Optional[str]:
+def _capability_fit(
+    profile,
+    *,
+    has_tools: bool,
+    needs_reasoning: bool,
+    has_images: bool,
+    est_input_tokens: int | None,
+    requested_max_tokens: int | None = None,
+) -> str | None:
     """Capability-fit gate (v4.1). Returns None when the provider can serve
     the request — natively or via emulation — or a short reason when it
     CANNOT and should be skipped (operator directive 2026-05-17, "simulate
@@ -107,8 +118,7 @@ def _capability_fit(profile, *, has_tools: bool, needs_reasoning: bool,
     """
     if has_images and not profile.native_vision:
         return "no native vision"
-    if (est_input_tokens and profile.context_length
-            and est_input_tokens > profile.context_length):
+    if est_input_tokens and profile.context_length and est_input_tokens > profile.context_length:
         return f"context window {profile.context_length} < ~{est_input_tokens} tokens"
     # v5.22.13 — OUTPUT-side twin of the context check above. Without it the
     # router happily picked a provider that physically cannot emit the
@@ -116,10 +126,12 @@ def _capability_fit(profile, *, has_tools: bool, needs_reasoning: bool,
     # On 2026-08-18 callers asked Cohere for max_tokens=32000 against an 8192
     # cap, and the rejection (mis-filed as upstream_5xx) tripped a healthy
     # provider's breaker. None = unknown cap = do not filter.
-    if (requested_max_tokens and profile.max_output_tokens
-            and requested_max_tokens > profile.max_output_tokens):
-        return (f"max output {profile.max_output_tokens} < requested "
-                f"{requested_max_tokens} tokens")
+    if (
+        requested_max_tokens
+        and profile.max_output_tokens
+        and requested_max_tokens > profile.max_output_tokens
+    ):
+        return f"max output {profile.max_output_tokens} < requested {requested_max_tokens} tokens"
     return None
 
 
@@ -127,7 +139,7 @@ def _capability_fit(profile, *, has_tools: bool, needs_reasoning: bool,
 class RouteResult:
     provider: Provider
     profile: CapabilityProfile
-    litellm_model: str          # e.g. "anthropic/claude-sonnet-4-5" or "openai/gpt-4o"
+    litellm_model: str  # e.g. "anthropic/claude-sonnet-4-5" or "openai/gpt-4o"
     litellm_kwargs: dict
     unmet_hints: list[str]
     cot_engaged: bool
@@ -144,14 +156,14 @@ class RouteResult:
     # body['model'] to this when the dispatcher (codex-oauth, claude-oauth)
     # reads from body rather than from litellm_model.
     cross_family_fallback: bool = False
-    requested_model: Optional[str] = None
-    served_model_native: Optional[str] = None
+    requested_model: str | None = None
+    served_model_native: str | None = None
     # v5.0.0 compliance — set when a banned company's provider was filtered
     # AND a cross-family fallback served the request. Surfaces to the
     # disclosure-header builder in _request_pipeline.py (Agent 2 reads these).
     compliance_substituted: bool = False
-    compliance_blocked_company: Optional[str] = None
-    compliance_served_company: Optional[str] = None
+    compliance_blocked_company: str | None = None
+    compliance_served_company: str | None = None
 
 
 # The litellm wire-binding helpers (_is_embedding_model,
@@ -205,7 +217,9 @@ async def _load_profile(db: AsyncSession, provider: Provider) -> CapabilityProfi
             tool_call_success_rate=getattr(cap, "tool_call_success_rate", None),
         )
     else:
-        profile = infer_capability_profile(provider.id, provider.provider_type, model_id, provider.priority)
+        profile = infer_capability_profile(
+            provider.id, provider.provider_type, model_id, provider.priority
+        )
         profile.provider_name = provider.name or ""
 
     # Populate avg_ttft_ms from the most recent metric bucket for LMRH scoring
@@ -221,7 +235,7 @@ async def _load_profile(db: AsyncSession, provider: Provider) -> CapabilityProfi
 
     # Check daily budget cap: sum today's spend across all metric buckets
     if provider.daily_budget_usd is not None:
-        today_midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        today_midnight = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         cost_res = await db.execute(
             select(func.sum(ProviderMetric.total_cost_usd)).where(
                 ProviderMetric.provider_id == provider.id,
@@ -233,13 +247,14 @@ async def _load_profile(db: AsyncSession, provider: Provider) -> CapabilityProfi
             profile.over_daily_budget = True
             logger.info(
                 "router.budget_demotion",
-                extra={"provider": provider.id, "today_cost": today_cost,
-                       "budget": provider.daily_budget_usd},
+                extra={
+                    "provider": provider.id,
+                    "today_cost": today_cost,
+                    "budget": provider.daily_budget_usd,
+                },
             )
 
     return profile
-
-
 
 
 def failover_preserves_model(provider, requested_model: str | None) -> bool:
@@ -285,10 +300,7 @@ def _drop_own_dispatcher_types(providers: list) -> list:
     """
     from app.routing.litellm_binding import OWN_DISPATCHER_PROVIDER_TYPES
 
-    filtered = [
-        p for p in providers
-        if p.provider_type not in OWN_DISPATCHER_PROVIDER_TYPES
-    ]
+    filtered = [p for p in providers if p.provider_type not in OWN_DISPATCHER_PROVIDER_TYPES]
     if not filtered:
         logger.warning(
             "routing.cross_family_all_candidates_own_dispatcher count=%d — "
@@ -307,10 +319,11 @@ async def _key_metered_allowed(db: AsyncSession, key_id: str) -> bool:
     (logged) so a transient DB error can't turn into a routing outage.
     """
     from app.models.db import ApiKey
+
     try:
-        val = (await db.execute(
-            select(ApiKey.metered_allowed).where(ApiKey.id == key_id)
-        )).scalar_one_or_none()
+        val = (
+            await db.execute(select(ApiKey.metered_allowed).where(ApiKey.id == key_id))
+        ).scalar_one_or_none()
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("metered_allowed lookup failed for key %s: %s", key_id, exc)
         return True
@@ -319,25 +332,25 @@ async def _key_metered_allowed(db: AsyncSession, key_id: str) -> bool:
 
 async def select_provider(
     db: AsyncSession,
-    hint: Optional[LMRHHint],
+    hint: LMRHHint | None,
     has_tools: bool = False,
     has_images: bool = False,
     key_type: str = "standard",
-    pinned_provider_id: Optional[str] = None,
-    model_override: Optional[str] = None,
-    exclude_provider_id: Optional[str] = None,
-    exclude_provider_ids: Optional[set[str]] = None,
+    pinned_provider_id: str | None = None,
+    model_override: str | None = None,
+    exclude_provider_id: str | None = None,
+    exclude_provider_ids: set[str] | None = None,
     prefer_cheapest: bool = False,
-    sort_mode: Optional[str] = None,
-    excluded_provider_types: Optional[set[str]] = None,
-    api_key_id: Optional[str] = None,
+    sort_mode: str | None = None,
+    excluded_provider_types: set[str] | None = None,
+    api_key_id: str | None = None,
     dry_run: bool = False,
-    est_input_tokens: Optional[int] = None,
+    est_input_tokens: int | None = None,
     # v5.22.13 — requested output length, for the output-cap gate in
     # _capability_fit. Defaults to None so the 18 existing call sites keep
     # their current behaviour; opt in per caller.
     requested_max_tokens: int | None = None,
-    blocked_companies: Optional[Set[str]] = None,
+    blocked_companies: set[str] | None = None,
 ) -> RouteResult:
     """
     Select the best available provider+model for this request.
@@ -358,7 +371,7 @@ async def select_provider(
     if sort_mode == "floor":
         prefer_cheapest = True  # collapse onto the existing cheapest path
     result = await db.execute(
-        select(Provider).where(Provider.enabled == True).order_by(Provider.priority)
+        select(Provider).where(Provider.enabled.is_(True)).order_by(Provider.priority)
     )
     providers = result.scalars().all()
 
@@ -372,12 +385,13 @@ async def select_provider(
     # ``priority`` and ``enabled`` are preserved unchanged — this
     # filter is purely additive.
     from app.routing.external_rotation import (
-        is_currently_at_capacity,
-        get_utilization_map,
-        reorder_claude_oauth_by_utilization,
         _bucket_size_setting,
         _utilization_bucket,
+        get_utilization_map,
+        is_currently_at_capacity,
+        reorder_claude_oauth_by_utilization,
     )
+
     pre_filter_count = len(providers)
     providers = [p for p in providers if not is_currently_at_capacity(p)]
 
@@ -399,8 +413,9 @@ async def select_provider(
     # filtered. That's deliberate: a node with no auth-state
     # observation hasn't proven itself capable yet, so don't route
     # to it. M-3 starts filling rows immediately on probe outcome.
-    from app.routing.node_auth_state import read_state as _read_local_auth_state
     from app.routing.node_auth_state import is_local_node_routable as _is_node_routable
+    from app.routing.node_auth_state import read_state as _read_local_auth_state
+
     _kept: list = []
     _node_filtered: list[tuple[str, str]] = []
     for _p in providers:
@@ -418,8 +433,10 @@ async def select_provider(
             _node_filtered.append((_p.name, (_state.auth_state if _state else "never_authed")))
     if _node_filtered:
         import logging as _log
+
         _log.getLogger(__name__).debug(
-            "router.node_local_session_filter skipped=%s", _node_filtered,
+            "router.node_local_session_filter skipped=%s",
+            _node_filtered,
         )
     providers = _kept
     # v3.7.4 — utilization-weighted preference for claude-oauth providers.
@@ -437,13 +454,17 @@ async def select_provider(
     try:
         util_map = await get_utilization_map(db)
         providers = reorder_claude_oauth_by_utilization(
-            providers, util_map, bucket_size_pct=_bucket_size_setting(),
+            providers,
+            util_map,
+            bucket_size_pct=_bucket_size_setting(),
         )
     except Exception as _e:
         # Defensive: routing must never crash on a snapshot-table issue.
         import logging as _log
+
         _log.getLogger(__name__).warning(
-            "external_rotation.utilization_reorder_failed err=%s", _e,
+            "external_rotation.utilization_reorder_failed err=%s",
+            _e,
         )
     if not providers:
         # Defensive — if every provider is auto-skipped we'd hard-fail
@@ -452,12 +473,13 @@ async def select_provider(
         # throttled by the upstream) than 503 the caller with no
         # alternative. Log loudly so the operator sees it.
         import logging as _log
+
         _log.getLogger(__name__).warning(
             "external_rotation.all_providers_at_capacity falling_back_to=%d",
             pre_filter_count,
         )
         result = await db.execute(
-            select(Provider).where(Provider.enabled == True).order_by(Provider.priority)
+            select(Provider).where(Provider.enabled.is_(True)).order_by(Provider.priority)
         )
         providers = result.scalars().all()
 
@@ -489,9 +511,11 @@ async def select_provider(
         # to avoid forcing them through Policy construction.
         if blocked_companies:
             from app.compliance import filter_providers
+
             providers = filter_providers(providers, blocked_companies, model_override)
     elif api_key_id:
-        from app.compliance import get_effective_policy, filter_providers_v2
+        from app.compliance import filter_providers_v2, get_effective_policy
+
         policy = await get_effective_policy(db, api_key_id)
         if not policy.is_empty():
             providers = filter_providers_v2(providers, policy, model_override)
@@ -526,10 +550,10 @@ async def select_provider(
     # entry handlers (covers cascade/critique/hedge/grader paths that
     # would otherwise need individual plumbing).
     from app.routing.tenant import current_api_key_id
+
     effective_key = api_key_id or current_api_key_id.get()
     providers = [
-        p for p in providers
-        if not p.owned_by_key_id or p.owned_by_key_id == effective_key
+        p for p in providers if not p.owned_by_key_id or p.owned_by_key_id == effective_key
     ]
     if not providers:
         raise RuntimeError(
@@ -546,12 +570,14 @@ async def select_provider(
     # path re-enters select_provider with the same key, so it inherits this.
     if effective_key and not await _key_metered_allowed(db, effective_key):
         from app.monitoring.helpers import is_subscription_provider
+
         _before_guard = len(providers)
         providers = [p for p in providers if is_subscription_provider(p)]
         if not providers:
             logger.warning(
                 "router.metered_guard_rejected api_key_id=%s dropped=%d",
-                effective_key, _before_guard,
+                effective_key,
+                _before_guard,
             )
             raise RuntimeError(
                 "No unmetered providers available — this key is restricted "
@@ -573,7 +599,9 @@ async def select_provider(
     # claude-oauth, which refreshes in the dispatch path) selectable; only
     # tokens dead well past any refresh window are dropped.
     import time as _time
+
     _stale_before = _time.time() - 900
+
     def _token_dead(p) -> bool:
         exp = getattr(p, "oauth_expires_at", None)
         if not exp:
@@ -582,6 +610,7 @@ async def select_provider(
             return float(exp) < _stale_before
         except (TypeError, ValueError):
             return False
+
     _live = [p for p in available if not _token_dead(p)]
     if _live:
         available = _live
@@ -615,10 +644,7 @@ async def select_provider(
     # 2026-04-30. Embedding callers go through /v1/embeddings, which does
     # its own provider selection via select_embedding_provider.
     if not model_override:
-        available = [
-            p for p in available
-            if not _is_embedding_model(p.default_model or "")
-        ]
+        available = [p for p in available if not _is_embedding_model(p.default_model or "")]
         if not available:
             raise RuntimeError(
                 "No chat-capable providers available — every reachable provider "
@@ -698,11 +724,13 @@ async def select_provider(
         for pid, mid, als in cap_q.all():
             cap_by_provider.setdefault(pid, []).append((mid, als or []))
         from app.routing.canonical import matches_capability
+
         def _supports(p: Provider) -> bool:
             caps = cap_by_provider.get(p.id)
             if not caps:
-                return True   # never scanned — give it a try
+                return True  # never scanned — give it a try
             return any(matches_capability(model_override, mid, als) for mid, als in caps)
+
         filtered = [p for p in available if _supports(p)]
         if filtered:
             available = filtered
@@ -767,7 +795,9 @@ async def select_provider(
     # LMRH ranking (with scores so we can identify the top tier for P2C)
     ranked_scored = rank_candidates_with_scores(profiles, hint)
     if not ranked_scored:
-        raise RuntimeError("No providers satisfy the required routing constraints (LLM-Hint hard constraints)")
+        raise RuntimeError(
+            "No providers satisfy the required routing constraints (LLM-Hint hard constraints)"
+        )
 
     # v3.8.5 (#265): tool-call success weighting. When the request has
     # tools=[] AND a candidate has prober data, multiply its score by
@@ -801,22 +831,26 @@ async def select_provider(
     _task_hint = hint.get("task") if hint else None
     needs_reasoning = bool(
         cot_globally_enabled
-        and (key_type == "claude-code"
-             or (_task_hint and getattr(_task_hint, "value", None) == "reasoning"))
+        and (
+            key_type == "claude-code"
+            or (_task_hint and getattr(_task_hint, "value", None) == "reasoning")
+        )
     )
     capability_skipped: list = []
     _fit_kept = []
     for _t in ranked_scored:
         _reason = _capability_fit(
-            _t[0], has_tools=has_tools, needs_reasoning=needs_reasoning,
-            has_images=has_images, est_input_tokens=est_input_tokens,
+            _t[0],
+            has_tools=has_tools,
+            needs_reasoning=needs_reasoning,
+            has_images=has_images,
+            est_input_tokens=est_input_tokens,
             requested_max_tokens=requested_max_tokens,
         )
         if _reason is None:
             _fit_kept.append(_t)
         else:
-            capability_skipped.append(
-                (_t[0].provider_name or _t[0].provider_id, _reason))
+            capability_skipped.append((_t[0].provider_name or _t[0].provider_id, _reason))
     # v5.21.16 — HARD-FAIL vision requests when no candidate can actually
     # serve the image (operator directive 2026-08-06, CamReview). Before,
     # an empty capability set was silently ignored (kept the full list) and
@@ -826,9 +860,11 @@ async def select_provider(
     # when a vision-capable provider exists the gate below routes to it.
     if has_images and not _fit_kept:
         from fastapi import HTTPException
+
         logger.warning(
             "router.vision_hard_fail — image request but no vision-capable "
-            "provider available. skipped=%s", capability_skipped,
+            "provider available. skipped=%s",
+            capability_skipped,
         )
         raise HTTPException(
             422,
@@ -837,15 +873,17 @@ async def select_provider(
             f"dropped). Candidates skipped: {capability_skipped[:6]}",
         )
     if _fit_kept and len(_fit_kept) < len(ranked_scored):
-        logger.info("router.capability_gate kept=%d skipped=%s",
-                    len(_fit_kept), capability_skipped)
+        logger.info("router.capability_gate kept=%d skipped=%s", len(_fit_kept), capability_skipped)
         ranked_scored = _fit_kept
     elif not _fit_kept and capability_skipped:
         # never-hard-fail floor — every candidate fell short; keep them all
         # and let the top one emulate/degrade rather than 503 the caller.
         logger.warning(
             "router.capability_gate all %d candidates fell short — degrading "
-            "instead of failing: %s", len(ranked_scored), capability_skipped)
+            "instead of failing: %s",
+            len(ranked_scored),
+            capability_skipped,
+        )
 
     # v3.3.1: dry-run mode for /lmrh/quotes. Caller wants the ranked
     # candidate list — they're not actually dispatching. Return shaped
@@ -877,7 +915,10 @@ async def select_provider(
         litellm_model = build_litellm_model(provider, model_override)
         litellm_kwargs = build_litellm_kwargs(provider)
         cap_header = build_capability_header(
-            best_profile, unmet, False, False,
+            best_profile,
+            unmet,
+            False,
+            False,
             model_override=model_override or "",
             hint=hint,
         )
@@ -903,12 +944,14 @@ async def select_provider(
     #             randomized sample (deterministic given a request).
     if sort_mode == "nitro":
         from app.routing.hedging import peak_ewma
+
         def _nitro_key(t):
             ewma = peak_ewma(t[0].provider_id)
             # Providers with no telemetry sort AFTER providers with samples
             # (we don't know if they're fast). Within each bucket, lower
             # priority number wins.
             return (0 if ewma is not None else 1, ewma if ewma is not None else 0.0, t[0].priority)
+
         winner = min(ranked_scored, key=_nitro_key)
         best_profile, unmet, _ = winner
     elif sort_mode == "exacto":
@@ -923,8 +966,10 @@ async def select_provider(
         # that catches "essentially tied" profiles). If ≥2 qualify, sample two
         # and pick the one with lower PeakEWMA TTFT (falling back to priority
         # when neither has samples yet).
-        from app.routing.hedging import peak_ewma
         import random as _random
+
+        from app.routing.hedging import peak_ewma
+
         top_score = ranked_scored[0][2]
         top_tier = [t for t in ranked_scored if top_score - t[2] < 1.0]
         # v3.7.20 — BUG-020 fix. Before falling into the P2C/EWMA random
@@ -943,9 +988,11 @@ async def select_provider(
         # Within the same bucket, fall through to existing P2C/EWMA.
         if util_map and len(top_tier) >= 2:
             bucket_size = _bucket_size_setting()
+
             def _bucket_of(t):
                 u = util_map.get(t[0].provider_id)
                 return _utilization_bucket(u, bucket_size)
+
             bucket_min = min(_bucket_of(t) for t in top_tier)
             low_bucket = [t for t in top_tier if _bucket_of(t) == bucket_min]
             if len(low_bucket) < len(top_tier):
@@ -998,7 +1045,10 @@ async def select_provider(
     vision_stripped = has_images and not best_profile.native_vision
 
     cap_header = build_capability_header(
-        best_profile, unmet, cot_engaged, tool_emulation,
+        best_profile,
+        unmet,
+        cot_engaged,
+        tool_emulation,
         model_override=(effective_override or model_override or ""),
         hint=hint,
     )
@@ -1009,17 +1059,20 @@ async def select_provider(
         # other dim values.
         cap_header = (
             cap_header.replace("chosen-because=score", "chosen-because=cross-family-fallback")
-            + f', requested-model={cross_family_requested}, served-model={litellm_model}'
+            + f", requested-model={cross_family_requested}, served-model={litellm_model}"
         )
 
     # v3.0.30: was INFO; demoted to DEBUG. This fired on every routing
-    # decision — 2728 lines in a 3h sample on www01, ~99% redundant with
+    # decision — 2728 lines in a 3h sample on the first gateway, ~99% redundant with
     # the structlog "request" line + the activity_log llm_request entry.
     # Operators who need it can flip the app.routing.router level to DEBUG
     # via /api/settings.
     logger.debug(
         "router.selected provider=%s model=%s cot=%s unmet=%s",
-        provider.id, litellm_model, cot_engaged, unmet,
+        provider.id,
+        litellm_model,
+        cot_engaged,
+        unmet,
         extra={
             "provider": provider.id,
             "model": litellm_model,
@@ -1036,6 +1089,7 @@ async def select_provider(
     compliance_served = None
     if cross_family_fallback and blocked_companies:
         from app.compliance import model_family_to_company, provider_type_to_company
+
         requested_family_company = model_family_to_company(model_override)
         if requested_family_company and requested_family_company in blocked_companies:
             compliance_substituted = True

@@ -26,6 +26,7 @@ in known_failures.txt. The invariant v5.3.1 actually exists to protect
 never stopped holding. The ``false`` disposition had no coverage at all
 and is now pinned too.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -113,10 +114,12 @@ async def test_real_substitution_still_emits():
     the dominant real substitution pattern on the hub canary."""
     from app.api import _compliance_handler as h
 
-    with patch.object(h, "emit_event", new=AsyncMock()) as m, \
-         patch.object(h, "compliance_headers", return_value={"X-Compliance-Substituted": "true"}), \
-         patch.object(h, "build_disclosure_payload", return_value={"audit_id": "a"}), \
-         patch.object(h, "wants_sse_prelude", return_value=False):
+    with (
+        patch.object(h, "emit_event", new=AsyncMock()) as m,
+        patch.object(h, "compliance_headers", return_value={"X-Compliance-Substituted": "true"}),
+        patch.object(h, "build_disclosure_payload", return_value={"audit_id": "a"}),
+        patch.object(h, "wants_sse_prelude", return_value=False),
+    ):
         headers, disclosure, prelude = await h.emit_substitution_disclosure_for_route(
             _make_request(),
             db=None,

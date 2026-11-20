@@ -17,20 +17,22 @@ ULID generation: we use ``secrets.token_hex`` to keep this dependency-
 light; the ULID-shape audit_id is for human readability + sort, not for
 cryptographic ordering.
 """
+
 from __future__ import annotations
 
 import hashlib
 import json
 import secrets
-from datetime import datetime, timedelta, date
-from typing import Any, Dict, List, Optional
+from datetime import date, datetime, timedelta
+from typing import Any
 
-from sqlalchemy import select, func
+from sqlalchemy import func as func
+from sqlalchemy import select
 
 from app.models.db import (
+    ComplianceAuditChain,
     ComplianceEvent,
     CompliancePolicyChange,
-    ComplianceAuditChain,
 )
 
 
@@ -57,14 +59,14 @@ async def emit_event(
     event_type: str,
     reason_code: str,
     http_status: int,
-    requested_model: Optional[str] = None,
-    served_model: Optional[str] = None,
-    served_provider_id: Optional[str] = None,
-    blocked_company: Optional[str] = None,
-    client_user_agent: Optional[str] = None,
-    matched_pattern: Optional[str] = None,
-    client_identity: Optional[Dict[str, Any]] = None,
-    policy_active_since: Optional[datetime] = None,
+    requested_model: str | None = None,
+    served_model: str | None = None,
+    served_provider_id: str | None = None,
+    blocked_company: str | None = None,
+    client_user_agent: str | None = None,
+    matched_pattern: str | None = None,
+    client_identity: dict[str, Any] | None = None,
+    policy_active_since: datetime | None = None,
     commit: bool = False,
 ) -> ComplianceEvent:
     """Write one compliance_events row.
@@ -113,13 +115,13 @@ async def emit_policy_change(
     db,
     *,
     scope: str,
-    target_id: Optional[str],
-    before: Dict[str, Any],
-    after: Dict[str, Any],
+    target_id: str | None,
+    before: dict[str, Any],
+    after: dict[str, Any],
     reason: str,
-    changed_by_user_id: Optional[str],
-    applied_to_peers: List[Dict[str, Any]],
-    pending_peers: List[Dict[str, Any]],
+    changed_by_user_id: str | None,
+    applied_to_peers: list[dict[str, Any]],
+    pending_peers: list[dict[str, Any]],
     commit: bool = False,
 ) -> str:
     """Write one compliance_policy_changes row.
@@ -132,11 +134,7 @@ async def emit_policy_change(
     reason.
     """
     pcid = generate_policy_change_id()
-    status = (
-        "fully-acked"
-        if not pending_peers
-        else f"quorum-reached-{len(pending_peers)}-pending"
-    )
+    status = "fully-acked" if not pending_peers else f"quorum-reached-{len(pending_peers)}-pending"
     row = CompliancePolicyChange(
         policy_change_id=pcid,
         changed_by_user_id=changed_by_user_id,
@@ -178,9 +176,7 @@ async def compute_daily_integrity_hash(db, day: date) -> str:
 
     prior_day = day - timedelta(days=1)
     prior = await db.execute(
-        select(ComplianceAuditChain).where(
-            ComplianceAuditChain.day == prior_day.isoformat()
-        )
+        select(ComplianceAuditChain).where(ComplianceAuditChain.day == prior_day.isoformat())
     )
     prior_row = prior.scalar_one_or_none()
     prior_hash = prior_row.chain_hash if prior_row else ""
@@ -188,15 +184,16 @@ async def compute_daily_integrity_hash(db, day: date) -> str:
     day_start = datetime.combine(day, datetime.min.time())
     day_end = day_start + timedelta(days=1)
     events = await db.execute(
-        select(ComplianceEvent).where(
+        select(ComplianceEvent)
+        .where(
             ComplianceEvent.created_at >= day_start,
             ComplianceEvent.created_at < day_end,
-        ).order_by(ComplianceEvent.id)
+        )
+        .order_by(ComplianceEvent.id)
     )
     rows = events.scalars().all()
     content = "".join(
-        f"{r.id}|{r.audit_id}|{r.api_key_id}|{r.event_type}|{r.http_status}"
-        for r in rows
+        f"{r.id}|{r.audit_id}|{r.api_key_id}|{r.event_type}|{r.http_status}" for r in rows
     )
     chain_hash = hashlib.sha256((prior_hash + content).encode("utf-8")).hexdigest()
 
@@ -224,9 +221,8 @@ async def purge_expired_events(db, retention_days: int) -> int:
         return 0
     cutoff = datetime.utcnow() - timedelta(days=retention_days)
     from sqlalchemy import delete
-    result = await db.execute(
-        delete(ComplianceEvent).where(ComplianceEvent.created_at < cutoff)
-    )
+
+    result = await db.execute(delete(ComplianceEvent).where(ComplianceEvent.created_at < cutoff))
     await db.commit()
     return result.rowcount or 0
 

@@ -1,11 +1,13 @@
 """Unit tests for Codex CC-↔-Responses translation (v3.0.15)."""
+
 import json
+
 import pytest
 
 from app.providers.codex_translate import (
     chat_completions_to_responses,
-    responses_sse_to_chat_completions_sse,
     collect_responses_stream_into_completion,
+    responses_sse_to_chat_completions_sse,
 )
 
 
@@ -57,31 +59,45 @@ class TestChatCompletionsToResponses:
 
     def test_max_tokens_dropped(self):
         # Codex backend rejects max_output_tokens / max_tokens; we drop them.
-        body = {"model": "gpt-5.5", "messages": [{"role": "user", "content": "hi"}],
-                "max_tokens": 50}
+        body = {
+            "model": "gpt-5.5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 50,
+        }
         out = chat_completions_to_responses(body)
         assert "max_output_tokens" not in out
         assert "max_tokens" not in out
 
     def test_temperature_passed_through(self):
-        body = {"model": "gpt-5.5", "messages": [{"role": "user", "content": "hi"}],
-                "temperature": 0.7}
+        body = {
+            "model": "gpt-5.5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "temperature": 0.7,
+        }
         out = chat_completions_to_responses(body)
         assert out["temperature"] == 0.7
 
     def test_stream_always_true_upstream(self):
-        body = {"model": "gpt-5.5", "messages": [{"role": "user", "content": "hi"}],
-                "stream": False}  # caller asked non-stream
+        body = {
+            "model": "gpt-5.5",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+        }  # caller asked non-stream
         out = chat_completions_to_responses(body)
-        assert out["stream"] is True   # we MUST upstream as stream
+        assert out["stream"] is True  # we MUST upstream as stream
 
     def test_list_content_extracts_text_chunks(self):
         body = {
             "model": "gpt-5.5",
-            "messages": [{"role": "user", "content": [
-                {"type": "text", "text": "Part 1. "},
-                {"type": "text", "text": "Part 2."},
-            ]}],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Part 1. "},
+                        {"type": "text", "text": "Part 2."},
+                    ],
+                }
+            ],
         }
         out = chat_completions_to_responses(body)
         assert out["input"][0]["content"][0]["text"] == "Part 1. Part 2."
@@ -101,7 +117,12 @@ class TestResponsesSSEToChatCompletionsSSE:
             yield 'data: {"type":"response.output_text.delta","delta":" there"}'
             yield ""
             yield "event: response.completed"
-            yield 'data: {"type":"response.completed","response":{"usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}}'
+            yield (
+                'data: {"type":"response.completed",'
+                '"response":{"usage":{"input_tokens"'
+                ':5,"output_tokens":2,"total_tokens"'
+                ":7}}}"
+            )
             yield ""
 
         chunks = []
@@ -129,7 +150,12 @@ class TestResponsesSSEToChatCompletionsSSE:
             yield 'data: {"type":"response.output_text.delta","delta":"Hello"}'
             yield 'data: {"type":"response.output_text.delta","delta":", world"}'
             yield 'data: {"type":"response.output_text.delta","delta":"!"}'
-            yield 'data: {"type":"response.completed","response":{"usage":{"input_tokens":3,"output_tokens":3,"total_tokens":6}}}'
+            yield (
+                'data: {"type":"response.completed",'
+                '"response":{"usage":{"input_tokens"'
+                ':3,"output_tokens":3,"total_tokens"'
+                ":6}}}"
+            )
 
         result = await collect_responses_stream_into_completion(gen(), model="gpt-5.5")
         assert result["object"] == "chat.completion"
@@ -141,7 +167,11 @@ class TestResponsesSSEToChatCompletionsSSE:
     async def test_error_event_surfaces(self):
         async def gen():
             yield 'data: {"type":"response.output_text.delta","delta":"partial"}'
-            yield 'data: {"type":"response.error","error":{"type":"rate_limit","message":"slow down"}}'
+            yield (
+                'data: {"type":"response.error","err'
+                'or":{"type":"rate_limit","message":'
+                '"slow down"}}'
+            )
 
         result = await collect_responses_stream_into_completion(gen(), model="gpt-5.5")
         assert result["choices"][0]["finish_reason"] == "error"

@@ -27,11 +27,11 @@ event_meta={tool, score}``. Single source of truth for "did the proxy
 nudge this caller toward tool X?" — matches the existing v5.1.2
 retention-edit pattern.
 """
+
 from __future__ import annotations
 
 import json
 import logging
-from typing import Dict, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -46,7 +46,7 @@ HEADER_NAME = "X-Proxy-MCP-Suggestion"
 # Lightweight per-(api_key, tool) memo so we don't write the SAME audit
 # row + header on every response in a tight loop. Caller will still see
 # the header on the NEXT distinct response after a 60s cooldown.
-_RECENT_EMITS: Dict[str, float] = {}
+_RECENT_EMITS: dict[str, float] = {}
 _RECENT_TTL_SEC = 60.0
 
 
@@ -75,28 +75,34 @@ async def _record_audit_row(
     observability, not enforcement.
     """
     try:
-        from datetime import datetime
         import json as _json
+        from datetime import datetime
+
         from app.models.db import CompliancePolicyChange
+
         now = datetime.utcnow()
-        diff_after = _json.dumps({
-            "mcp_suggestion": {
-                "suggested_tool": tool,
-                "score": score,
+        diff_after = _json.dumps(
+            {
+                "mcp_suggestion": {
+                    "suggested_tool": tool,
+                    "score": score,
+                }
             }
-        })
-        db.add(CompliancePolicyChange(
-            policy_change_id=f"mcp-suggest:{api_key_id}:{tool}:{int(now.timestamp())}",
-            changed_at=now,
-            changed_by_user_id="system:capability_scout",
-            scope="per_key",
-            target_id=api_key_id,
-            before_state="{}",
-            after_state=diff_after,
-            reason="mcp_suggestion_emitted",
-            applied_to_peers="[]",
-            cluster_sync_status="local-only",
-        ))
+        )
+        db.add(
+            CompliancePolicyChange(
+                policy_change_id=f"mcp-suggest:{api_key_id}:{tool}:{int(now.timestamp())}",
+                changed_at=now,
+                changed_by_user_id="system:capability_scout",
+                scope="per_key",
+                target_id=api_key_id,
+                before_state="{}",
+                after_state=diff_after,
+                reason="mcp_suggestion_emitted",
+                applied_to_peers="[]",
+                cluster_sync_status="local-only",
+            )
+        )
         await db.commit()
     except Exception as exc:
         logger.debug("suggestion_emit audit row failed: %s", exc)
@@ -108,9 +114,9 @@ async def _record_audit_row(
 
 async def apply_suggestion_header(
     db: AsyncSession,
-    api_key_id: Optional[str],
-    response_headers: Dict[str, str],
-) -> Optional[str]:
+    api_key_id: str | None,
+    response_headers: dict[str, str],
+) -> str | None:
     """Read the caller's max score and, if it crosses the threshold,
     set ``X-Proxy-MCP-Suggestion`` on the response and return the
     suggested tool name. Returns None when no header was emitted.
@@ -135,17 +141,21 @@ async def apply_suggestion_header(
 
         # Cooldown — same (key, tool) doesn't re-emit in tight loop.
         import time
+
         cache_key = f"{api_key_id}:{tool}"
         now = time.time()
         last = _RECENT_EMITS.get(cache_key)
         if last is not None and (now - last) < _RECENT_TTL_SEC:
             # Header re-emitted (so the caller sees consistent signal)
             # but audit row is skipped (no double-write).
-            payload = json.dumps({
-                "tool": tool,
-                "score": score,
-                "why": _why_for_tool(tool),
-            }, separators=(",", ":"))
+            payload = json.dumps(
+                {
+                    "tool": tool,
+                    "score": score,
+                    "why": _why_for_tool(tool),
+                },
+                separators=(",", ":"),
+            )
             response_headers[HEADER_NAME] = payload
             return tool
         _RECENT_EMITS[cache_key] = now
@@ -157,11 +167,14 @@ async def apply_suggestion_header(
                 if t < cutoff:
                     _RECENT_EMITS.pop(k, None)
 
-        payload = json.dumps({
-            "tool": tool,
-            "score": score,
-            "why": _why_for_tool(tool),
-        }, separators=(",", ":"))
+        payload = json.dumps(
+            {
+                "tool": tool,
+                "score": score,
+                "why": _why_for_tool(tool),
+            },
+            separators=(",", ":"),
+        )
         response_headers[HEADER_NAME] = payload
 
         # v5.12.2 Ship 1.1 — MCP-native dual-emit half. Push the same
@@ -172,6 +185,7 @@ async def apply_suggestion_header(
         # X-Proxy-MCP-Suggestion header above.
         try:
             from app.capability_scout.suggestion_buffer_mcp import push_suggestion_notification
+
             push_suggestion_notification(api_key_id, tool, score, _why_for_tool(tool))
         except Exception:
             pass

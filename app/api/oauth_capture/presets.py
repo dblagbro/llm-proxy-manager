@@ -5,6 +5,7 @@ Each entry tells the UI what this vendor's CLI expects (env var names,
 default upstream host(s), a human-readable setup hint). Adding a new
 preset is a one-liner — no code changes elsewhere.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,12 +13,12 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class CapturePreset:
-    key: str                   # short id stored in profile.preset
-    label: str                 # UI-friendly name
-    cli_hint: str              # which CLI this captures (shown in wizard)
-    primary_upstream: str      # default upstream host (no trailing slash)
+    key: str  # short id stored in profile.preset
+    label: str  # UI-friendly name
+    cli_hint: str  # which CLI this captures (shown in wizard)
+    primary_upstream: str  # default upstream host (no trailing slash)
     extra_upstreams: tuple[str, ...] = ()
-    env_var_names: tuple[str, ...] = ()   # which env vars the CLI checks
+    env_var_names: tuple[str, ...] = ()  # which env vars the CLI checks
     setup_hint: str = ""
 
 
@@ -28,7 +29,7 @@ PRESETS: dict[str, CapturePreset] = {
         cli_hint="`claude login` on the workstation",
         primary_upstream="https://console.anthropic.com",
         env_var_names=("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_URL", "ANTHROPIC_API_URL"),
-        setup_hint="Run `claude login` then `claude \"ping\"` to capture both auth and first chat.",
+        setup_hint='Run `claude login` then `claude "ping"` to capture both auth and first chat.',
     ),
     "openai-codex": CapturePreset(
         key="openai-codex",
@@ -63,7 +64,10 @@ PRESETS: dict[str, CapturePreset] = {
         primary_upstream="https://accounts.google.com",
         extra_upstreams=("https://oauth2.googleapis.com",),
         env_var_names=("CLOUDSDK_AUTH_AUTHORITY",),
-        setup_hint="Browser PKCE flow with localhost redirect; we capture both the authorize + token exchange.",
+        setup_hint=(
+            "Browser PKCE flow with localhost redirect; "
+            "we capture both the authorize + token exchange."
+        ),
     ),
     "xai-grok": CapturePreset(
         key="xai-grok",

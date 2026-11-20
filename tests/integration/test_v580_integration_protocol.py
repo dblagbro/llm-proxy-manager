@@ -10,15 +10,15 @@ Hits the live smoke instance:
 Set ``LLMPROXY_BASE`` + ``INTEGRATION_PASSPHRASE`` env vars to run
 against a non-default target.
 """
+
 from __future__ import annotations
 
+import json as _json
 import os
 import ssl
+import urllib.request
 
 import pytest
-import urllib.request
-import json as _json
-
 
 # v5.22.38 — was its own LLMPROXY_BASE defaulting to the smoke instance, so it
 # could not run ephemerally and ignored the live gate. LLMPROXY_BASE still wins

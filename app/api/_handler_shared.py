@@ -20,10 +20,10 @@ narrowest concern; co-locating it with the rest of the pre-route
 work in ``_messages_pre_route.py`` would put endpoint-specific
 logic in a "shared" module. The split here keeps boundaries clean.
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,11 +34,11 @@ logger = logging.getLogger(__name__)
 async def prepare_request_context(
     request: Request,
     db: AsyncSession,
-    x_api_key: Optional[str],
+    x_api_key: str | None,
     *,
     endpoint: str,
-    x_conversation_id: Optional[str],
-    x_memory_tag: Optional[str],
+    x_conversation_id: str | None,
+    x_memory_tag: str | None,
 ):
     """v5.7.23 — shared pre-body-parse setup for /v1/messages and
     /v1/chat/completions.
@@ -58,27 +58,32 @@ async def prepare_request_context(
     Returns: ``key_record`` (the verified api_keys row).
     """
     from app.auth.keys import verify_api_key
+
     key_record = await verify_api_key(db, x_api_key)
 
     # v3.0.45: tenant context for select_provider's ownership filter
     # so cascade/critique/hedge/grader paths inherit it without plumbing.
     from app.routing.tenant import current_api_key_id
+
     current_api_key_id.set(key_record.id)
 
     # v5.0.0 — compliance UA pre-check (decision 16 + 22). Refuse banned
     # client products BEFORE any provider routing.
     from app.api._compliance_handler import raise_if_banned_client_ua
+
     await raise_if_banned_client_ua(request, db, key_record)
 
     # v5.2.0 / Batch V1 — LLM emergency stop. Refuses LLM CALLS when
     # the global stop is engaged. Separate from the v5.1.0
     # ``activity_logging_enabled`` toggle (which suppresses log WRITES).
     from app.api._compliance_handler import raise_if_llm_emergency_stopped
+
     await raise_if_llm_emergency_stopped(db, key_record, endpoint=endpoint)
 
     # v4.4.15 (F-OBS-003) — caller-memory header presence counter.
     try:
         from app.observability.prometheus import CONVERSATION_ID_REQUESTS_TOTAL
+
         CONVERSATION_ID_REQUESTS_TOTAL.labels(
             endpoint=endpoint,
             has_conversation_id="true" if x_conversation_id else "false",
@@ -90,6 +95,7 @@ async def prepare_request_context(
     # record verifiable header presence.
     try:
         from app.observability.request_context import set_caller_memory_headers
+
         set_caller_memory_headers(
             has_conversation_id=bool(x_conversation_id),
             has_memory_tag=bool(x_memory_tag),
@@ -102,7 +108,7 @@ async def prepare_request_context(
 
 async def normalize_request_body(
     body: dict,
-    x_webhook_url: Optional[str],
+    x_webhook_url: str | None,
     db: AsyncSession,
     *,
     endpoint: str,
@@ -125,18 +131,22 @@ async def normalize_request_body(
         validate_completion_request,
         validate_webhook_url,
     )
+
     validate_completion_request(body, endpoint=endpoint)
     validate_webhook_url(x_webhook_url)
 
     # v2.8.0 — parse :floor / :nitro / :exacto suffix; never reaches upstream.
-    from app.routing.model_slug import parse_model_slug, is_auto_model
+    from app.routing.model_slug import is_auto_model, parse_model_slug
+
     parsed_slug = parse_model_slug(body.get("model"))
     if parsed_slug.sort_mode is not None:
         body = {**body, "model": parsed_slug.bare_model}
 
     # v3.0.27 — embedding-on-chat guard.
-    from app.routing.router import _is_embedding_model
     from fastapi import HTTPException
+
+    from app.routing.router import _is_embedding_model
+
     if _is_embedding_model(parsed_slug.bare_model):
         endpoint_path = "/v1/messages" if endpoint == "messages" else "/v1/chat/completions"
         raise HTTPException(
@@ -147,6 +157,7 @@ async def normalize_request_body(
 
     is_auto = is_auto_model(parsed_slug.bare_model)
     from app.routing.aliases import resolve_alias
+
     alias = await resolve_alias(db, body.get("model")) if not is_auto else None
 
     return body, _orig_request_model, parsed_slug, is_auto, alias

@@ -44,10 +44,11 @@ by the time we get here.
 
 This module is import-cheap. No FastAPI startup-time side effects.
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from fastapi import HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -67,7 +68,6 @@ from app.compliance import (
     refusal_headers_ua,
     wants_sse_prelude,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +105,7 @@ def _key_has_compliance_policy(key_record: Any) -> bool:
     return False
 
 
-def _disposition_only_headers(key_record: Any) -> Dict[str, str]:
+def _disposition_only_headers(key_record: Any) -> dict[str, str]:
     """v5.9.3 — `X-Compliance-Substitution` header for the no-substitution
     case. As of v5.14.0 the emission is owned by the response-hook
     registry (``app/api/_response_hook_runner.py``); this function
@@ -126,19 +126,15 @@ def _disposition_only_headers(key_record: Any) -> Dict[str, str]:
     }
 
 
-def _coordinator_identity_headers(request: Request) -> Dict[str, Any]:
+def _coordinator_identity_headers(request: Request) -> dict[str, Any]:
     """Pull the four `X-Coordinator-*` identity headers for audit
     correlation (CADC decision 33). Returns a plain dict with None for
     absent headers — emit_event serializes to JSON downstream."""
     return {
         "x_coordinator_client": request.headers.get("x-coordinator-client"),
         "x_coordinator_profile": request.headers.get("x-coordinator-profile"),
-        "x_coordinator_client_version": request.headers.get(
-            "x-coordinator-client-version"
-        ),
-        "x_coordinator_upstream_cli": request.headers.get(
-            "x-coordinator-upstream-cli"
-        ),
+        "x_coordinator_client_version": request.headers.get("x-coordinator-client-version"),
+        "x_coordinator_upstream_cli": request.headers.get("x-coordinator-upstream-cli"),
     }
 
 
@@ -193,19 +189,21 @@ async def raise_if_banned_client_ua(
     )
     raise HTTPException(
         status_code=451,
-        detail={"error": {
-            "type": "compliance_block",
-            "code": "client-product-banned",
-            "matched_product": product,
-            "matched_company": company,
-            "matched_pattern": pattern,
-            "audit_id": audit_id,
-            "reason": (
-                f"This API key's compliance policy prohibits clients "
-                f"identified as products of {company.title()}. Migrate "
-                f"to a non-{company.title()} client to continue."
-            ),
-        }},
+        detail={
+            "error": {
+                "type": "compliance_block",
+                "code": "client-product-banned",
+                "matched_product": product,
+                "matched_company": company,
+                "matched_pattern": pattern,
+                "audit_id": audit_id,
+                "reason": (
+                    f"This API key's compliance policy prohibits clients "
+                    f"identified as products of {company.title()}. Migrate "
+                    f"to a non-{company.title()} client to continue."
+                ),
+            }
+        },
         headers=refusal_headers_ua(
             matched_product=product,
             matched_company=company,
@@ -219,7 +217,7 @@ async def raise_if_llm_emergency_stopped(
     key_record: Any,
     *,
     endpoint: str,
-    requested_model: Optional[str] = None,
+    requested_model: str | None = None,
 ) -> None:
     """v5.2.0 / Batch V1 — global LLM kill-switch.
 
@@ -245,7 +243,7 @@ async def raise_if_llm_emergency_stopped(
 
     Raises HTTPException(503) with ``llm-emergency-stop`` reason_code.
     """
-    from app.monitoring.llm_emergency_stop import is_llm_stopped, REASON_CODE
+    from app.monitoring.llm_emergency_stop import REASON_CODE, is_llm_stopped
 
     if not await is_llm_stopped(db):
         return
@@ -263,19 +261,21 @@ async def raise_if_llm_emergency_stopped(
     )
     raise HTTPException(
         status_code=503,
-        detail={"error": {
-            "type": "llm_emergency_stop",
-            "code": REASON_CODE,
-            "audit_id": audit_id,
-            "endpoint": endpoint,
-            "reason": (
-                "LLM routing is halted by operator (emergency stop "
-                "engaged). All upstream dispatch is refused until an "
-                "administrator disengages the stop. This is a "
-                "fleet-wide compliance refusal — retrying will not "
-                "help. Contact your administrator."
-            ),
-        }},
+        detail={
+            "error": {
+                "type": "llm_emergency_stop",
+                "code": REASON_CODE,
+                "audit_id": audit_id,
+                "endpoint": endpoint,
+                "reason": (
+                    "LLM routing is halted by operator (emergency stop "
+                    "engaged). All upstream dispatch is refused until an "
+                    "administrator disengages the stop. This is a "
+                    "fleet-wide compliance refusal — retrying will not "
+                    "help. Contact your administrator."
+                ),
+            }
+        },
         headers={
             "X-Compliance-Refused": "llm-emergency-stop",
             "X-Compliance-Audit-Id": audit_id,
@@ -290,7 +290,7 @@ async def raise_for_no_substitute_exception(
     request: Request,
     db: AsyncSession,
     key_record: Any,
-    orig_request_model: Optional[str],
+    orig_request_model: str | None,
 ) -> None:
     """Convert a `ComplianceNoSubstituteError` (or its
     `ComplianceNoLocalProviderError` subclass) into the appropriate
@@ -329,18 +329,20 @@ async def raise_for_no_substitute_exception(
         )
         raise HTTPException(
             status_code=503,
-            detail={"error": {
-                "type": "compliance_no_local_provider",
-                "audit_id": audit_id,
-                "message": (
-                    "Coordinator-local was requested but no self-hosted "
-                    "provider is configured on this deployment. Operator "
-                    "action: enable a self-hosted provider (ollama / "
-                    "vllm / llamacpp / lmstudio / localai), or call a "
-                    "non-local logical alias (coordinator-code, "
-                    "coordinator-fast, coordinator-reasoning)."
-                ),
-            }},
+            detail={
+                "error": {
+                    "type": "compliance_no_local_provider",
+                    "audit_id": audit_id,
+                    "message": (
+                        "Coordinator-local was requested but no self-hosted "
+                        "provider is configured on this deployment. Operator "
+                        "action: enable a self-hosted provider (ollama / "
+                        "vllm / llamacpp / lmstudio / localai), or call a "
+                        "non-local logical alias (coordinator-code, "
+                        "coordinator-fast, coordinator-reasoning)."
+                    ),
+                }
+            },
             headers=refusal_headers_no_local(audit_id=audit_id),
         )
 
@@ -359,14 +361,13 @@ async def raise_for_no_substitute_exception(
     )
     raise HTTPException(
         status_code=503,
-        detail={"error": {
-            "type": "compliance_no_substitute",
-            "audit_id": audit_id,
-            "message": (
-                "No compliance-compatible provider available for this "
-                "request."
-            ),
-        }},
+        detail={
+            "error": {
+                "type": "compliance_no_substitute",
+                "audit_id": audit_id,
+                "message": ("No compliance-compatible provider available for this request."),
+            }
+        },
         headers=refusal_headers_no_substitute(audit_id=audit_id),
     )
 
@@ -376,8 +377,8 @@ async def emit_substitution_disclosure_for_route(
     db: AsyncSession,
     route: Any,
     key_record: Any,
-    orig_request_model: Optional[str],
-) -> Tuple[Dict[str, str], Optional[Dict[str, Any]], bool]:
+    orig_request_model: str | None,
+) -> tuple[dict[str, str], dict[str, Any] | None, bool]:
     """Emit the substitution audit row + build the disclosure surfaces
     when `route.compliance_substituted` is True. v5.0.0 decision
     8 + 15 + 23.
@@ -394,7 +395,7 @@ async def emit_substitution_disclosure_for_route(
     """
     if not getattr(route, "compliance_substituted", False):
         # v5.9.3 — always emit X-Compliance-Substitution so hub-side
-        # defense-in-depth scanners (coordinator-hub
+        # defense-in-depth scanners (integration client
         # `_scan_anthropic_response_model`) can treat absence as a hard
         # error instead of a heuristic. Pre-v5.9.3 the header was only
         # set when substitution actually fired — absence meant either
@@ -445,10 +446,7 @@ async def emit_substitution_disclosure_for_route(
         audit_id=audit_id,
         api_key_id=key_record.id,
         event_type="model_substitution",
-        reason_code=(
-            f"api-key-policy:blocked-company:"
-            f"{route.compliance_blocked_company}"
-        ),
+        reason_code=(f"api-key-policy:blocked-company:{route.compliance_blocked_company}"),
         http_status=200,
         requested_model=orig_request_model,
         served_model=served_model,
@@ -464,9 +462,9 @@ async def disclosure_headers_for_upstream_error(
     db: AsyncSession,
     route: Any,
     key_record: Any,
-    orig_request_model: Optional[str],
+    orig_request_model: str | None,
     status_code: int,
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """v5.0.1 — when dispatch fails (502 / 400 from upstream) but the
     route was a compliance substitution, the caller still deserves the
     disclosure headers (substitution decision was real; the substituted
@@ -500,10 +498,7 @@ async def disclosure_headers_for_upstream_error(
             audit_id=audit_id,
             api_key_id=key_record.id,
             event_type="model_substitution",
-            reason_code=(
-                f"api-key-policy:blocked-company:{blocked_company}"
-                f"-upstream-error"
-            ),
+            reason_code=(f"api-key-policy:blocked-company:{blocked_company}-upstream-error"),
             http_status=status_code,
             requested_model=orig_request_model,
             served_model=getattr(route, "litellm_model", None),
@@ -515,7 +510,8 @@ async def disclosure_headers_for_upstream_error(
     except Exception as exc:
         logger.warning(
             "compliance.upstream_error_audit_failed audit_id=%s err=%s",
-            audit_id, exc,
+            audit_id,
+            exc,
         )
     return headers
 

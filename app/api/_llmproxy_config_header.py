@@ -24,11 +24,12 @@ worse than silently ignoring their override.
 Unknown keys silently ignored (with a debug log). Forward-compat for
 future keys without version-bumping every caller.
 """
+
 from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import Request
 
@@ -41,21 +42,23 @@ STATE_KEY = "llmproxy_config"
 # get migrated in. Unknown keys are ignored (with a debug log) — this
 # is by design so a caller can send a config blob targeting a future
 # version of the proxy without our code choking on it.
-KNOWN_KEYS = frozenset({
-    "accept_mcp",
-    # v5.18.1 — reasoning_effort migrated. Callers can now pass
-    # "reasoning_effort" in the x-llmproxy-config blob AS AN ALTERNATIVE
-    # to setting it in the request body. If both are present, body wins
-    # (existing per-request semantics preserved). If neither, provider
-    # native_thinking_params default applies.
-    "reasoning_effort",
-    # Reserved for future migrations:
-    # "cache_mode", "fallback_chain", "cascade_mode",
-    # "model_family", "pii_mask", "vision_strip",
-})
+KNOWN_KEYS = frozenset(
+    {
+        "accept_mcp",
+        # v5.18.1 — reasoning_effort migrated. Callers can now pass
+        # "reasoning_effort" in the x-llmproxy-config blob AS AN ALTERNATIVE
+        # to setting it in the request body. If both are present, body wins
+        # (existing per-request semantics preserved). If neither, provider
+        # native_thinking_params default applies.
+        "reasoning_effort",
+        # Reserved for future migrations:
+        # "cache_mode", "fallback_chain", "cascade_mode",
+        # "model_family", "pii_mask", "vision_strip",
+    }
+)
 
 
-def parse_config_blob(raw: Optional[str]) -> dict:
+def parse_config_blob(raw: str | None) -> dict:
     """Parse the raw header value. Never raises."""
     if not raw:
         return {}
@@ -64,7 +67,8 @@ def parse_config_blob(raw: Optional[str]) -> dict:
     except (json.JSONDecodeError, ValueError) as e:
         logger.debug(
             "x-llmproxy-config: JSON parse failed — soft-ignoring. err=%s raw_prefix=%r",
-            type(e).__name__, raw[:120],
+            type(e).__name__,
+            raw[:120],
         )
         return {}
     if not isinstance(parsed, dict):
@@ -99,8 +103,10 @@ def get_config_from_request(request: Request) -> dict:
 
 
 def read_config_key(
-    request: Request, key: str, header_fallback: Optional[str] = None,
-) -> Optional[Any]:
+    request: Request,
+    key: str,
+    header_fallback: str | None = None,
+) -> Any | None:
     """Resolve one key with the documented precedence:
 
     1. If an individual ``header_fallback`` header is present + non-empty,
@@ -126,7 +132,8 @@ def read_config_key(
 
 
 def emit_config_applied_header(
-    resp_headers: dict, request: Request,
+    resp_headers: dict,
+    request: Request,
 ) -> None:
     """Debug convenience: echo the parsed config back so a caller can
     verify their blob parsed correctly. Empty parsed blob → no header
@@ -137,7 +144,9 @@ def emit_config_applied_header(
         return
     try:
         resp_headers["X-LLMProxy-Config-Applied"] = json.dumps(
-            parsed, sort_keys=True, separators=(",", ":"),
+            parsed,
+            sort_keys=True,
+            separators=(",", ":"),
         )
     except Exception:
         pass

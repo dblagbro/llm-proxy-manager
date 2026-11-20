@@ -12,6 +12,7 @@ These tests assert:
 2. The retention default is 90 days.
 3. The sweep output dict carries the new keys.
 """
+
 from __future__ import annotations
 
 
@@ -19,6 +20,7 @@ def test_helper_exists() -> None:
     """Regression: the prune sweep must include the new helper after
     v5.9.8 so an accidental removal doesn't silently regress."""
     import inspect
+
     from app.monitoring import prune
 
     assert hasattr(prune, "_prune_external_usage_snapshots")
@@ -39,6 +41,7 @@ def test_sweep_log_contains_new_field() -> None:
     new table is being swept. The format-string must reference the new
     counter and keep_days so an absence is immediately obvious."""
     import inspect
+
     from app.monitoring import prune
 
     src = inspect.getsource(prune._prune_loop)
@@ -50,6 +53,7 @@ def test_sweep_out_dict_has_new_keys() -> None:
     """Assert the sweep result dict declares the new fields up front so
     a get_last_sweep() snapshot returned mid-sweep still has them."""
     import inspect
+
     from app.monitoring import prune
 
     src = inspect.getsource(prune._sweep_once)

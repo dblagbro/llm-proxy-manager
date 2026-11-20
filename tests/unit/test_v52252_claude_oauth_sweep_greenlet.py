@@ -14,6 +14,7 @@ fresh, which is the real fix.)
 Observed live 2026-11-01: Anthropic-Gmail (invalid_grant) → `refresh_failed`
 → rollback → next provider → `sweep_failed err=...MissingGreenlet...`.
 """
+
 from __future__ import annotations
 
 import time
@@ -22,8 +23,8 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import delete
 
-_FAIL_ID = "greenlet-claude-A"   # processed first, fails → rollback
-_OK_ID = "greenlet-claude-B"     # must still be processed after the rollback
+_FAIL_ID = "greenlet-claude-A"  # processed first, fails → rollback
+_OK_ID = "greenlet-claude-B"  # must still be processed after the rollback
 
 
 @pytest_asyncio.fixture
@@ -38,11 +39,17 @@ async def fixture_db():
         await cleanup.commit()
     async with AsyncSessionLocal() as db:
         for pid, name in ((_FAIL_ID, "claude-A"), (_OK_ID, "claude-B")):
-            db.add(Provider(
-                id=pid, name=name, provider_type="claude-oauth",
-                priority=10, enabled=True,
-                oauth_refresh_token="rt-stub", oauth_expires_at=time.time() - 3600,
-            ))
+            db.add(
+                Provider(
+                    id=pid,
+                    name=name,
+                    provider_type="claude-oauth",
+                    priority=10,
+                    enabled=True,
+                    oauth_refresh_token="rt-stub",
+                    oauth_expires_at=time.time() - 3600,
+                )
+            )
         await db.commit()
 
     yield AsyncSessionLocal

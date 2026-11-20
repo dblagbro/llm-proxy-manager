@@ -17,12 +17,11 @@ it (no claims we need at v1 — chat dispatch just forwards the cookie
 as the OpenAI Bearer header into the sidecar, which converts to the
 proper ConnectRPC headers for Cursor's backend).
 """
+
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Optional
-
 
 TOKEN_PREFIX = "user_"
 
@@ -30,8 +29,8 @@ TOKEN_PREFIX = "user_"
 @dataclass
 class CursorOAuthCredentials:
     access_token: str
-    refresh_token: Optional[str] = None
-    expires_at: Optional[float] = None
+    refresh_token: str | None = None
+    expires_at: float | None = None
 
 
 class CredentialParseError(ValueError):
@@ -49,7 +48,7 @@ def normalize_messages_for_bridge(messages: list) -> list:
         at generateCursorBody (src/utils/utils.js:79)
 
     Real OpenAI accepts either ``string`` OR ``list[part]``. To keep
-    callers (claude-cli, opencode-bin, our own coordinator-hub bot)
+    callers (claude-cli, opencode-bin, our own integration client bot)
     working against cursor-oauth providers without forcing every caller
     to know about the bridge's stricter shape, this helper coerces
     every ``role:*`` message's ``content`` list to a single joined
@@ -76,6 +75,7 @@ def normalize_messages_for_bridge(messages: list) -> list:
     changes.
     """
     import json as _json
+
     if not isinstance(messages, list):
         return messages
     out: list = []
@@ -163,9 +163,7 @@ def parse_credentials(raw: str) -> CursorOAuthCredentials:
             or (j.get("tokens") or {}).get("accessToken")
         )
         if not isinstance(tok, str) or not tok:
-            raise CredentialParseError(
-                "JSON didn't contain access_token / accessToken"
-            )
+            raise CredentialParseError("JSON didn't contain access_token / accessToken")
         return CursorOAuthCredentials(access_token=tok)
 
     # Bare token

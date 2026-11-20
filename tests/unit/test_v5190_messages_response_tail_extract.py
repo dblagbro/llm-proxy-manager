@@ -10,16 +10,19 @@ v5.16.0, v5.18.0) added ~10 LOC to the same block.
 This test pins the shape of the extraction so future tail-block
 additions land in the extracted module, not back in messages.py.
 """
-from __future__ import annotations
-from pathlib import Path
 
+from __future__ import annotations
+
+from pathlib import Path
 
 # ── (1) The extracted module exists ─────────────────────────────────
 
 
 def test_extract_module_exists_and_exports_apply_response_tail():
-    from app.api._messages_response_tail import apply_response_tail
     import inspect
+
+    from app.api._messages_response_tail import apply_response_tail
+
     assert inspect.iscoroutinefunction(apply_response_tail)
 
 
@@ -31,7 +34,7 @@ def test_extract_module_ships_all_four_blocks():
     assert "apply_suggestion_header" in src
     # (2) Accept-MCP handler (individual + blob)
     assert "process_accept_header" in src
-    assert 'read_config_key(' in src
+    assert "read_config_key(" in src
     assert '"accept_mcp"' in src
     assert '"X-Proxy-Accept-MCP"' in src
     # (3) Config-applied echo
@@ -117,9 +120,7 @@ def test_messages_inline_blocks_removed():
 def test_messages_line_count_dropped():
     """Sanity: messages.py should be smaller than pre-refactor 1146 LOC."""
     lines = Path("app/api/messages.py").read_text().count("\n") + 1
-    assert lines < 1146, (
-        f"messages.py at {lines} LOC — v5.19.0 extract meant to drop it"
-    )
+    assert lines < 1146, f"messages.py at {lines} LOC — v5.19.0 extract meant to drop it"
 
 
 # ── (3) v5.14.1 handler-runner pin still passes ─────────────────────
@@ -139,10 +140,9 @@ def test_hook_runner_pin_still_holds():
 
 def test_version_bumped():
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m
     major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    assert (major, minor, patch) >= (5, 19, 0), (
-        f"expected >= 5.19.0, got {major}.{minor}.{patch}"
-    )
+    assert (major, minor, patch) >= (5, 19, 0), f"expected >= 5.19.0, got {major}.{minor}.{patch}"

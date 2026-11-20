@@ -1,13 +1,15 @@
 """Unit tests for task-adaptive branch selection + Python code extraction
 and the sandboxed Python runner (Wave 2 #11)."""
+
 import sys
 import types
-import pytest
 
 sys.modules.setdefault("litellm", types.ModuleType("litellm"))
 
-from app.cot.task_adaptive import (
-    select_task_branch, extract_python, run_python_sandbox,
+from app.cot.task_adaptive import (  # noqa: E402
+    extract_python,
+    run_python_sandbox,
+    select_task_branch,
 )
 
 

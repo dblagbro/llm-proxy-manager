@@ -1,6 +1,7 @@
 """v3.7.9 — LMRH v2 subscription_quota uses authoritative Anthropic
 snapshot when available (operator-locked design decision per Q4
 discussion 2026-05-10)."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -37,7 +38,7 @@ def test_snapshot_prefers_external_over_proxy_slice():
     """When both are available, external snapshot wins."""
     src = Path("app/routing/lmrh/snapshot.py").read_text()
     # Look for the conditional assignment
-    assert "external_snap_used if external_snap_used is not None else" in src
+    assert "external_snap_used if external_snap_used is not None else" in " ".join(src.split())
 
 
 def test_snapshot_falls_back_to_proxy_slice():

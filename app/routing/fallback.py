@@ -8,16 +8,18 @@ Streaming is handled by hedged requests (Wave 1 #4) — this module is for
 non-streaming paths only. Once a stream has started we can't fall back
 without breaking the SSE contract.
 """
+
 import logging
+from collections.abc import AsyncIterator as AsyncIterator
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import AsyncIterator, Callable, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.routing.router import select_provider, RouteResult
 from app.routing.litellm_binding import OWN_DISPATCHER_PROVIDER_TYPES
 from app.routing.lmrh import LMRHHint
+from app.routing.router import RouteResult, select_provider
 
 logger = logging.getLogger(__name__)
 
@@ -26,9 +28,9 @@ logger = logging.getLogger(__name__)
 # Anything NOT on this list triggers fallback to the next candidate.
 _SAME_PROVIDER_RETRIABLE_PREFIXES = (
     "litellm.Timeout",
-    "litellm.APIConnectionError",   # transient
+    "litellm.APIConnectionError",  # transient
     "litellm.InternalServerError",  # 5xx upstream
-    "litellm.RateLimitError",       # 429 — retry.py already backs off
+    "litellm.RateLimitError",  # 429 — retry.py already backs off
 )
 
 
@@ -45,6 +47,7 @@ def is_same_provider_retriable(exc: Exception) -> bool:
 @dataclass
 class FallbackChain:
     """Track what was tried so we can expose it via response header."""
+
     attempts: list[str] = field(default_factory=list)
 
     def add(self, provider_name: str, outcome: str) -> None:
@@ -56,16 +59,16 @@ class FallbackChain:
 
 async def try_ranked_non_streaming(
     db: AsyncSession,
-    hint: Optional[LMRHHint],
+    hint: LMRHHint | None,
     *,
     has_tools: bool,
     has_images: bool,
     key_type: str,
-    pinned_provider_id: Optional[str],
-    model_override: Optional[str],
+    pinned_provider_id: str | None,
+    model_override: str | None,
     primary_route: RouteResult,
     call_fn: Callable,
-    max_providers: Optional[int] = None,
+    max_providers: int | None = None,
 ) -> tuple[object, RouteResult, FallbackChain]:
     """
     Run `call_fn(route)` against the primary; on non-retriable failure, fall
@@ -76,8 +79,10 @@ async def try_ranked_non_streaming(
     the litellm response object.
     """
     chain = FallbackChain()
-    cap = max_providers if max_providers is not None else getattr(
-        settings, "fallback_max_providers", 3
+    cap = (
+        max_providers
+        if max_providers is not None
+        else getattr(settings, "fallback_max_providers", 3)
     )
 
     # v2.8.8: refuse to run a claude-oauth provider through the litellm chain.
@@ -86,7 +91,7 @@ async def try_ranked_non_streaming(
     # didn't, but the chain isn't the place to recover from auth-mismatch.
     current = primary_route
     tried: set[str] = set()
-    last_exc: Optional[Exception] = None
+    last_exc: Exception | None = None
     # v5.22.57: track the route that actually raised ``last_exc`` so the
     # handler can attribute the ERROR activity_log row to the failing
     # provider, not the stale primary. Without this the single llm_request
@@ -99,9 +104,14 @@ async def try_ranked_non_streaming(
         chain.add(current.provider.name, "skip:oauth-not-via-litellm")
         try:
             current = await _next_route(
-                db, hint, has_tools=has_tools, has_images=has_images,
-                key_type=key_type, pinned_provider_id=pinned_provider_id,
-                model_override=model_override, tried_ids=tried,
+                db,
+                hint,
+                has_tools=has_tools,
+                has_images=has_images,
+                key_type=key_type,
+                pinned_provider_id=pinned_provider_id,
+                model_override=model_override,
+                tried_ids=tried,
             )
         except Exception:
             current = None
@@ -134,9 +144,14 @@ async def try_ranked_non_streaming(
         # Pick the next-best provider, excluding anyone already attempted.
         try:
             current = await _next_route(
-                db, hint, has_tools=has_tools, has_images=has_images,
-                key_type=key_type, pinned_provider_id=pinned_provider_id,
-                model_override=model_override, tried_ids=tried,
+                db,
+                hint,
+                has_tools=has_tools,
+                has_images=has_images,
+                key_type=key_type,
+                pinned_provider_id=pinned_provider_id,
+                model_override=model_override,
+                tried_ids=tried,
             )
         except Exception as sel_exc:
             logger.info("fallback.no_more_candidates %s", sel_exc)
@@ -162,22 +177,20 @@ async def _record_billing_failure(route: RouteResult, exc: Exception) -> None:
 
         if is_billing_error(str(exc)):
             await record_failure(route.provider.id, billing_error=True)
-            logger.warning(
-                "fallback.billing_failure_recorded provider=%s", route.provider.id
-            )
+            logger.warning("fallback.billing_failure_recorded provider=%s", route.provider.id)
     except Exception:  # pragma: no cover - defensive
         logger.debug("fallback.billing_failure_record_failed", exc_info=True)
 
 
 async def _next_route(
     db: AsyncSession,
-    hint: Optional[LMRHHint],
+    hint: LMRHHint | None,
     *,
     has_tools: bool,
     has_images: bool,
     key_type: str,
-    pinned_provider_id: Optional[str],
-    model_override: Optional[str],
+    pinned_provider_id: str | None,
+    model_override: str | None,
     tried_ids: set[str],
 ) -> RouteResult:
     """Ask select_provider for the best candidate that is not already tried.
@@ -218,8 +231,12 @@ async def _next_route(
     while True:
         try:
             candidate = await select_provider(
-                db, hint, has_tools=has_tools, has_images=has_images,
-                key_type=key_type, pinned_provider_id=None,
+                db,
+                hint,
+                has_tools=has_tools,
+                has_images=has_images,
+                key_type=key_type,
+                pinned_provider_id=None,
                 model_override=model_override,
                 exclude_provider_ids=extended_excluded,
             )

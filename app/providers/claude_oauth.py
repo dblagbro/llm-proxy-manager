@@ -26,14 +26,14 @@ the request will 401 and the admin must paste a new one. v2.7.x will
 add the refresh flow once we capture a fresh ``claude login`` that
 exposes the refresh endpoint.
 """
+
 from __future__ import annotations
 
 import json
 import time
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
-
 
 PLATFORM_BASE_URL = "https://platform.claude.com"
 
@@ -65,18 +65,16 @@ OAUTH_BETA_FLAGS = (
 # get a normal context_length_exceeded error from upstream instead of
 # the misleading "subscription" 400.
 _LONG_CONTEXT_MODEL_PATTERNS = (
-    "sonnet-4-6",   # claude-sonnet-4-6, claude-sonnet-4-6-YYYYMMDD
-    "opus-4-7",     # claude-opus-4-7, claude-opus-4-7-YYYYMMDD
+    "sonnet-4-6",  # claude-sonnet-4-6, claude-sonnet-4-6-YYYYMMDD
+    "opus-4-7",  # claude-opus-4-7, claude-opus-4-7-YYYYMMDD
 )
 
 
 # v5.0.21 — module-level ContextVar lets dispatch sites set the
 # per-provider 1M-context opt-out without changing every signature
 # in the OAuth call chain. Reset on each dispatch (defaults False).
-from contextvars import ContextVar
-_disable_long_context_cv: ContextVar[bool] = ContextVar(
-    "disable_long_context", default=False
-)
+
+_disable_long_context_cv: ContextVar[bool] = ContextVar("disable_long_context", default=False)
 
 
 def set_disable_long_context(flag: bool) -> None:
@@ -114,6 +112,7 @@ def _beta_flags_for_model(model: str, disable_long_context: bool = False) -> str
     parts = [f.strip() for f in OAUTH_BETA_FLAGS.split(",")]
     return ",".join(p for p in parts if p != "context-1m-2025-08-07")
 
+
 ANTHROPIC_API_VERSION = "2023-06-01"
 
 TOKEN_PREFIX = "sk-ant-oat"  # covers sk-ant-oat01-... and any future variant
@@ -122,8 +121,8 @@ TOKEN_PREFIX = "sk-ant-oat"  # covers sk-ant-oat01-... and any future variant
 @dataclass
 class ClaudeOAuthCredentials:
     access_token: str
-    refresh_token: Optional[str] = None
-    expires_at: Optional[float] = None  # unix timestamp
+    refresh_token: str | None = None
+    expires_at: float | None = None  # unix timestamp
 
 
 class CredentialParseError(ValueError):
@@ -199,7 +198,7 @@ def parse_credentials(raw: str) -> ClaudeOAuthCredentials:
     )
 
 
-def _extract_expiry(data: dict) -> Optional[float]:
+def _extract_expiry(data: dict) -> float | None:
     if "expires_at" in data or "expiresAt" in data:
         return _to_unix_ts(data.get("expires_at") or data.get("expiresAt"))
     if "expires_in" in data or "expiresIn" in data:
@@ -211,7 +210,7 @@ def _extract_expiry(data: dict) -> Optional[float]:
     return None
 
 
-def _to_unix_ts(v) -> Optional[float]:
+def _to_unix_ts(v) -> float | None:
     if v is None:
         return None
     if isinstance(v, (int, float)):
@@ -236,7 +235,7 @@ def _to_unix_ts(v) -> Optional[float]:
 
 def build_headers(
     access_token: str,
-    model: Optional[str] = None,
+    model: str | None = None,
     disable_long_context: bool = False,
 ) -> dict[str, str]:
     """Return the exact header set Claude Code uses for OAuth-authenticated
@@ -259,13 +258,15 @@ def build_headers(
     return {
         "Authorization": f"Bearer {access_token}",
         "anthropic-version": ANTHROPIC_API_VERSION,
-        "anthropic-beta": _beta_flags_for_model(model or "", disable_long_context=effective_disable),
+        "anthropic-beta": _beta_flags_for_model(
+            model or "", disable_long_context=effective_disable
+        ),
         "anthropic-dangerous-direct-browser-access": "true",
         "x-app": "cli",
     }
 
 
-def is_token_expired(expires_at: Optional[float], skew_seconds: float = 30.0) -> bool:
+def is_token_expired(expires_at: float | None, skew_seconds: float = 30.0) -> bool:
     """Lazy-refresh check. Returns True if the access token is expired OR
     within ``skew_seconds`` of expiring."""
     if expires_at is None:

@@ -20,9 +20,10 @@ The fix:
 These tests exercise the new branches against an in-memory provider
 ORM instance (no DB needed — pass ``snapshot`` directly).
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -32,7 +33,8 @@ from app.routing.external_rotation import evaluate_rules_for_provider
 
 def _mk_provider(*, auto_skip_until=None, auto_skip_reason=None):
     return SimpleNamespace(
-        id="p-test", name="Test",
+        id="p-test",
+        name="Test",
         auto_skip_until=auto_skip_until,
         auto_skip_reason=auto_skip_reason,
     )
@@ -64,8 +66,10 @@ async def test_session_100pct_skips_until_session_reset_even_when_weekly_healthy
     weekly_reset = datetime(2026, 6, 6, 21, 0)
     p = _mk_provider()
     snap = _mk_snap(
-        seven_day_utilization=13.0, seven_day_resets_at=weekly_reset,
-        five_hour_utilization=100.0, five_hour_resets_at=session_reset,
+        seven_day_utilization=13.0,
+        seven_day_resets_at=weekly_reset,
+        five_hour_utilization=100.0,
+        five_hour_resets_at=session_reset,
     )
     out = await evaluate_rules_for_provider(None, p, snapshot=snap)
     assert out["decision"] == "skip_set"
@@ -80,11 +84,13 @@ async def test_both_buckets_exhausted_skip_until_later_reset():
     """Both buckets at-cap. skip_until should be the LATER reset so
     we don't unskip while one bucket still says we're locked out."""
     session_reset = datetime(2026, 6, 4, 23, 40)
-    weekly_reset = datetime(2026, 6, 6, 21, 0)   # later
+    weekly_reset = datetime(2026, 6, 6, 21, 0)  # later
     p = _mk_provider()
     snap = _mk_snap(
-        seven_day_utilization=99.0, seven_day_resets_at=weekly_reset,
-        five_hour_utilization=100.0, five_hour_resets_at=session_reset,
+        seven_day_utilization=99.0,
+        seven_day_resets_at=weekly_reset,
+        five_hour_utilization=100.0,
+        five_hour_resets_at=session_reset,
     )
     out = await evaluate_rules_for_provider(None, p, snapshot=snap)
     assert out["decision"] == "skip_set"
@@ -107,8 +113,10 @@ async def test_session_clears_only_when_both_buckets_ok():
         auto_skip_reason="session utilization 100.0% >= 100%",
     )
     snap = _mk_snap(
-        seven_day_utilization=5.0, seven_day_resets_at=None,
-        five_hour_utilization=100.0, five_hour_resets_at=datetime(2026, 6, 4, 23, 40),
+        seven_day_utilization=5.0,
+        seven_day_resets_at=None,
+        five_hour_utilization=100.0,
+        five_hour_resets_at=datetime(2026, 6, 4, 23, 40),
     )
     out = await evaluate_rules_for_provider(None, p, snapshot=snap)
     # Session is still 100% so we re-set the skip (skip_set) rather
@@ -126,8 +134,10 @@ async def test_clear_when_both_buckets_recovered():
         auto_skip_reason="weekly utilization 95% >= 90% threshold",
     )
     snap = _mk_snap(
-        seven_day_utilization=10.0, seven_day_resets_at=None,
-        five_hour_utilization=20.0, five_hour_resets_at=None,
+        seven_day_utilization=10.0,
+        seven_day_resets_at=None,
+        five_hour_utilization=20.0,
+        five_hour_resets_at=None,
     )
     out = await evaluate_rules_for_provider(None, p, snapshot=snap)
     assert out["decision"] == "skip_cleared"
@@ -146,7 +156,8 @@ async def test_weekly_only_snapshot_still_works():
     weekly_reset = datetime(2026, 6, 6, 21, 0)
     p = _mk_provider()
     snap = _mk_snap(
-        seven_day_utilization=98.0, seven_day_resets_at=weekly_reset,
+        seven_day_utilization=98.0,
+        seven_day_resets_at=weekly_reset,
         # five_hour_* both None
     )
     out = await evaluate_rules_for_provider(None, p, snapshot=snap)
@@ -161,7 +172,8 @@ async def test_session_only_snapshot_still_works():
     session_reset = datetime(2026, 6, 4, 23, 40)
     p = _mk_provider()
     snap = _mk_snap(
-        five_hour_utilization=100.0, five_hour_resets_at=session_reset,
+        five_hour_utilization=100.0,
+        five_hour_resets_at=session_reset,
         # seven_day_* both None
     )
     out = await evaluate_rules_for_provider(None, p, snapshot=snap)
@@ -173,7 +185,7 @@ async def test_session_only_snapshot_still_works():
 async def test_no_utilization_at_all_returns_no_decision():
     """Both buckets None → no_utilization (regression: don't crash)."""
     p = _mk_provider()
-    snap = _mk_snap()    # both buckets None
+    snap = _mk_snap()  # both buckets None
     out = await evaluate_rules_for_provider(None, p, snapshot=snap)
     assert out["decision"] == "no_utilization"
 

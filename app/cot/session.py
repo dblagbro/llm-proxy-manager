@@ -2,11 +2,10 @@
 Redis-backed CoT-E session store with in-memory fallback.
 Accumulates prior plan analyses per session to enrich multi-turn reasoning.
 """
+
 import json
-import time
-import asyncio
 import logging
-from typing import Optional
+import time
 
 from app.config import settings
 
@@ -26,6 +25,7 @@ async def _get_redis():
         return None
     try:
         import redis.asyncio as aioredis
+
         _redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
         await _redis_client.ping()
         _redis_ok = True
@@ -43,7 +43,7 @@ def _clean_fallback():
             del _fallback[k]
 
 
-async def get_session_analyses(session_id: Optional[str]) -> list[str]:
+async def get_session_analyses(session_id: str | None) -> list[str]:
     if not session_id:
         return []
     r = await _get_redis()
@@ -59,7 +59,7 @@ async def get_session_analyses(session_id: Optional[str]) -> list[str]:
     return []
 
 
-async def save_session_analysis(session_id: Optional[str], analysis: str):
+async def save_session_analysis(session_id: str | None, analysis: str):
     if not session_id or not analysis:
         return
     r = await _get_redis()
@@ -69,7 +69,7 @@ async def save_session_analysis(session_id: Optional[str], analysis: str):
         try:
             raw = await r.get(_KEY_PREFIX + session_id)
             existing = json.loads(raw).get("analyses", []) if raw else []
-            analyses = [*existing[-(max_a - 1):], analysis]
+            analyses = [*existing[-(max_a - 1) :], analysis]
             await r.set(
                 _KEY_PREFIX + session_id,
                 json.dumps({"analyses": analyses}),
@@ -81,6 +81,6 @@ async def save_session_analysis(session_id: Optional[str], analysis: str):
 
     _clean_fallback()
     s = _fallback.get(session_id, {"analyses": [], "ts": 0})
-    s["analyses"] = [*s["analyses"][-(max_a - 1):], analysis]
+    s["analyses"] = [*s["analyses"][-(max_a - 1) :], analysis]
     s["ts"] = time.time()
     _fallback[session_id] = s

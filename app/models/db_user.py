@@ -8,9 +8,10 @@ Split out from ``db.py`` in v4.4.11. Owns:
 The auth ``Session`` model lives in ``db_base.py`` (alongside Base
 itself).
 """
+
 import secrets
 
-from sqlalchemy import Column, String, Float, DateTime, Text
+from sqlalchemy import Column, DateTime, Float, String, Text
 from sqlalchemy.sql import func
 
 from app.models.db_base import Base
@@ -28,8 +29,8 @@ class User(Base):
     # without an email simply cannot self-serve (an admin resets it instead).
     email = Column(String, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
-    timezone = Column(String, nullable=True)      # IANA name; NULL = browser default
-    time_format = Column(String, nullable=True)   # '12h'|'24h'|NULL = locale default
+    timezone = Column(String, nullable=True)  # IANA name; NULL = browser default
+    time_format = Column(String, nullable=True)  # '12h'|'24h'|NULL = locale default
     # v5.0.22 — soft-delete tombstone + LWW timestamp for the same
     # reason api_keys / providers needed them (v3.0.20 / v2.8.2):
     # cluster sync's "insert-if-missing" merge resurrects deleted
@@ -49,6 +50,7 @@ class PasswordResetToken(Base):
     Deliberately NOT cluster-synced: a reset is a local, short-lived action and
     replicating live tokens would widen the blast radius of a peer compromise.
     """
+
     __tablename__ = "password_reset_tokens"
 
     id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
@@ -62,9 +64,10 @@ class PasswordResetToken(Base):
 
 class SystemSetting(Base):
     """Key/value store for runtime-tunable settings (overlays env-var defaults)."""
+
     __tablename__ = "system_settings"
 
     key = Column(String, primary_key=True)
-    value = Column(Text, nullable=False)        # always stored as string
+    value = Column(Text, nullable=False)  # always stored as string
     value_type = Column(String, default="str")  # str|int|float|bool
-    updated_at = Column(Float, default=0.0)     # Unix timestamp — used for last-write-wins sync
+    updated_at = Column(Float, default=0.0)  # Unix timestamp — used for last-write-wins sync

@@ -1,14 +1,13 @@
 """CRUD for model aliases — admin-only."""
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.admin import AdminUser, require_admin
 from app.models.database import get_db
 from app.models.db import ModelAlias
-from app.auth.admin import require_admin, AdminUser
 from app.utils.timefmt import utc_iso
 
 router = APIRouter(prefix="/api/aliases", tags=["aliases"])
@@ -16,9 +15,9 @@ router = APIRouter(prefix="/api/aliases", tags=["aliases"])
 
 class AliasBody(BaseModel):
     alias: str
-    provider_id: Optional[str] = None
+    provider_id: str | None = None
     model_id: str
-    description: Optional[str] = None
+    description: str | None = None
 
 
 @router.get("")

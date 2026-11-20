@@ -13,6 +13,7 @@ each record (benign disconnect vs genuine fault) and increments the
 visible on ``/metrics`` and a fault spike is distinguishable from
 routine client churn.
 """
+
 from __future__ import annotations
 
 import logging
@@ -75,11 +76,7 @@ def install_infra_error_tap() -> None:
         return
     # Pool issues surface at WARNING+ (the GC "non-checked-in connection"
     # message) and ERROR ("Exception terminating connection").
-    logging.getLogger("sqlalchemy.pool").addHandler(
-        _InfraErrorTap("pool", logging.WARNING)
-    )
+    logging.getLogger("sqlalchemy.pool").addHandler(_InfraErrorTap("pool", logging.WARNING))
     # ASGI crashes are logged at ERROR by uvicorn's error logger.
-    logging.getLogger("uvicorn.error").addHandler(
-        _InfraErrorTap("asgi", logging.ERROR)
-    )
+    logging.getLogger("uvicorn.error").addHandler(_InfraErrorTap("asgi", logging.ERROR))
     _installed = True

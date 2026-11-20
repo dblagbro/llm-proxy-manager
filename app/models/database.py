@@ -1,14 +1,17 @@
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+import logging
+import time
+import traceback
+
 from sqlalchemy import event
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
 from app.config import settings
-from app.models.db import Base
+
 # v3.2.11: auto-bump Provider.last_user_edit_at on user-meaningful column
 # changes. Side-effect import — registers a SQLAlchemy event listener.
 # See _user_edit_stamp.py for design rationale.
 from app.models import _user_edit_stamp  # noqa: F401
-import logging
-import time
-import traceback
+from app.models.db import Base
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +107,7 @@ engine = create_async_engine(
 # and must be re-applied at checkout. Sync hook because SQLAlchemy fires
 # the event with a sync connection object.
 if "sqlite" in settings.database_url:
+
     @event.listens_for(engine.sync_engine, "connect")
     def _sqlite_pragmas(dbapi_conn, _conn_record):
         try:
@@ -114,8 +118,9 @@ if "sqlite" in settings.database_url:
         except Exception as e:
             logger.warning(f"SQLite PRAGMA setup failed: {e}")
 
+
 # v3.10.2 (ARCH-A) — DB connection-pool checkout tracer. The latent
-# pool leak (www01 + GCP saturated QueuePool 13-20h post-deploy,
+# pool leak (multiple gateways saturated QueuePool 13-20h post-deploy,
 # returning /health 500s) has an unknown root cause: every
 # ``AsyncSessionLocal()`` is ``async with``-wrapped, so it is not naive
 # session leakage. This tracer records the acquisition stack of every
@@ -174,9 +179,11 @@ def get_async_session_trace() -> list[dict]:
     will show up here with their originating ``async with``."""
     now = time.monotonic()
     out = [
-        {"age_sec": round(now - rec["since"], 1),
-         "session_id": rec["session_id"],
-         "stack": rec["stack"]}
+        {
+            "age_sec": round(now - rec["since"], 1),
+            "session_id": rec["session_id"],
+            "stack": rec["stack"],
+        }
         for rec in list(_async_session_traces.values())
     ]
     out.sort(key=lambda e: e["age_sec"], reverse=True)
@@ -226,12 +233,11 @@ if settings.db_pool_trace:
 else:
     _session_class = AsyncSession
 
-AsyncSessionLocal = async_sessionmaker(
-    engine, class_=_session_class, expire_on_commit=False
-)
+AsyncSessionLocal = async_sessionmaker(engine, class_=_session_class, expire_on_commit=False)
 
 
 if settings.db_pool_trace:
+
     @event.listens_for(engine.sync_engine, "checkout")
     def _trace_pool_checkout(_dbapi_conn, conn_record, _conn_proxy):
         # v4.4.19 — was ``[-45:]``, dropped. ``format_stack()`` returns
@@ -241,7 +247,7 @@ if settings.db_pool_trace:
         # is what we want for leak hunting — exactly the part the slice
         # was discarding. (Both v3.10.13's bump 18→45 and the original
         # ``[-18:]`` had this direction wrong; the 2026-05-26 ARCH-A
-        # trace on www01 returned an all-SQLA stack despite a 59h
+        # trace on the first gateway returned an all-SQLA stack despite a 59h
         # leaked checkout, which is what surfaced it.) Drop the
         # trailing ``format_stack`` frame only.
         # v4.4.22 NOTE: the greenlet boundary defeats this whichever
@@ -250,7 +256,8 @@ if settings.db_pool_trace:
         # actually name app code. See ``get_async_session_trace()``.
         stack = "".join(traceback.format_stack()[:-1])
         _pool_checkouts[id(conn_record)] = {
-            "since": time.monotonic(), "stack": stack,
+            "since": time.monotonic(),
+            "stack": stack,
         }
 
     @event.listens_for(engine.sync_engine, "checkin")
@@ -271,6 +278,7 @@ async def init_db():
     # was the only thing registering the table, autogenerate could not see it.
     # If you remove one of the two, remove THIS one, not the aggregation.
     from app.models import db_model_pricing  # noqa: F401
+
     async with engine.begin() as conn:
         # v3.0.3: enable WAL + busy_timeout for SQLite. Without these,
         # concurrent writers (cluster /sync receivers + keep-alive probes
@@ -452,7 +460,8 @@ async def init_db():
             # value). Cluster sync propagates the new value via the
             # existing Provider sync path so peer nodes converge on
             # the new name even if they haven't been restarted yet.
-            "UPDATE providers SET provider_type='ChatGPT-oauth-plan' WHERE provider_type='codex-oauth'",
+            "UPDATE providers SET provider_type='ChatGPT-oauth-plan' WHERE "
+            "provider_type='codex-oauth'",
             # v3.8.2 (#261) — backfill manual_override_until on
             # providers that were Disabled BEFORE v3.7.28 shipped the
             # sticky-disable mechanism. Without this, the AI provider
@@ -463,7 +472,8 @@ async def init_db():
             # Safe to re-run: no-op when no rows match. Uses the
             # ``9999-12-31 23:59:59`` sentinel that toggle_provider
             # writes for indefinite locks.
-            "UPDATE providers SET manual_override_until='9999-12-31 23:59:59' WHERE enabled=0 AND manual_override_until IS NULL AND deleted_at IS NULL",
+            "UPDATE providers SET manual_override_until='9999-12-31 23:59:59' "
+            "WHERE enabled=0 AND manual_override_until IS NULL AND deleted_at IS NULL",
             # v3.8.3 (#263) — flip native_tools=False on every Grok-Web
             # ModelCapability row. Grok-Web is a Playwright-driven
             # screen-scrape of grok.com chat — it has NO native function-
@@ -474,7 +484,8 @@ async def init_db():
             # will engage the emulation layer (system-prompt injection +
             # <tool_call> marker parsing) instead of pretending grok.com
             # natively supports tools.
-            "UPDATE model_capabilities SET native_tools=0 WHERE provider_id IN (SELECT id FROM providers WHERE provider_type='grok-web')",
+            "UPDATE model_capabilities SET native_tools=0 WHERE provider_id IN "
+            "(SELECT id FROM providers WHERE provider_type='grok-web')",
             # v3.8.5 (#265) — rolling tool-call success rate column
             # populated by the v3.8.4 tool prober. Router uses it to
             # weight candidates on has_tools=True requests.
@@ -586,16 +597,19 @@ async def init_db():
             # Authenticated requests look up api_keys by key_hash on every call
             "CREATE INDEX IF NOT EXISTS ix_api_keys_key_hash ON api_keys(key_hash)",
             # Activity log: most queries are "recent events" or "recent events for provider X"
-            "CREATE INDEX IF NOT EXISTS ix_activity_log_created_at ON activity_log(created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS ix_activity_log_created_at ON "
+            "activity_log(created_at DESC)",
             "CREATE INDEX IF NOT EXISTS ix_activity_log_provider_id ON activity_log(provider_id)",
             "CREATE INDEX IF NOT EXISTS ix_activity_log_severity ON activity_log(severity)",
             # v3.0.35: per-key filter on /api/monitoring/activity (DevinGPT
             # + operator ask 2026-05-01). Composite (api_key_id, created_at)
             # covers the common "events for this key in last 1h" query.
-            "CREATE INDEX IF NOT EXISTS ix_activity_log_api_key_created ON activity_log(api_key_id, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS ix_activity_log_api_key_created ON "
+            "activity_log(api_key_id, created_at DESC)",
             "CREATE INDEX IF NOT EXISTS ix_activity_log_event_type ON activity_log(event_type)",
             # Provider metrics rollup queries are always (provider_id, bucket_ts)
-            "CREATE INDEX IF NOT EXISTS ix_provider_metrics_provider_bucket ON provider_metrics(provider_id, bucket_ts DESC)",
+            "CREATE INDEX IF NOT EXISTS ix_provider_metrics_provider_bucket ON "
+            "provider_metrics(provider_id, bucket_ts DESC)",
             # api_keys.last_used_at — used by activity rollup + key-usage UI
             "CREATE INDEX IF NOT EXISTS ix_api_keys_last_used_at ON api_keys(last_used_at DESC)",
             # v3.0 R1 — Run runtime hot paths
@@ -605,23 +619,30 @@ async def init_db():
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_run_messages_seq ON run_messages(run_id, seq)",
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_run_events_seq ON run_events(run_id, seq)",
             "CREATE INDEX IF NOT EXISTS ix_run_events_ts ON run_events(run_id, ts)",
-            "CREATE INDEX IF NOT EXISTS ix_run_idempotency_created_at ON run_idempotency(created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_run_idempotency_created_at ON "
+            "run_idempotency(created_at)",
             # Hub team flag A: secondary index for the 24h-TTL prune sweep.
             # Composite PK is (api_key_id, idempotency_key); prune walks by
             # created_at across all api_keys, so an index on (created_at)
             # alone (above) is the cheap right shape. Adding the leading-key
             # variant here so a future "purge keys for tenant X" lookup is
             # also indexed without a scan.
-            "CREATE INDEX IF NOT EXISTS ix_run_idempotency_key_created ON run_idempotency(idempotency_key, created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_run_idempotency_key_created ON "
+            "run_idempotency(idempotency_key, created_at)",
             # v5.0.0 — compliance audit indices.
-            "CREATE INDEX IF NOT EXISTS ix_compliance_events_api_key_created ON compliance_events(api_key_id, created_at DESC)",
-            "CREATE INDEX IF NOT EXISTS ix_compliance_events_event_type ON compliance_events(event_type)",
-            "CREATE INDEX IF NOT EXISTS ix_compliance_policy_changes_at ON compliance_policy_changes(changed_at DESC)",
+            "CREATE INDEX IF NOT EXISTS ix_compliance_events_api_key_created ON "
+            "compliance_events(api_key_id, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS ix_compliance_events_event_type ON "
+            "compliance_events(event_type)",
+            "CREATE INDEX IF NOT EXISTS ix_compliance_policy_changes_at ON "
+            "compliance_policy_changes(changed_at DESC)",
         ]:
             try:
                 await conn.exec_driver_sql(index_stmt)
             except Exception as e:
-                logger.warning(f"index create failed (likely missing column): {index_stmt[:60]}... — {e}")
+                logger.warning(
+                    f"index create failed (likely missing column): {index_stmt[:60]}... — {e}"
+                )
 
         # v4.4.27 — BUG-079 permanent fix. De-dup `provider_ai_review`
         # (+ `api_key_ai_review`) and then enforce
@@ -666,8 +687,7 @@ async def init_db():
                 """)
                 idx_name = f"ux_{tbl}_{'_'.join(cols)}"
                 await conn.exec_driver_sql(
-                    f"CREATE UNIQUE INDEX IF NOT EXISTS {idx_name} "
-                    f"ON {tbl}({col_list})"
+                    f"CREATE UNIQUE INDEX IF NOT EXISTS {idx_name} ON {tbl}({col_list})"
                 )
             except Exception as e:
                 # If the table doesn't exist yet (fresh DB before
@@ -675,8 +695,7 @@ async def init_db():
                 # benign condition, log + continue. The migration is
                 # belt-and-braces over the .limit(1) guard.
                 logger.warning(
-                    f"v4.4.27 UNIQUE constraint setup failed for {tbl}: "
-                    f"{type(e).__name__}: {e}"
+                    f"v4.4.27 UNIQUE constraint setup failed for {tbl}: {type(e).__name__}: {e}"
                 )
 
         # v5.0.0 — one-shot backfill of ``providers.owner_company`` from
@@ -688,7 +707,6 @@ async def init_db():
         # single boot — only updates rows where owner_company IS NULL,
         # never overwrites operator-set values.
         try:
-            from sqlalchemy import text as _text
             applied = await conn.exec_driver_sql(
                 "SELECT value FROM system_settings WHERE key='owner_company_backfill_applied'"
             )
@@ -697,6 +715,7 @@ async def init_db():
                 from app.compliance.company_map import (
                     provider_type_to_company as _ptc,
                 )
+
                 rs = await conn.exec_driver_sql(
                     "SELECT id, provider_type FROM providers WHERE owner_company IS NULL"
                 )
@@ -712,9 +731,12 @@ async def init_db():
                         n += 1
                 await conn.exec_driver_sql(
                     "INSERT OR REPLACE INTO system_settings(key, value, value_type, updated_at) "
-                    "VALUES ('owner_company_backfill_applied', 'true', 'bool', strftime('%s','now'))"
+                    "VALUES ('owner_company_backfill_applied', 'true', 'bool', "
+                    "strftime('%s','now'))"
                 )
-                logger.info(f"v5.0.0 backfill: derived owner_company for {n} providers (gated; one-shot)")
+                logger.info(
+                    f"v5.0.0 backfill: derived owner_company for {n} providers (gated; one-shot)"
+                )
         except Exception as e:
             # Non-fatal — provider rows can be backfilled manually via PATCH.
             logger.warning(f"v5.0.0 owner_company backfill skipped: {type(e).__name__}: {e}")
@@ -725,12 +747,11 @@ async def init_db():
     # this data anyway; the seed is prep for the v5.15.1 dispatch flip).
     try:
         from app.providers.oauth_account_seeder import seed_missing_accounts
+
         async with AsyncSessionLocal() as _seed_session:
             counts = await seed_missing_accounts(_seed_session)
             if counts.get("seeded", 0) > 0:
-                logger.info(
-                    f"v5.15.0 seed provider_oauth_accounts: {counts}"
-                )
+                logger.info(f"v5.15.0 seed provider_oauth_accounts: {counts}")
     except Exception as e:
         logger.warning(f"v5.15.0 oauth_account_seeder skipped: {type(e).__name__}: {e}")
 
@@ -777,6 +798,7 @@ async def get_db() -> AsyncSession:
     handler, so the pool state is intact.
     """
     import asyncio as _asyncio
+
     from sqlalchemy.exc import OperationalError
 
     session = AsyncSessionLocal()
@@ -790,9 +812,7 @@ async def get_db() -> AsyncSession:
             # get here, the shield's Task-wrapping still finishes the
             # close call — pool slot returns cleanly — and THEN
             # re-raises the CancelledError.
-            await _asyncio.shield(
-                session.__aexit__(None, None, None)
-            )
+            await _asyncio.shield(session.__aexit__(None, None, None))
     except OperationalError as exc:
         # Post-cancellation: aiosqlite connection got closed before
         # SQLA finished its cleanup. The shielded __aexit__ has already

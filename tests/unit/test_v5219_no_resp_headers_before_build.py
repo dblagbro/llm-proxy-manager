@@ -16,7 +16,9 @@ Also related: v5.21.1 hotfix for a similar local-name-shadowing bug.
 Both shipped from refactors that failed to run any test hitting the
 actual endpoint.
 """
+
 from __future__ import annotations
+
 import ast
 from pathlib import Path
 
@@ -47,9 +49,12 @@ def _check_file(path: Path) -> list[str]:
             continue  # never assigned in this function; not our concern
         # Now walk again and flag any Name Load of resp_headers before that
         for sub in ast.walk(node):
-            if isinstance(sub, ast.Name) and sub.id == "resp_headers" \
-                    and isinstance(sub.ctx, ast.Load) \
-                    and sub.lineno < assigned_line:
+            if (
+                isinstance(sub, ast.Name)
+                and sub.id == "resp_headers"
+                and isinstance(sub.ctx, ast.Load)
+                and sub.lineno < assigned_line
+            ):
                 offenders.append(f"{node.name} @ line {sub.lineno} (assigned at {assigned_line})")
                 break  # one report per function is enough
 
@@ -74,10 +79,9 @@ def test_completions_no_resp_headers_before_build():
 
 def test_version_bumped():
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m
     major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    assert (major, minor, patch) >= (5, 21, 9), (
-        f"expected >= 5.21.9, got {major}.{minor}.{patch}"
-    )
+    assert (major, minor, patch) >= (5, 21, 9), f"expected >= 5.21.9, got {major}.{minor}.{patch}"

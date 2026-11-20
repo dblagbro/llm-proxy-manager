@@ -15,6 +15,7 @@ Source pins:
     the call. This was a real regression caught 2026-06-05 by the
     test_v31015 suite.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -22,18 +23,19 @@ from types import SimpleNamespace
 
 import pytest
 
-
 # ── Behavioral ──────────────────────────────────────────────────────
 
 
 def test_beta_flags_strips_1m_when_disable_true():
     from app.providers.claude_oauth import _beta_flags_for_model
+
     flags = _beta_flags_for_model("claude-sonnet-4-6", disable_long_context=True)
     assert "context-1m-2025-08-07" not in flags
 
 
 def test_beta_flags_keeps_1m_for_whitelisted_when_disable_false():
     from app.providers.claude_oauth import _beta_flags_for_model
+
     flags = _beta_flags_for_model("claude-sonnet-4-6", disable_long_context=False)
     assert "context-1m-2025-08-07" in flags
 
@@ -41,6 +43,7 @@ def test_beta_flags_keeps_1m_for_whitelisted_when_disable_false():
 def test_beta_flags_strips_1m_for_haiku_regardless():
     """Haiku was never on the 1M whitelist; flag has no effect here."""
     from app.providers.claude_oauth import _beta_flags_for_model
+
     flags_default = _beta_flags_for_model("claude-haiku-4-5", disable_long_context=False)
     flags_disabled = _beta_flags_for_model("claude-haiku-4-5", disable_long_context=True)
     assert "context-1m-2025-08-07" not in flags_default
@@ -51,8 +54,11 @@ def test_build_headers_honors_contextvar():
     """When the dispatch site sets the ContextVar, build_headers picks
     it up without an explicit kwarg."""
     from app.providers.claude_oauth import (
-        build_headers, set_disable_long_context, _disable_long_context_cv,
+        _disable_long_context_cv,
+        build_headers,
+        set_disable_long_context,
     )
+
     _disable_long_context_cv.set(False)
     h1 = build_headers("tok", model="claude-sonnet-4-6")
     assert "context-1m-2025-08-07" in h1["anthropic-beta"]
@@ -67,7 +73,8 @@ def test_build_headers_honors_contextvar():
 def test_build_headers_kwarg_overrides_contextvar():
     """If a caller passes ``disable_long_context=True`` explicitly,
     that wins regardless of ContextVar state."""
-    from app.providers.claude_oauth import build_headers, _disable_long_context_cv
+    from app.providers.claude_oauth import _disable_long_context_cv, build_headers
+
     _disable_long_context_cv.set(False)
     h = build_headers("tok", model="claude-sonnet-4-6", disable_long_context=True)
     assert "context-1m-2025-08-07" not in h["anthropic-beta"]
@@ -116,15 +123,16 @@ def test_dispatch_sites_use_identity_check_not_bool():
     for path in targets:
         src = Path(path).read_text()
         # The dispatch lines should contain `is True` adjacent to the lookup
-        lines_with_long_context = [
-            ln for ln in src.splitlines()
+        _lines_with_long_context = [
+            ln
+            for ln in src.splitlines()
             if "disable_long_context" in ln and ("getattr" in ln or "extra_config" in ln)
         ]
         # At least one of the relevant lines should include the `is True` check
         # OR the next few lines should (multi-line set_disable_long_context call)
         idx = src.find("disable_long_context")
         while idx != -1:
-            window = src[idx:idx + 300]
+            window = src[idx : idx + 300]
             if "is True" in window:
                 break
             idx = src.find("disable_long_context", idx + 1)

@@ -15,10 +15,10 @@ This file guards:
    is a 6-line block right after auth).
 3. The admin endpoint reads the counter and computes ``header_seen``.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-
 
 # ── Counter definition ───────────────────────────────────────────
 #
@@ -43,15 +43,17 @@ def test_counter_defined_in_source_with_expected_name_and_labels():
     rather than the runtime object (which may be a _Noop stub
     depending on test ordering)."""
     src = Path("app/observability/prometheus.py").read_text()
-    assert 'CONVERSATION_ID_REQUESTS_TOTAL = Counter(' in src
+    assert "CONVERSATION_ID_REQUESTS_TOTAL = Counter(" in src
     assert '"llm_proxy_conversation_id_requests_total"' in src
     assert '["endpoint", "has_conversation_id"]' in src
 
 
 def test_counter_increments_and_reads_back():
     from app.observability.prometheus import CONVERSATION_ID_REQUESTS_TOTAL
+
     if not _is_real_counter(CONVERSATION_ID_REQUESTS_TOTAL):
         import pytest
+
         pytest.skip("prometheus_client stubbed to _Noop by an earlier test")
     from prometheus_client import REGISTRY
 
@@ -60,9 +62,11 @@ def test_counter_increments_and_reads_back():
             if metric.name != "llm_proxy_conversation_id_requests":
                 continue
             for s in metric.samples:
-                if (s.name.endswith("_total")
-                        and s.labels.get("endpoint") == endpoint
-                        and s.labels.get("has_conversation_id") == has):
+                if (
+                    s.name.endswith("_total")
+                    and s.labels.get("endpoint") == endpoint
+                    and s.labels.get("has_conversation_id") == has
+                ):
                     return s.value
         return 0.0
 
@@ -77,6 +81,7 @@ def test_counter_increments_and_reads_back():
 
 def test_messages_endpoint_records_counter():
     from tests._entry_surface import entry_surface
+
     src = entry_surface("app/api/messages.py")  # counter lives in _handler_shared, called at entry
     assert "CONVERSATION_ID_REQUESTS_TOTAL" in src
     # The label call uses the conditional on x_conversation_id
@@ -84,19 +89,20 @@ def test_messages_endpoint_records_counter():
     assert '"true" if x_conversation_id else "false"' in src
     # And it's wrapped so telemetry never breaks the request path
     idx = src.index("CONVERSATION_ID_REQUESTS_TOTAL")
-    window = src[idx - 200:idx + 300]
+    window = src[idx - 200 : idx + 300]
     assert "try:" in window
     assert "except Exception:" in window
 
 
 def test_completions_endpoint_records_counter():
     from tests._entry_surface import entry_surface
+
     src = entry_surface("app/api/completions.py")
     assert "CONVERSATION_ID_REQUESTS_TOTAL" in src
     assert 'endpoint="completions"' in src
     assert '"true" if x_conversation_id else "false"' in src
     idx = src.index("CONVERSATION_ID_REQUESTS_TOTAL")
-    window = src[idx - 200:idx + 300]
+    window = src[idx - 200 : idx + 300]
     assert "try:" in window
     assert "except Exception:" in window
 
@@ -106,6 +112,7 @@ def test_completions_endpoint_records_counter():
 
 def test_admin_endpoint_registered():
     from app.api.monitoring import router
+
     paths = {r.path for r in router.routes}
     assert "/api/monitoring/conversation-id-stats" in paths
 
@@ -116,13 +123,16 @@ def test_admin_endpoint_computes_header_seen():
     endpoint's aggregation logic would report header_seen=True.
     Skips if prometheus_client is stubbed by an earlier test."""
     from app.observability.prometheus import CONVERSATION_ID_REQUESTS_TOTAL
+
     if not _is_real_counter(CONVERSATION_ID_REQUESTS_TOTAL):
         import pytest
+
         pytest.skip("prometheus_client stubbed to _Noop by an earlier test")
     from prometheus_client import REGISTRY
 
     CONVERSATION_ID_REQUESTS_TOTAL.labels(
-        endpoint="messages", has_conversation_id="true",
+        endpoint="messages",
+        has_conversation_id="true",
     ).inc()
 
     # Replicate the endpoint's aggregation (the endpoint itself is
@@ -141,7 +151,7 @@ def test_admin_endpoint_source_shape():
     """The endpoint returns the documented dict shape."""
     src = Path("app/api/monitoring.py").read_text()
     idx = src.index("async def conversation_id_stats(")
-    body = src[idx:idx + 2500]
+    body = src[idx : idx + 2500]
     assert '"by_endpoint"' in body
     assert '"total_with_header"' in body
     assert '"header_seen"' in body

@@ -7,7 +7,7 @@ used by other channels (Claude Code CLI, mobile app, etc.) —
 rotation/cascade logic was triggering on a wrong signal.
 
 Discovery (2026-05-10 capture by browser-bridge agent on the VG
-account ``dblagbro@voipguru.org``):
+account ``user@example.invalid``):
 
 - **Endpoint**: ``GET https://claude.ai/api/organizations/{uuid}/usage``
 - **Auth**: cookie-only. The browser session's ``sessionKey`` /
@@ -34,14 +34,15 @@ Cookies expire (typically 30+ days for ``sessionKey``). When the
 scraper sees 401/403/Cloudflare-block, it logs an
 ``auth_state=session_expired`` event so the operator knows to re-paste.
 """
+
 from __future__ import annotations
 
 import json
 import logging
-import time
+import time as time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -76,7 +77,10 @@ _BROWSER_HEADERS = {
 # we surface a clear error instead of relying on a mystery 403.
 _REQUIRED_COOKIE_NAMES = ("sessionKey",)
 _RECOMMENDED_COOKIE_NAMES = (
-    "sessionKey", "sessionKeyLC", "routingHint", "lastActiveOrg",
+    "sessionKey",
+    "sessionKeyLC",
+    "routingHint",
+    "lastActiveOrg",
     "cf_clearance",
 )
 
@@ -86,12 +90,13 @@ DEFAULT_TIMEOUT_SEC = 30.0
 @dataclass
 class ScrapeResult:
     """Parsed outcome of one scrape attempt."""
+
     ok: bool
-    http_status: Optional[int]
+    http_status: int | None
     auth_state: str  # "ok" | "session_expired" | "cf_blocked" | "network_error" | "config_error"
-    raw_body: Optional[str]
-    parsed: Optional[dict]
-    error: Optional[str]
+    raw_body: str | None
+    parsed: dict | None
+    error: str | None
 
 
 def parse_cookie_jar(raw: str | dict) -> dict:
@@ -135,7 +140,7 @@ def parse_cookie_jar(raw: str | dict) -> dict:
     return out
 
 
-def validate_cookies(cookies: dict) -> Optional[str]:
+def validate_cookies(cookies: dict) -> str | None:
     """Return a human-readable reason the cookies are insufficient,
     or ``None`` if they look complete enough to attempt a scrape.
     """
@@ -147,7 +152,7 @@ def validate_cookies(cookies: dict) -> Optional[str]:
     return None
 
 
-def _parse_iso(s: Any) -> Optional[datetime]:
+def _parse_iso(s: Any) -> datetime | None:
     """Parse an ISO8601 timestamp tolerantly. Returns None on failure
     or unexpected shapes."""
     if not isinstance(s, str) or not s:
@@ -158,7 +163,7 @@ def _parse_iso(s: Any) -> Optional[datetime]:
         return None
 
 
-def _extract_window(d: Any) -> tuple[Optional[float], Optional[datetime]]:
+def _extract_window(d: Any) -> tuple[float | None, datetime | None]:
     """Pull (utilization, resets_at) from one of the
     ``five_hour`` / ``seven_day*`` window dicts. Returns (None, None)
     when the field is absent / null / wrong shape."""
@@ -199,10 +204,18 @@ def parse_usage_response(body: dict) -> dict:
 
     eu = body.get("extra_usage")
     if isinstance(eu, dict):
-        out["extra_usage_is_enabled"] = bool(eu.get("is_enabled")) if eu.get("is_enabled") is not None else None
-        out["extra_usage_monthly_limit"] = eu.get("monthly_limit") if isinstance(eu.get("monthly_limit"), (int, float)) else None
-        out["extra_usage_used_credits"] = eu.get("used_credits") if isinstance(eu.get("used_credits"), (int, float)) else None
-        out["extra_usage_utilization"] = eu.get("utilization") if isinstance(eu.get("utilization"), (int, float)) else None
+        out["extra_usage_is_enabled"] = (
+            bool(eu.get("is_enabled")) if eu.get("is_enabled") is not None else None
+        )
+        out["extra_usage_monthly_limit"] = (
+            eu.get("monthly_limit") if isinstance(eu.get("monthly_limit"), (int, float)) else None
+        )
+        out["extra_usage_used_credits"] = (
+            eu.get("used_credits") if isinstance(eu.get("used_credits"), (int, float)) else None
+        )
+        out["extra_usage_utilization"] = (
+            eu.get("utilization") if isinstance(eu.get("utilization"), (int, float)) else None
+        )
         eucur = eu.get("currency")
         out["extra_usage_currency"] = eucur if isinstance(eucur, str) else None
     return out
@@ -222,8 +235,10 @@ def parse_fable_usage(body: Any) -> dict:
     Never raises; missing pieces come back as None.
     """
     out: dict = {
-        "weekly_pct": None, "weekly_resets_at": None,
-        "fable_pp": None, "resets_available": None,
+        "weekly_pct": None,
+        "weekly_resets_at": None,
+        "fable_pp": None,
+        "resets_available": None,
     }
     if not isinstance(body, dict):
         return out
@@ -239,8 +254,12 @@ def parse_fable_usage(body: Any) -> dict:
                 pp = sh.get("used_percent_of_weekly")
             except Exception:
                 continue
-            if isinstance(name, str) and name.strip().lower() == "fable" \
-                    and isinstance(pp, (int, float)) and not isinstance(pp, bool):
+            if (
+                isinstance(name, str)
+                and name.strip().lower() == "fable"
+                and isinstance(pp, (int, float))
+                and not isinstance(pp, bool)
+            ):
                 out["fable_pp"] = float(pp)
                 break
     return out
@@ -264,13 +283,21 @@ async def fetch_usage(
     cookie_err = validate_cookies(cookies)
     if cookie_err:
         return ScrapeResult(
-            ok=False, http_status=None, auth_state="config_error",
-            raw_body=None, parsed=None, error=cookie_err,
+            ok=False,
+            http_status=None,
+            auth_state="config_error",
+            raw_body=None,
+            parsed=None,
+            error=cookie_err,
         )
     if not org_uuid or not isinstance(org_uuid, str):
         return ScrapeResult(
-            ok=False, http_status=None, auth_state="config_error",
-            raw_body=None, parsed=None, error="org_uuid is required",
+            ok=False,
+            http_status=None,
+            auth_state="config_error",
+            raw_body=None,
+            parsed=None,
+            error="org_uuid is required",
         )
     url = ANTHROPIC_API_HOST + USAGE_PATH_TEMPLATE.format(org_uuid=org_uuid)
     try:
@@ -278,8 +305,12 @@ async def fetch_usage(
             resp = await client.get(url, headers=_BROWSER_HEADERS, cookies=cookies)
     except httpx.RequestError as exc:
         return ScrapeResult(
-            ok=False, http_status=None, auth_state="network_error",
-            raw_body=None, parsed=None, error=f"network: {exc!s}",
+            ok=False,
+            http_status=None,
+            auth_state="network_error",
+            raw_body=None,
+            parsed=None,
+            error=f"network: {exc!s}",
         )
     body_text = resp.text
     # Cloudflare interstitial is HTML, not JSON. Detect by content type
@@ -290,33 +321,49 @@ async def fetch_usage(
         or "Just a moment" in body_text[:500]
     ):
         return ScrapeResult(
-            ok=False, http_status=resp.status_code, auth_state="cf_blocked",
-            raw_body=body_text[:2000], parsed=None,
+            ok=False,
+            http_status=resp.status_code,
+            auth_state="cf_blocked",
+            raw_body=body_text[:2000],
+            parsed=None,
             error="cloudflare challenge — cookies stale or fingerprint changed",
         )
     if resp.status_code in (401, 403):
         return ScrapeResult(
-            ok=False, http_status=resp.status_code, auth_state="session_expired",
-            raw_body=body_text[:2000], parsed=None,
+            ok=False,
+            http_status=resp.status_code,
+            auth_state="session_expired",
+            raw_body=body_text[:2000],
+            parsed=None,
             error=f"{resp.status_code}: session/auth rejected — operator must re-paste cookies",
         )
     if resp.status_code != 200:
         return ScrapeResult(
-            ok=False, http_status=resp.status_code, auth_state="http_error",
-            raw_body=body_text[:2000], parsed=None,
+            ok=False,
+            http_status=resp.status_code,
+            auth_state="http_error",
+            raw_body=body_text[:2000],
+            parsed=None,
             error=f"unexpected http {resp.status_code}",
         )
     try:
         parsed_body = resp.json()
     except Exception as exc:
         return ScrapeResult(
-            ok=False, http_status=resp.status_code, auth_state="parse_error",
-            raw_body=body_text[:2000], parsed=None,
+            ok=False,
+            http_status=resp.status_code,
+            auth_state="parse_error",
+            raw_body=body_text[:2000],
+            parsed=None,
             error=f"json parse failed: {exc!s}",
         )
     return ScrapeResult(
-        ok=True, http_status=resp.status_code, auth_state="ok",
-        raw_body=body_text, parsed=parsed_body, error=None,
+        ok=True,
+        http_status=resp.status_code,
+        auth_state="ok",
+        raw_body=body_text,
+        parsed=parsed_body,
+        error=None,
     )
 
 
@@ -327,6 +374,7 @@ async def scrape_provider_into_snapshot(db, provider) -> dict:
     the caller (worker logs / admin endpoint response).
     """
     from app.models.db import ExternalUsageSnapshot
+
     if not provider.anthropic_org_uuid or not provider.anthropic_session_cookies:
         return {
             "ok": False,
@@ -346,7 +394,8 @@ async def scrape_provider_into_snapshot(db, provider) -> dict:
         await db.commit()
         return {"ok": False, "reason": str(e)}
     result = await fetch_usage(
-        org_uuid=provider.anthropic_org_uuid, cookies=cookies,
+        org_uuid=provider.anthropic_org_uuid,
+        cookies=cookies,
     )
     snap_kwargs: dict = {
         "provider_id": provider.id,
@@ -368,8 +417,11 @@ async def scrape_provider_into_snapshot(db, provider) -> dict:
     if result.ok:
         try:
             from app.routing.external_rotation import evaluate_rules_for_provider
+
             rotation_decision = await evaluate_rules_for_provider(
-                db, provider, snapshot=snap,
+                db,
+                provider,
+                snapshot=snap,
             )
         except Exception as exc:
             logger.warning(
@@ -392,7 +444,9 @@ async def scrape_provider_into_snapshot(db, provider) -> dict:
         # interstitials often clear on their own); 2nd+ consecutive
         # failure = real problem requiring operator action.
         try:
-            from sqlalchemy import select as _select, desc as _desc
+            from sqlalchemy import desc as _desc
+            from sqlalchemy import select as _select
+
             rs = await db.execute(
                 _select(ExternalUsageSnapshot)
                 .where(ExternalUsageSnapshot.provider_id == provider.id)
@@ -409,6 +463,7 @@ async def scrape_provider_into_snapshot(db, provider) -> dict:
                 from app.monitoring.notifications import (
                     alert_anthropic_billing_auth_expired,
                 )
+
                 await alert_anthropic_billing_auth_expired(
                     provider_name=provider.name,
                     provider_id=provider.id,

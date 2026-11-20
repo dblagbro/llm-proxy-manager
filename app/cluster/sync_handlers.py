@@ -15,15 +15,16 @@ v5.0.0 also adds the two compliance audit-trail handlers
 and their matching ``serialize_*`` helpers used by
 ``manager._build_sync_payload``.
 """
+
 from __future__ import annotations
 
-import json
+import json as json
 import logging
-import time
-from datetime import datetime
+import time as time
+from datetime import UTC, datetime
 
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ async def _apply_blocked_ips(db: AsyncSession, rows: list[dict]) -> bool:
       - otherwise no-op
     """
     from app.models.db import BlockedIp
+
     changed = False
     for r in rows:
         ip = (r.get("ip") or "").strip()
@@ -63,18 +65,18 @@ async def _apply_blocked_ips(db: AsyncSession, rows: list[dict]) -> bool:
         # See BUG-079: a single duplicate in provider_ai_review silently
         # broke cluster sync for ~6 days. Same defensive pattern the
         # external-usage + node-auth-state handlers already used.
-        result = await db.execute(
-            select(BlockedIp).where(BlockedIp.ip == ip).limit(1)
-        )
+        result = await db.execute(select(BlockedIp).where(BlockedIp.ip == ip).limit(1))
         existing = result.scalar_one_or_none()
         if existing is None:
-            db.add(BlockedIp(
-                ip=ip,
-                reason=r.get("reason"),
-                added_by=r.get("added_by"),
-                added_at=peer_added_at,
-                deleted_at=peer_deleted_at,
-            ))
+            db.add(
+                BlockedIp(
+                    ip=ip,
+                    reason=r.get("reason"),
+                    added_by=r.get("added_by"),
+                    added_at=peer_added_at,
+                    deleted_at=peer_deleted_at,
+                )
+            )
             # Only counts as "changed cache state" if the row is live
             if peer_deleted_at is None:
                 changed = True
@@ -88,8 +90,10 @@ async def _apply_blocked_ips(db: AsyncSession, rows: list[dict]) -> bool:
                 changed = True
             # Re-arm: peer's added_at is newer than ours AND peer has
             # no tombstone — clear local tombstone, update fields.
-            elif peer_added_at and peer_deleted_at is None and (
-                existing.added_at is None or peer_added_at > existing.added_at
+            elif (
+                peer_added_at
+                and peer_deleted_at is None
+                and (existing.added_at is None or peer_added_at > existing.added_at)
             ):
                 if existing.deleted_at is not None:
                     existing.deleted_at = None
@@ -109,33 +113,38 @@ async def _apply_ai_reviews(db: AsyncSession, rows: list[dict]) -> None:
     (api_key_id, captured_at). LWW on the lifecycle fields
     (applied_at / reverted_at / dismissed_at)."""
     from app.models.db import ApiKeyAiReview
+
     for r in rows:
         api_key_id = r.get("api_key_id")
         captured_at = _parse_iso_or_none(r.get("captured_at"))
         if not (api_key_id and captured_at):
             continue
-        existing = (await db.execute(
-            select(ApiKeyAiReview)
-            .where(ApiKeyAiReview.api_key_id == api_key_id)
-            .where(ApiKeyAiReview.captured_at == captured_at)
-            .limit(1)  # v4.4.24 (BUG-080) — guard against duplicate rows
-        )).scalar_one_or_none()
+        existing = (
+            await db.execute(
+                select(ApiKeyAiReview)
+                .where(ApiKeyAiReview.api_key_id == api_key_id)
+                .where(ApiKeyAiReview.captured_at == captured_at)
+                .limit(1)  # v4.4.24 (BUG-080) — guard against duplicate rows
+            )
+        ).scalar_one_or_none()
         if existing is None:
-            db.add(ApiKeyAiReview(
-                api_key_id=api_key_id,
-                captured_at=captured_at,
-                llm_model=r.get("llm_model"),
-                llm_verdict=r.get("llm_verdict") or "watch",
-                llm_reasoning=r.get("llm_reasoning"),
-                suggested_action=r.get("suggested_action") or "none",
-                stats_summary=r.get("stats_summary"),
-                applied_at=_parse_iso_or_none(r.get("applied_at")),
-                applied_action=r.get("applied_action"),
-                prior_rate_limit_rpm=r.get("prior_rate_limit_rpm"),
-                reverted_at=_parse_iso_or_none(r.get("reverted_at")),
-                dismissed_at=_parse_iso_or_none(r.get("dismissed_at")),
-                suggested_block_ip=r.get("suggested_block_ip"),
-            ))
+            db.add(
+                ApiKeyAiReview(
+                    api_key_id=api_key_id,
+                    captured_at=captured_at,
+                    llm_model=r.get("llm_model"),
+                    llm_verdict=r.get("llm_verdict") or "watch",
+                    llm_reasoning=r.get("llm_reasoning"),
+                    suggested_action=r.get("suggested_action") or "none",
+                    stats_summary=r.get("stats_summary"),
+                    applied_at=_parse_iso_or_none(r.get("applied_at")),
+                    applied_action=r.get("applied_action"),
+                    prior_rate_limit_rpm=r.get("prior_rate_limit_rpm"),
+                    reverted_at=_parse_iso_or_none(r.get("reverted_at")),
+                    dismissed_at=_parse_iso_or_none(r.get("dismissed_at")),
+                    suggested_block_ip=r.get("suggested_block_ip"),
+                )
+            )
         else:
             # Lifecycle transitions are monotone (None → set), so we
             # accept any non-None peer value the local row doesn't have.
@@ -154,34 +163,39 @@ async def _apply_provider_ai_reviews(db: AsyncSession, rows: list[dict]) -> None
     captured_at). LWW on the monotone lifecycle fields (applied_at /
     reverted_at / dismissed_at)."""
     from app.models.db import ProviderAiReview
+
     for r in rows:
         provider_id = r.get("provider_id")
         captured_at = _parse_iso_or_none(r.get("captured_at"))
         if not (provider_id and captured_at):
             continue
-        existing = (await db.execute(
-            select(ProviderAiReview)
-            .where(ProviderAiReview.provider_id == provider_id)
-            .where(ProviderAiReview.captured_at == captured_at)
-            .limit(1)  # v4.4.24 (BUG-079) — the row this crash was found on
-        )).scalar_one_or_none()
+        existing = (
+            await db.execute(
+                select(ProviderAiReview)
+                .where(ProviderAiReview.provider_id == provider_id)
+                .where(ProviderAiReview.captured_at == captured_at)
+                .limit(1)  # v4.4.24 (BUG-079) — the row this crash was found on
+            )
+        ).scalar_one_or_none()
         if existing is None:
-            db.add(ProviderAiReview(
-                provider_id=provider_id,
-                captured_at=captured_at,
-                llm_model=r.get("llm_model"),
-                llm_verdict=r.get("llm_verdict") or "watch",
-                llm_reasoning=r.get("llm_reasoning"),
-                suggested_priority_delta=r.get("suggested_priority_delta"),
-                suggested_auto_skip_hours=r.get("suggested_auto_skip_hours"),
-                stats_summary=r.get("stats_summary"),
-                applied_at=_parse_iso_or_none(r.get("applied_at")),
-                applied_action=r.get("applied_action"),
-                prior_priority=r.get("prior_priority"),
-                prior_auto_skip_until=_parse_iso_or_none(r.get("prior_auto_skip_until")),
-                reverted_at=_parse_iso_or_none(r.get("reverted_at")),
-                dismissed_at=_parse_iso_or_none(r.get("dismissed_at")),
-            ))
+            db.add(
+                ProviderAiReview(
+                    provider_id=provider_id,
+                    captured_at=captured_at,
+                    llm_model=r.get("llm_model"),
+                    llm_verdict=r.get("llm_verdict") or "watch",
+                    llm_reasoning=r.get("llm_reasoning"),
+                    suggested_priority_delta=r.get("suggested_priority_delta"),
+                    suggested_auto_skip_hours=r.get("suggested_auto_skip_hours"),
+                    stats_summary=r.get("stats_summary"),
+                    applied_at=_parse_iso_or_none(r.get("applied_at")),
+                    applied_action=r.get("applied_action"),
+                    prior_priority=r.get("prior_priority"),
+                    prior_auto_skip_until=_parse_iso_or_none(r.get("prior_auto_skip_until")),
+                    reverted_at=_parse_iso_or_none(r.get("reverted_at")),
+                    dismissed_at=_parse_iso_or_none(r.get("dismissed_at")),
+                )
+            )
         else:
             for field in ("applied_at", "reverted_at", "dismissed_at"):
                 peer_val = _parse_iso_or_none(r.get(field))
@@ -203,6 +217,7 @@ async def _apply_caller_memory(db: AsyncSession, rows: list[dict]) -> None:
     must be cheap and not require Redis to be up.
     """
     from app.models.db import CallerMemory
+
     for r in rows:
         akid = r.get("api_key_id")
         conv = r.get("conversation_id")  # nullable
@@ -210,26 +225,34 @@ async def _apply_caller_memory(db: AsyncSession, rows: list[dict]) -> None:
         if not akid:
             continue
         peer_ts = r.get("updated_at") or 0
-        existing = (await db.execute(
-            select(CallerMemory)
-            .where(CallerMemory.api_key_id == akid)
-            .where(CallerMemory.conversation_id.is_(None) if conv is None else CallerMemory.conversation_id == conv)
-            .where(CallerMemory.memory_tag == tag)
-            .limit(1)  # v4.4.24 (BUG-080) — guard against duplicate rows
-        )).scalar_one_or_none()
+        existing = (
+            await db.execute(
+                select(CallerMemory)
+                .where(CallerMemory.api_key_id == akid)
+                .where(
+                    CallerMemory.conversation_id.is_(None)
+                    if conv is None
+                    else CallerMemory.conversation_id == conv
+                )
+                .where(CallerMemory.memory_tag == tag)
+                .limit(1)  # v4.4.24 (BUG-080) — guard against duplicate rows
+            )
+        ).scalar_one_or_none()
         if existing is None:
-            db.add(CallerMemory(
-                api_key_id=akid,
-                conversation_id=conv,
-                memory_tag=tag,
-                content=r.get("content") or "",
-                content_format=r.get("content_format") or "text",
-                updated_at=peer_ts,
-                updated_by_node=r.get("updated_by_node"),
-                source_provider_id=r.get("source_provider_id"),
-                source_request_id=r.get("source_request_id"),
-                deleted_at=r.get("deleted_at"),
-            ))
+            db.add(
+                CallerMemory(
+                    api_key_id=akid,
+                    conversation_id=conv,
+                    memory_tag=tag,
+                    content=r.get("content") or "",
+                    content_format=r.get("content_format") or "text",
+                    updated_at=peer_ts,
+                    updated_by_node=r.get("updated_by_node"),
+                    source_provider_id=r.get("source_provider_id"),
+                    source_request_id=r.get("source_request_id"),
+                    deleted_at=r.get("deleted_at"),
+                )
+            )
         else:
             # LWW: only adopt the peer's view when its timestamp is
             # strictly newer (== keeps local stamps stable on tie).
@@ -253,36 +276,47 @@ async def _apply_caller_memory_markers(db: AsyncSession, rows: list[dict]) -> No
     Dedup by (api_key_id, conversation_id, memory_tag).
     """
     from app.models.db import CallerMemoryMarker
+
     for r in rows:
         akid = r.get("api_key_id")
         conv = r.get("conversation_id")
         tag = r.get("memory_tag") or "default"
         if not akid:
             continue
-        existing = (await db.execute(
-            select(CallerMemoryMarker)
-            .where(CallerMemoryMarker.api_key_id == akid)
-            .where(CallerMemoryMarker.conversation_id.is_(None) if conv is None else CallerMemoryMarker.conversation_id == conv)
-            .where(CallerMemoryMarker.memory_tag == tag)
-            .limit(1)  # v4.4.24 (BUG-080) — guard against duplicate rows
-        )).scalar_one_or_none()
+        existing = (
+            await db.execute(
+                select(CallerMemoryMarker)
+                .where(CallerMemoryMarker.api_key_id == akid)
+                .where(
+                    CallerMemoryMarker.conversation_id.is_(None)
+                    if conv is None
+                    else CallerMemoryMarker.conversation_id == conv
+                )
+                .where(CallerMemoryMarker.memory_tag == tag)
+                .limit(1)  # v4.4.24 (BUG-080) — guard against duplicate rows
+            )
+        ).scalar_one_or_none()
         if existing is None:
-            db.add(CallerMemoryMarker(
-                api_key_id=akid,
-                conversation_id=conv,
-                memory_tag=tag,
-                first_seen_at=r.get("first_seen_at") or 0,
-                last_known_provider_id=r.get("last_known_provider_id"),
-                last_known_external_ref=r.get("last_known_external_ref"),
-                recovered_at=r.get("recovered_at"),
-                deleted_at=r.get("deleted_at"),
-            ))
+            db.add(
+                CallerMemoryMarker(
+                    api_key_id=akid,
+                    conversation_id=conv,
+                    memory_tag=tag,
+                    first_seen_at=r.get("first_seen_at") or 0,
+                    last_known_provider_id=r.get("last_known_provider_id"),
+                    last_known_external_ref=r.get("last_known_external_ref"),
+                    recovered_at=r.get("recovered_at"),
+                    deleted_at=r.get("deleted_at"),
+                )
+            )
         else:
             # first_seen_at is the EARLIEST — keep the min so backups
             # that restore older markers don't accidentally shift it
             # forward.
             peer_first = r.get("first_seen_at") or 0
-            if peer_first and (existing.first_seen_at is None or peer_first < existing.first_seen_at):
+            if peer_first and (
+                existing.first_seen_at is None or peer_first < existing.first_seen_at
+            ):
                 existing.first_seen_at = peer_first
             # last_known_* picks the most recent write — but we don't
             # have a timestamp for those; treat any non-null peer value
@@ -313,41 +347,42 @@ async def _apply_provider_node_auth_states(db: AsyncSession, rows: list[dict]) -
     LWW comparison still favours the newest observation.
     """
     from app.models.db import ProviderNodeAuthState
+
     for r in rows:
         provider_id = r.get("provider_id")
         node_id = r.get("node_id")
         if not (provider_id and node_id):
             continue
         last_check_at = _parse_iso_or_none(r.get("last_check_at"))
-        existing = (await db.execute(
-            select(ProviderNodeAuthState)
-            .where(ProviderNodeAuthState.provider_id == provider_id)
-            .where(ProviderNodeAuthState.node_id == node_id)
-            .limit(1)
-        )).scalar_one_or_none()
+        existing = (
+            await db.execute(
+                select(ProviderNodeAuthState)
+                .where(ProviderNodeAuthState.provider_id == provider_id)
+                .where(ProviderNodeAuthState.node_id == node_id)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
         if existing is not None:
             # LWW: skip if our local row is newer than the incoming one.
-            if (
-                existing.last_check_at
-                and last_check_at
-                and existing.last_check_at >= last_check_at
-            ):
+            if existing.last_check_at and last_check_at and existing.last_check_at >= last_check_at:
                 continue
             existing.auth_state = r.get("auth_state") or "never_authed"
             existing.last_ok_at = _parse_iso_or_none(r.get("last_ok_at"))
             existing.last_check_at = last_check_at
             existing.reauth_url = r.get("reauth_url")
-            existing.last_error = (r.get("last_error") or None)
+            existing.last_error = r.get("last_error") or None
             continue
-        db.add(ProviderNodeAuthState(
-            provider_id=provider_id,
-            node_id=node_id,
-            auth_state=r.get("auth_state") or "never_authed",
-            last_ok_at=_parse_iso_or_none(r.get("last_ok_at")),
-            last_check_at=last_check_at,
-            reauth_url=r.get("reauth_url"),
-            last_error=r.get("last_error"),
-        ))
+        db.add(
+            ProviderNodeAuthState(
+                provider_id=provider_id,
+                node_id=node_id,
+                auth_state=r.get("auth_state") or "never_authed",
+                last_ok_at=_parse_iso_or_none(r.get("last_ok_at")),
+                last_check_at=last_check_at,
+                reauth_url=r.get("reauth_url"),
+                last_error=r.get("last_error"),
+            )
+        )
 
 
 async def _apply_external_usage_snapshots(db: AsyncSession, rows: list[dict]) -> None:
@@ -356,40 +391,45 @@ async def _apply_external_usage_snapshots(db: AsyncSession, rows: list[dict]) ->
     Insert if no row exists at that exact captured_at; append-only
     (we never overwrite history)."""
     from app.models.db import ExternalUsageSnapshot
+
     for r in rows:
         provider_id = r.get("provider_id")
         captured_at = _parse_iso_or_none(r.get("captured_at"))
         if not (provider_id and captured_at):
             continue
-        existing = (await db.execute(
-            select(ExternalUsageSnapshot)
-            .where(ExternalUsageSnapshot.provider_id == provider_id)
-            .where(ExternalUsageSnapshot.captured_at == captured_at)
-            .limit(1)
-        )).scalar_one_or_none()
+        existing = (
+            await db.execute(
+                select(ExternalUsageSnapshot)
+                .where(ExternalUsageSnapshot.provider_id == provider_id)
+                .where(ExternalUsageSnapshot.captured_at == captured_at)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
         if existing is not None:
             continue
-        db.add(ExternalUsageSnapshot(
-            provider_id=provider_id,
-            captured_at=captured_at,
-            source=r.get("source") or "anthropic_console_v1",
-            http_status=r.get("http_status"),
-            error=r.get("error"),
-            auth_state=r.get("auth_state"),
-            five_hour_utilization=r.get("five_hour_utilization"),
-            five_hour_resets_at=_parse_iso_or_none(r.get("five_hour_resets_at")),
-            seven_day_utilization=r.get("seven_day_utilization"),
-            seven_day_resets_at=_parse_iso_or_none(r.get("seven_day_resets_at")),
-            seven_day_sonnet_utilization=r.get("seven_day_sonnet_utilization"),
-            seven_day_sonnet_resets_at=_parse_iso_or_none(r.get("seven_day_sonnet_resets_at")),
-            seven_day_opus_utilization=r.get("seven_day_opus_utilization"),
-            seven_day_opus_resets_at=_parse_iso_or_none(r.get("seven_day_opus_resets_at")),
-            extra_usage_is_enabled=r.get("extra_usage_is_enabled"),
-            extra_usage_monthly_limit=r.get("extra_usage_monthly_limit"),
-            extra_usage_used_credits=r.get("extra_usage_used_credits"),
-            extra_usage_utilization=r.get("extra_usage_utilization"),
-            extra_usage_currency=r.get("extra_usage_currency"),
-        ))
+        db.add(
+            ExternalUsageSnapshot(
+                provider_id=provider_id,
+                captured_at=captured_at,
+                source=r.get("source") or "anthropic_console_v1",
+                http_status=r.get("http_status"),
+                error=r.get("error"),
+                auth_state=r.get("auth_state"),
+                five_hour_utilization=r.get("five_hour_utilization"),
+                five_hour_resets_at=_parse_iso_or_none(r.get("five_hour_resets_at")),
+                seven_day_utilization=r.get("seven_day_utilization"),
+                seven_day_resets_at=_parse_iso_or_none(r.get("seven_day_resets_at")),
+                seven_day_sonnet_utilization=r.get("seven_day_sonnet_utilization"),
+                seven_day_sonnet_resets_at=_parse_iso_or_none(r.get("seven_day_sonnet_resets_at")),
+                seven_day_opus_utilization=r.get("seven_day_opus_utilization"),
+                seven_day_opus_resets_at=_parse_iso_or_none(r.get("seven_day_opus_resets_at")),
+                extra_usage_is_enabled=r.get("extra_usage_is_enabled"),
+                extra_usage_monthly_limit=r.get("extra_usage_monthly_limit"),
+                extra_usage_used_credits=r.get("extra_usage_used_credits"),
+                extra_usage_utilization=r.get("extra_usage_utilization"),
+                extra_usage_currency=r.get("extra_usage_currency"),
+            )
+        )
 
 
 # ───────────────────────────────────────────────────────────────────
@@ -451,7 +491,9 @@ def serialize_policy_change(r) -> dict:
 # Datetime columns on the compliance tables — converted on the way in
 # so a payload built with ``serialize_*`` round-trips losslessly.
 _COMPLIANCE_EVENT_DT_COLS = {
-    "requested_at", "policy_active_since", "created_at",
+    "requested_at",
+    "policy_active_since",
+    "created_at",
 }
 _POLICY_CHANGE_DT_COLS = {"changed_at"}
 
@@ -482,6 +524,7 @@ async def _apply_compliance_events(db: AsyncSession, rows: list[dict]) -> int:
     Returns the number of rows actually inserted (helpful for tests +
     logging)."""
     from app.models.db import ComplianceEvent
+
     applied = 0
     # v5.22.43 — never accept a peer-chosen primary key. The autoincrement `id`
     # must be assigned locally; a peer-supplied `id` lets a sync insert forged
@@ -507,14 +550,13 @@ async def _apply_compliance_events(db: AsyncSession, rows: list[dict]) -> int:
     return applied
 
 
-async def _apply_compliance_policy_changes(
-    db: AsyncSession, rows: list[dict]
-) -> int:
+async def _apply_compliance_policy_changes(db: AsyncSession, rows: list[dict]) -> int:
     """v5.0.0 — append-only merge of ``compliance_policy_changes`` rows.
 
     Dedup on ``policy_change_id``. Same shape as
     ``_apply_compliance_events``."""
     from app.models.db import CompliancePolicyChange
+
     applied = 0
     # v5.22.43 — drop peer-supplied PK (see _apply_compliance_events); dedup is
     # on policy_change_id below.
@@ -548,7 +590,8 @@ def _parse_iso_naive_utc(v):
     against locally-loaded naive datetimes and TypeError out on
     ``>=`` / ``>`` ops.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     if not v:
         return None
     if isinstance(v, str):
@@ -561,7 +604,7 @@ def _parse_iso_naive_utc(v):
     else:
         return v
     if dt.tzinfo is not None:
-        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        dt = dt.astimezone(UTC).replace(tzinfo=None)
     return dt
 
 
@@ -578,6 +621,7 @@ def _parse_iso_keep_naive(v):
     real ``datetime`` would raise TypeError and crash the section.
     """
     from datetime import datetime as _dt
+
     if v is None or v == "":
         return None
     if isinstance(v, _dt):
@@ -590,18 +634,18 @@ def _parse_iso_keep_naive(v):
     # Unrecognized type — defensive fallback so a malformed peer
     # payload skips the field rather than poisoning the sync section.
     import logging as _lg
+
     _lg.getLogger(__name__).warning(
         "_parse_iso_keep_naive: unrecognized type=%s value=%r — "
         "returning None (pre-v5.0.25 would have stored as-is and "
         "crashed the next LWW comparison).",
-        type(v).__name__, str(v)[:80],
+        type(v).__name__,
+        str(v)[:80],
     )
     return None
 
 
-async def _apply_api_keys(
-    db: AsyncSession, rows: list[dict]
-) -> dict[str, float]:
+async def _apply_api_keys(db: AsyncSession, rows: list[dict]) -> dict[str, float]:
     """v5.0.10 — extracted from ``apply_sync``. Merge incoming api_keys.
 
     Returns the ``peer_costs`` dict (key_id → total_cost_usd reported by
@@ -634,6 +678,7 @@ async def _apply_api_keys(
       round-trip.
     """
     from app.models.db import ApiKey
+
     peer_costs: dict[str, float] = {}
     for k_data in rows:
         peer_deleted_at = _parse_iso_keep_naive(k_data.get("deleted_at"))
@@ -649,8 +694,7 @@ async def _apply_api_keys(
         existing = result.scalar_one_or_none()
         if existing:
             if peer_deleted_at and (
-                existing.deleted_at is None
-                or peer_deleted_at >= existing.deleted_at
+                existing.deleted_at is None or peer_deleted_at >= existing.deleted_at
             ):
                 existing.deleted_at = peer_deleted_at
                 existing.enabled = False
@@ -658,17 +702,12 @@ async def _apply_api_keys(
             if existing.deleted_at is not None and peer_deleted_at is None:
                 continue
             local_user_edit = existing.last_user_edit_at
-            if (
-                peer_user_edit_at is not None
-                and local_user_edit is not None
-            ):
+            if peer_user_edit_at is not None and local_user_edit is not None:
                 if peer_user_edit_at == local_user_edit:
                     accept = False
                 else:
                     accept = peer_user_edit_at > local_user_edit
-            elif (
-                local_user_edit is not None and peer_user_edit_at is None
-            ):
+            elif local_user_edit is not None and peer_user_edit_at is None:
                 accept = False
             else:
                 accept = True
@@ -681,9 +720,7 @@ async def _apply_api_keys(
             if "enabled" in k_data:
                 existing.enabled = k_data["enabled"]
             if "semantic_cache_enabled" in k_data:
-                existing.semantic_cache_enabled = bool(
-                    k_data["semantic_cache_enabled"]
-                )
+                existing.semantic_cache_enabled = bool(k_data["semantic_cache_enabled"])
             if "daily_soft_cap_usd" in k_data:
                 existing.daily_soft_cap_usd = k_data["daily_soft_cap_usd"]
             if "daily_hard_cap_usd" in k_data:
@@ -693,9 +730,7 @@ async def _apply_api_keys(
             if "rate_limit_tier" in k_data:
                 existing.rate_limit_tier = k_data["rate_limit_tier"]
             if "caller_memory_ttl_days" in k_data:
-                existing.caller_memory_ttl_days = (
-                    k_data["caller_memory_ttl_days"]
-                )
+                existing.caller_memory_ttl_days = k_data["caller_memory_ttl_days"]
             if "lmrh_polling_rpm" in k_data:
                 existing.lmrh_polling_rpm = k_data["lmrh_polling_rpm"]
             if "lmrh_quotes_rpm" in k_data:
@@ -706,6 +741,7 @@ async def _apply_api_keys(
                     from app.compliance.policy import (
                         invalidate_blocklist_cache,
                     )
+
                     invalidate_blocklist_cache(existing.id)
                 except Exception:
                     pass
@@ -719,6 +755,7 @@ async def _apply_api_keys(
                     from app.compliance.policy import (
                         invalidate_blocklist_cache,
                     )
+
                     invalidate_blocklist_cache(existing.id)
                 except Exception:
                     pass
@@ -729,9 +766,7 @@ async def _apply_api_keys(
             if "allowed_paths" in k_data:
                 existing.allowed_paths = k_data["allowed_paths"]
             if "debug_echo_enabled" in k_data:
-                existing.debug_echo_enabled = bool(
-                    k_data["debug_echo_enabled"]
-                )
+                existing.debug_echo_enabled = bool(k_data["debug_echo_enabled"])
             # v5.22.47 — Daybreak Blue authorization tier. Membership-test
             # so a pre-v5.22.47 peer (which omits the key) can't clobber a
             # local authorization back to None.
@@ -746,37 +781,35 @@ async def _apply_api_keys(
         else:
             if peer_deleted_at is not None:
                 continue
-            db.add(ApiKey(
-                id=k_data["id"],
-                name=k_data["name"],
-                key_hash=k_data["key_hash"],
-                key_prefix=k_data["key_prefix"],
-                key_type=k_data.get("key_type", "standard"),
-                enabled=k_data.get("enabled", True),
-                spending_cap_usd=k_data.get("spending_cap_usd"),
-                rate_limit_rpm=k_data.get("rate_limit_rpm"),
-                semantic_cache_enabled=bool(
-                    k_data.get("semantic_cache_enabled", False)
-                ),
-                daily_soft_cap_usd=k_data.get("daily_soft_cap_usd"),
-                daily_hard_cap_usd=k_data.get("daily_hard_cap_usd"),
-                hourly_cap_usd=k_data.get("hourly_cap_usd"),
-                rate_limit_tier=k_data.get("rate_limit_tier"),
-                caller_memory_ttl_days=k_data.get("caller_memory_ttl_days"),
-                lmrh_polling_rpm=k_data.get("lmrh_polling_rpm"),
-                lmrh_quotes_rpm=k_data.get("lmrh_quotes_rpm"),
-                blocked_companies=k_data.get("blocked_companies"),
-                allowed_companies=k_data.get("allowed_companies"),
-                blocked_models=k_data.get("blocked_models"),
-                allowed_models=k_data.get("allowed_models"),
-                allowed_paths=k_data.get("allowed_paths"),
-                debug_echo_enabled=bool(
-                    k_data.get("debug_echo_enabled", False)
-                ),
-                daybreak_tier=k_data.get("daybreak_tier"),
-                metered_allowed=bool(k_data.get("metered_allowed", True)),
-                last_user_edit_at=peer_user_edit_at,
-            ))
+            db.add(
+                ApiKey(
+                    id=k_data["id"],
+                    name=k_data["name"],
+                    key_hash=k_data["key_hash"],
+                    key_prefix=k_data["key_prefix"],
+                    key_type=k_data.get("key_type", "standard"),
+                    enabled=k_data.get("enabled", True),
+                    spending_cap_usd=k_data.get("spending_cap_usd"),
+                    rate_limit_rpm=k_data.get("rate_limit_rpm"),
+                    semantic_cache_enabled=bool(k_data.get("semantic_cache_enabled", False)),
+                    daily_soft_cap_usd=k_data.get("daily_soft_cap_usd"),
+                    daily_hard_cap_usd=k_data.get("daily_hard_cap_usd"),
+                    hourly_cap_usd=k_data.get("hourly_cap_usd"),
+                    rate_limit_tier=k_data.get("rate_limit_tier"),
+                    caller_memory_ttl_days=k_data.get("caller_memory_ttl_days"),
+                    lmrh_polling_rpm=k_data.get("lmrh_polling_rpm"),
+                    lmrh_quotes_rpm=k_data.get("lmrh_quotes_rpm"),
+                    blocked_companies=k_data.get("blocked_companies"),
+                    allowed_companies=k_data.get("allowed_companies"),
+                    blocked_models=k_data.get("blocked_models"),
+                    allowed_models=k_data.get("allowed_models"),
+                    allowed_paths=k_data.get("allowed_paths"),
+                    debug_echo_enabled=bool(k_data.get("debug_echo_enabled", False)),
+                    daybreak_tier=k_data.get("daybreak_tier"),
+                    metered_allowed=bool(k_data.get("metered_allowed", True)),
+                    last_user_edit_at=peer_user_edit_at,
+                )
+            )
         key_id = k_data.get("id")
         if key_id and "total_cost_usd" in k_data:
             peer_costs[key_id] = float(k_data["total_cost_usd"])
@@ -816,6 +849,7 @@ async def _apply_providers(db: AsyncSession, rows: list[dict]) -> None:
     """
     from app.models.db import Provider
     from app.monitoring.status import register_provider
+
     for p_data in rows:
         peer_deleted_at = _parse_iso_naive_utc(p_data.get("deleted_at"))
         peer_updated_at = _parse_iso_naive_utc(p_data.get("updated_at"))
@@ -826,9 +860,7 @@ async def _apply_providers(db: AsyncSession, rows: list[dict]) -> None:
             except (TypeError, ValueError):
                 peer_user_edit_at = None
 
-        result = await db.execute(
-            select(Provider).where(Provider.id == p_data["id"]).limit(1)
-        )
+        result = await db.execute(select(Provider).where(Provider.id == p_data["id"]).limit(1))
         existing = result.scalar_one_or_none()
         if existing is None:
             result2 = await db.execute(
@@ -843,31 +875,27 @@ async def _apply_providers(db: AsyncSession, rows: list[dict]) -> None:
             if peer_deleted_at and not local_deleted:
                 existing.deleted_at = peer_deleted_at
                 existing.enabled = False
-                if peer_updated_at and (
-                    local_updated is None or peer_updated_at > local_updated
-                ):
+                if peer_updated_at and (local_updated is None or peer_updated_at > local_updated):
                     existing.updated_at = peer_updated_at
                 try:
                     from app.routing.circuit_breaker import (
-                        _local_states as _cb_states,
                         _auth_failed as _cb_auth_failed,
                     )
+                    from app.routing.circuit_breaker import (
+                        _local_states as _cb_states,
+                    )
+
                     _cb_states.pop(existing.id, None)
                     _cb_auth_failed.pop(existing.id, None)
                 except Exception:
                     pass
                 continue
 
-            if local_deleted and (
-                peer_updated_at is None or local_deleted >= peer_updated_at
-            ):
+            if local_deleted and (peer_updated_at is None or local_deleted >= peer_updated_at):
                 continue
 
             local_user_edit = existing.last_user_edit_at
-            if (
-                peer_user_edit_at is not None
-                and local_user_edit is not None
-            ):
+            if peer_user_edit_at is not None and local_user_edit is not None:
                 if peer_user_edit_at != local_user_edit:
                     accept = peer_user_edit_at > local_user_edit
                 else:
@@ -876,9 +904,7 @@ async def _apply_providers(db: AsyncSession, rows: list[dict]) -> None:
                         and local_updated is not None
                         and peer_updated_at > local_updated
                     )
-            elif (
-                local_user_edit is not None and peer_user_edit_at is None
-            ):
+            elif local_user_edit is not None and peer_user_edit_at is None:
                 accept = False
             else:
                 accept = (
@@ -907,93 +933,69 @@ async def _apply_providers(db: AsyncSession, rows: list[dict]) -> None:
                     existing.provider_type = p_data["provider_type"]
                 existing.api_key = p_data.get("api_key", existing.api_key)
                 existing.base_url = p_data.get("base_url", existing.base_url)
-                existing.default_model = p_data.get(
-                    "default_model", existing.default_model
-                )
-                existing.priority = p_data.get(
-                    "priority", existing.priority
-                )
+                existing.default_model = p_data.get("default_model", existing.default_model)
+                existing.priority = p_data.get("priority", existing.priority)
                 existing.enabled = p_data.get("enabled", existing.enabled)
-                existing.timeout_sec = p_data.get(
-                    "timeout_sec", existing.timeout_sec
-                )
+                existing.timeout_sec = p_data.get("timeout_sec", existing.timeout_sec)
                 existing.exclude_from_tool_requests = p_data.get(
                     "exclude_from_tool_requests",
                     existing.exclude_from_tool_requests,
                 )
-                existing.hold_down_sec = p_data.get(
-                    "hold_down_sec", existing.hold_down_sec
-                )
+                existing.hold_down_sec = p_data.get("hold_down_sec", existing.hold_down_sec)
                 existing.failure_threshold = p_data.get(
                     "failure_threshold", existing.failure_threshold
                 )
-                existing.extra_config = p_data.get(
-                    "extra_config", existing.extra_config
-                )
+                existing.extra_config = p_data.get("extra_config", existing.extra_config)
                 if "owned_by_key_id" in p_data:
                     existing.owned_by_key_id = p_data["owned_by_key_id"]
                 if "daily_budget_usd" in p_data:
                     existing.daily_budget_usd = p_data["daily_budget_usd"]
                 if "oauth_refresh_token" in p_data:
-                    existing.oauth_refresh_token = p_data[
-                        "oauth_refresh_token"
-                    ]
+                    existing.oauth_refresh_token = p_data["oauth_refresh_token"]
                 if "oauth_expires_at" in p_data:
                     existing.oauth_expires_at = p_data["oauth_expires_at"]
                 if "anthropic_org_uuid" in p_data:
-                    existing.anthropic_org_uuid = p_data.get(
-                        "anthropic_org_uuid"
-                    )
+                    existing.anthropic_org_uuid = p_data.get("anthropic_org_uuid")
                 if "anthropic_session_captured_at" in p_data:
                     existing.anthropic_session_captured_at = p_data.get(
                         "anthropic_session_captured_at"
                     )
                 if "codex_usage_endpoint_url" in p_data:
-                    existing.codex_usage_endpoint_url = p_data.get(
-                        "codex_usage_endpoint_url"
-                    )
+                    existing.codex_usage_endpoint_url = p_data.get("codex_usage_endpoint_url")
                 if "codex_session_captured_at" in p_data:
-                    existing.codex_session_captured_at = p_data.get(
-                        "codex_session_captured_at"
-                    )
+                    existing.codex_session_captured_at = p_data.get("codex_session_captured_at")
                 if "manual_override_until" in p_data:
                     existing.manual_override_until = _parse_iso_or_none(
                         p_data.get("manual_override_until")
                     )
                 if "manual_override_set_by" in p_data:
-                    existing.manual_override_set_by = p_data.get(
-                        "manual_override_set_by"
-                    )
+                    existing.manual_override_set_by = p_data.get("manual_override_set_by")
                 if "manual_override_set_at" in p_data:
                     existing.manual_override_set_at = _parse_iso_or_none(
                         p_data.get("manual_override_set_at")
                     )
                 if "manual_override_reason" in p_data:
-                    existing.manual_override_reason = p_data.get(
-                        "manual_override_reason"
-                    )
+                    existing.manual_override_reason = p_data.get("manual_override_reason")
                 if "auto_skip_until" in p_data:
                     val = p_data.get("auto_skip_until")
                     if val:
                         from datetime import datetime as _dt
+
                         try:
-                            existing.auto_skip_until = (
-                                _dt.fromisoformat(val.replace("Z", "+00:00"))
-                            )
+                            existing.auto_skip_until = _dt.fromisoformat(val.replace("Z", "+00:00"))
                         except Exception:
                             existing.auto_skip_until = None
                     else:
                         existing.auto_skip_until = None
                 if "auto_skip_reason" in p_data:
-                    existing.auto_skip_reason = p_data.get(
-                        "auto_skip_reason"
-                    )
+                    existing.auto_skip_reason = p_data.get("auto_skip_reason")
                 if "owner_company" in p_data:
                     existing.owner_company = p_data.get("owner_company")
                     try:
                         from app.compliance.policy import (
                             invalidate_blocklist_cache,
                         )
+
                         invalidate_blocklist_cache(None)
                     except Exception:
                         pass
@@ -1012,9 +1014,10 @@ async def _apply_providers(db: AsyncSession, rows: list[dict]) -> None:
                 if _cred_after != _cred_before:
                     try:
                         from app.routing.circuit_breaker import (
-                            force_close,
                             clear_auth_failure,
+                            force_close,
                         )
+
                         await force_close(existing.id)
                         clear_auth_failure(existing.id)
                     except Exception:
@@ -1033,9 +1036,7 @@ async def _apply_providers(db: AsyncSession, rows: list[dict]) -> None:
             priority=p_data.get("priority", 10),
             enabled=p_data.get("enabled", True),
             timeout_sec=p_data.get("timeout_sec", 60),
-            exclude_from_tool_requests=p_data.get(
-                "exclude_from_tool_requests", False
-            ),
+            exclude_from_tool_requests=p_data.get("exclude_from_tool_requests", False),
             hold_down_sec=p_data.get("hold_down_sec"),
             failure_threshold=p_data.get("failure_threshold"),
             extra_config=p_data.get("extra_config", {}),
@@ -1044,31 +1045,24 @@ async def _apply_providers(db: AsyncSession, rows: list[dict]) -> None:
             oauth_refresh_token=p_data.get("oauth_refresh_token"),
             oauth_expires_at=p_data.get("oauth_expires_at"),
             anthropic_org_uuid=p_data.get("anthropic_org_uuid"),
-            anthropic_session_captured_at=p_data.get(
-                "anthropic_session_captured_at"
-            ),
+            anthropic_session_captured_at=p_data.get("anthropic_session_captured_at"),
             codex_usage_endpoint_url=p_data.get("codex_usage_endpoint_url"),
-            codex_session_captured_at=p_data.get(
-                "codex_session_captured_at"
-            ),
-            manual_override_until=_parse_iso_or_none(
-                p_data.get("manual_override_until")
-            ),
+            codex_session_captured_at=p_data.get("codex_session_captured_at"),
+            manual_override_until=_parse_iso_or_none(p_data.get("manual_override_until")),
             manual_override_set_by=p_data.get("manual_override_set_by"),
-            manual_override_set_at=_parse_iso_or_none(
-                p_data.get("manual_override_set_at")
-            ),
+            manual_override_set_at=_parse_iso_or_none(p_data.get("manual_override_set_at")),
             manual_override_reason=p_data.get("manual_override_reason"),
-            auto_skip_until=_parse_iso_or_none(
-                p_data.get("auto_skip_until")
-            ),
+            auto_skip_until=_parse_iso_or_none(p_data.get("auto_skip_until")),
             auto_skip_reason=p_data.get("auto_skip_reason"),
             owner_company=p_data.get("owner_company"),
             last_user_edit_at=peer_user_edit_at,
         )
         db.add(p)
         register_provider(
-            p.id, p.provider_type, p.hold_down_sec, p.failure_threshold,
+            p.id,
+            p.provider_type,
+            p.hold_down_sec,
+            p.failure_threshold,
         )
 
 
@@ -1092,6 +1086,7 @@ async def _apply_cluster_peers(db: AsyncSession, rows: list[dict]) -> None:
     """
     from app.config import settings as _s
     from app.models.db import ClusterPeer
+
     self_id = _s.cluster_node_id or ""
     for r in rows:
         pid = r.get("id")
@@ -1105,28 +1100,27 @@ async def _apply_cluster_peers(db: AsyncSession, rows: list[dict]) -> None:
                 peer_edit = float(peer_edit)
             except (TypeError, ValueError):
                 peer_edit = None
-        existing = (await db.execute(
-            select(ClusterPeer).where(ClusterPeer.id == pid).limit(1)
-        )).scalar_one_or_none()
+        existing = (
+            await db.execute(select(ClusterPeer).where(ClusterPeer.id == pid).limit(1))
+        ).scalar_one_or_none()
 
         if existing is None:
-            db.add(ClusterPeer(
-                id=pid,
-                url=r.get("url") or "",
-                name=r.get("name"),
-                added_at=peer_added,
-                removed_at=peer_removed,
-                last_user_edit_at=peer_edit,
-            ))
+            db.add(
+                ClusterPeer(
+                    id=pid,
+                    url=r.get("url") or "",
+                    name=r.get("name"),
+                    added_at=peer_added,
+                    removed_at=peer_removed,
+                    last_user_edit_at=peer_edit,
+                )
+            )
             continue
 
         # Tombstone branch — accept a removal whose timestamp is newer
         # than ours (or whose ours is NULL, meaning we still think the
         # peer is active).
-        if peer_removed and (
-            existing.removed_at is None
-            or peer_removed >= existing.removed_at
-        ):
+        if peer_removed and (existing.removed_at is None or peer_removed >= existing.removed_at):
             existing.removed_at = peer_removed
             continue
         # Local is tombstoned, peer says active → keep local tombstone.
@@ -1134,11 +1128,7 @@ async def _apply_cluster_peers(db: AsyncSession, rows: list[dict]) -> None:
             continue
         # LWW on edits.
         local_edit = existing.last_user_edit_at
-        if (
-            peer_edit is not None
-            and local_edit is not None
-            and peer_edit <= local_edit
-        ):
+        if peer_edit is not None and local_edit is not None and peer_edit <= local_edit:
             continue
         if r.get("url"):
             existing.url = r["url"]

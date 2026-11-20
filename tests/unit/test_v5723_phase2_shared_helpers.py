@@ -11,18 +11,18 @@ What stays in ``_messages_pre_route``:
 - ``translate_to_openai_if_needed`` (Anthropic→OpenAI body
   translation, only meaningful for /v1/messages).
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-
 
 # ── structural pins ────────────────────────────────────────────────────
 
 
 def test_handler_shared_module_exists():
     from app.api._handler_shared import (  # noqa: F401
-        prepare_request_context,
         normalize_request_body,
+        prepare_request_context,
     )
 
 
@@ -46,7 +46,9 @@ def test_endpoint_kwarg_required_and_distinct():
     handlers pass distinct values — this is what keeps Prometheus
     counters + LLM-stop scoping correct."""
     import inspect
+
     from app.api._handler_shared import prepare_request_context
+
     sig = inspect.signature(prepare_request_context)
     assert "endpoint" in sig.parameters
     # Keyword-only
@@ -62,7 +64,9 @@ def test_normalize_request_body_takes_endpoint():
     """Same endpoint parameterization for the validation helper —
     validate_completion_request itself dispatches on this arg."""
     import inspect
+
     from app.api._handler_shared import normalize_request_body
+
     sig = inspect.signature(normalize_request_body)
     assert "endpoint" in sig.parameters
     assert sig.parameters["endpoint"].kind == inspect.Parameter.KEYWORD_ONLY
@@ -111,5 +115,6 @@ def test_translate_helper_stays_in_messages_pre_route():
 def test_version_bumped():
     """v5.7.23 minimum — later patches keep this passing."""
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     assert parts >= (5, 7, 23), f"v5.7.23 must be reachable; got {__version__}"

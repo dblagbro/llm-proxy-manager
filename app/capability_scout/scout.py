@@ -11,12 +11,15 @@ wins. No NLP, no LLM-based classification — the operator already pays
 for one LLM call per request and asking a second LLM to grade the
 first would double cost for marginal gain.
 """
+
 from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable, List, Optional
+from datetime import UTC
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +31,11 @@ EVENT_TYPE = "mcp_capability_suggestion"
 @dataclass(frozen=True)
 class RefusalPattern:
     """One refusal-phrase → suggested MCP tool mapping."""
-    name: str                # short stable id ("cant_read_files", …)
-    pattern: re.Pattern[str] # pre-compiled case-insensitive regex
-    suggested_tool: str      # MCP tool that would unblock the response
-    why: str                 # operator-facing rationale
+
+    name: str  # short stable id ("cant_read_files", …)
+    pattern: re.Pattern[str]  # pre-compiled case-insensitive regex
+    suggested_tool: str  # MCP tool that would unblock the response
+    why: str  # operator-facing rationale
 
 
 def _r(p: str) -> re.Pattern[str]:
@@ -42,22 +46,38 @@ def _r(p: str) -> re.Pattern[str]:
 # (excel, pdf, docx) above the generic file/url ones so a user asking
 # about a .xlsx attachment doesn't get the generic "fetch_url"
 # suggestion when read_xlsx_to_markdown is the better fit.
-REFUSAL_PATTERNS: List[RefusalPattern] = [
+REFUSAL_PATTERNS: list[RefusalPattern] = [
     RefusalPattern(
         name="cant_read_excel",
-        pattern=_r(r"\b(can't|cannot|unable to|don'?t have (?:the )?ability to)\s+(?:read|open|process|access)\b[^.]{0,40}\b(?:excel|xlsx|spreadsheet|workbook|\.xls)"),
+        pattern=_r(
+            r"\b(can't|cannot|unable to|don'?t have (?:the )?ability to)\s+(?:read"
+            r"|open|process|access)\b[^.]{0,40}\b(?:excel|xlsx|spreadsheet|workbook|\.xls)"
+        ),
         suggested_tool="read_xlsx_to_markdown",
-        why="bot refused to read an Excel/spreadsheet — read_xlsx_to_markdown converts XLSX to markdown inline",
+        why=(
+            "bot refused to read an Excel/spreadsheet — read_xlsx_to_markdown "
+            "converts XLSX to markdown inline"
+        ),
     ),
     RefusalPattern(
         name="cant_read_document",
-        pattern=_r(r"\b(can't|cannot|unable to|don'?t have (?:the )?ability to)\s+(?:read|open|process|access)\b[^.]{0,40}\b(?:pdf|docx|word document|powerpoint|pptx|epub|html file)"),
+        pattern=_r(
+            r"\b(can't|cannot|unable to|don'?t have (?:the )?ability to)\s+(?:read"
+            r"|open|process|access)\b[^.]{0,40}\b(?:pdf|docx|word document"
+            r"|powerpoint|pptx|epub|html file)"
+        ),
         suggested_tool="convert_document_to_markdown",
-        why="bot refused to read a document — convert_document_to_markdown handles PDF/DOCX/PPTX/EPUB/HTML",
+        why=(
+            "bot refused to read a document — convert_document_to_markdown "
+            "handles PDF/DOCX/PPTX/EPUB/HTML"
+        ),
     ),
     RefusalPattern(
         name="cant_fetch_url",
-        pattern=_r(r"\b(can't|cannot|unable to|don'?t have (?:the )?ability to)\s+(?:fetch|access|read|open|retrieve|browse)\b[^.]{0,40}\b(?:url|website|web ?page|link|http)"),
+        pattern=_r(
+            r"\b(can't|cannot|unable to|don'?t have (?:the )?ability to)\s+(?:fetch"
+            r"|access|read|open|retrieve|browse)\b[^.]{0,40}\b(?:url|website|web ?page|link|http)"
+        ),
         suggested_tool="fetch_url",
         why="bot refused to fetch a URL — fetch_url is the proxy-injected web reader",
     ),
@@ -69,21 +89,36 @@ REFUSAL_PATTERNS: List[RefusalPattern] = [
     ),
     RefusalPattern(
         name="no_realtime_data",
-        pattern=_r(r"\b(can't|cannot|don'?t have|unable to)\s+(?:access|get|retrieve)\s+(?:real[- ]?time|live|current)\s+(?:data|information|prices|news)"),
+        pattern=_r(
+            r"\b(can't|cannot|don'?t have|unable to)\s+(?:access|get"
+            r"|retrieve)\s+(?:real[- ]?time|live|current)\s+(?:data|information|prices|news)"
+        ),
         suggested_tool="fetch_url",
         why="bot claimed no real-time data access — fetch_url + a search URL closes the gap",
     ),
     RefusalPattern(
         name="cant_read_files_generic",
-        pattern=_r(r"\b(can't|cannot|unable to|don'?t have (?:the )?ability to)\s+(?:read|open|process|access)\b[^.]{0,40}\b(?:files?|attachments?|uploads?|documents?)\b"),
+        pattern=_r(
+            r"\b(can't|cannot|unable to|don'?t have (?:the )?ability to)\s+(?:read"
+            r"|open|process|access)\b[^.]{0,40}\b(?:files?|attachments?|uploads?|documents?)\b"
+        ),
         suggested_tool="convert_document_to_markdown",
-        why="bot refused to read files generically — convert_document_to_markdown is the universal reader",
+        why=(
+            "bot refused to read files generically — "
+            "convert_document_to_markdown is the universal reader"
+        ),
     ),
     RefusalPattern(
         name="no_file_system_access",
-        pattern=_r(r"\b(no|don'?t have)\s+(?:access to|the ability to access)\s+(?:your|the|any)?\s*(?:file|filesystem|local|computer|machine)"),
+        pattern=_r(
+            r"\b(no|don'?t have)\s+(?:access to|the ability to access)\s+(?:your"
+            r"|the|any)?\s*(?:file|filesystem|local|computer|machine)"
+        ),
         suggested_tool="convert_document_to_markdown",
-        why="bot claimed no file/system access — proxy-injected document tools can read user-supplied bytes",
+        why=(
+            "bot claimed no file/system access — proxy-injected document tools "
+            "can read user-supplied bytes"
+        ),
     ),
 ]
 
@@ -96,13 +131,16 @@ async def is_enabled() -> bool:
     until the operator opts in.
     """
     try:
-        from app.models.database import AsyncSessionLocal
-        from app.models.db_compliance import SystemSetting  # noqa: F401
         from sqlalchemy import select
-        from app.models.db_base import Base  # noqa: F401
+
+        from app.models.database import AsyncSessionLocal
+
         # SystemSetting lives in db.py for legacy reasons; the
         # canonical accessor is via app.models.database.
         from app.models.db import SystemSetting as _SS
+        from app.models.db_base import Base  # noqa: F401
+        from app.models.db_compliance import SystemSetting  # noqa: F401
+
         async with AsyncSessionLocal() as db:
             rs = await db.execute(select(_SS).where(_SS.key == SYSTEM_SETTING_KEY))
             row = rs.scalar_one_or_none()
@@ -128,7 +166,7 @@ def _extract_text_from_anthropic_response(resp: Any) -> str:
     content = resp.get("content") or []
     if not isinstance(content, list):
         return ""
-    chunks: List[str] = []
+    chunks: list[str] = []
     for block in content:
         if not isinstance(block, dict):
             continue
@@ -149,7 +187,7 @@ def _window(text: str, span: tuple[int, int], radius: int = 40) -> str:
     return f"{prefix}{text[lo:hi].strip()}{suffix}"
 
 
-def scan_response_text(text: str) -> List[dict]:
+def scan_response_text(text: str) -> list[dict]:
     """Run every pattern over ``text``, return list of hits.
 
     Each hit is a dict ``{pattern_name, suggested_tool, why,
@@ -160,7 +198,7 @@ def scan_response_text(text: str) -> List[dict]:
     """
     if not text or not isinstance(text, str):
         return []
-    out: List[dict] = []
+    out: list[dict] = []
     seen_tools: set[str] = set()
     for pat in REFUSAL_PATTERNS:
         m = pat.pattern.search(text)
@@ -171,20 +209,22 @@ def scan_response_text(text: str) -> List[dict]:
         if pat.suggested_tool in seen_tools:
             continue
         seen_tools.add(pat.suggested_tool)
-        out.append({
-            "pattern_name": pat.name,
-            "suggested_tool": pat.suggested_tool,
-            "why": pat.why,
-            "matched_snippet": _window(text, m.span()),
-        })
+        out.append(
+            {
+                "pattern_name": pat.name,
+                "suggested_tool": pat.suggested_tool,
+                "why": pat.why,
+                "matched_snippet": _window(text, m.span()),
+            }
+        )
     return out
 
 
 async def emit_suggestions(
     *,
     db,
-    api_key_id: Optional[str],
-    provider_id: Optional[int],
+    api_key_id: str | None,
+    provider_id: int | None,
     suggestions: Iterable[dict],
 ) -> int:
     """Write ``suggestions`` to activity_log as ``mcp_capability_suggestion`` rows.
@@ -195,8 +235,10 @@ async def emit_suggestions(
     Failures are swallowed (and logged) — the scout must NEVER break
     the response path.
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
+
     from sqlalchemy import select
+
     from app.models.db import ActivityLog
 
     written = 0
@@ -204,7 +246,7 @@ async def emit_suggestions(
         suggestions = list(suggestions)
         if not suggestions:
             return 0
-        look_back = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=1)
+        look_back = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=1)
         for s in suggestions:
             tool = s.get("suggested_tool")
             if not tool:
@@ -226,23 +268,25 @@ async def emit_suggestions(
                 # write a duplicate suggestion.
                 pass
             try:
-                db.add(ActivityLog(
-                    created_at=datetime.utcnow(),
-                    severity="info",
-                    event_type=EVENT_TYPE,
-                    api_key_id=api_key_id,
-                    provider_id=provider_id,
-                    message=(
-                        f"Capability scout suggestion: "
-                        f"call could have used `{tool}` — {s.get('why', '')}"
-                    ),
-                    event_meta={
-                        "pattern_name": s.get("pattern_name"),
-                        "suggested_tool": tool,
-                        "why": s.get("why"),
-                        "matched_snippet": s.get("matched_snippet"),
-                    },
-                ))
+                db.add(
+                    ActivityLog(
+                        created_at=datetime.utcnow(),
+                        severity="info",
+                        event_type=EVENT_TYPE,
+                        api_key_id=api_key_id,
+                        provider_id=provider_id,
+                        message=(
+                            f"Capability scout suggestion: "
+                            f"call could have used `{tool}` — {s.get('why', '')}"
+                        ),
+                        event_meta={
+                            "pattern_name": s.get("pattern_name"),
+                            "suggested_tool": tool,
+                            "why": s.get("why"),
+                            "matched_snippet": s.get("matched_snippet"),
+                        },
+                    )
+                )
                 written += 1
             except Exception as exc:
                 logger.debug("capability_scout.emit row failed: %s", exc)
@@ -253,6 +297,7 @@ async def emit_suggestions(
             if api_key_id:
                 try:
                     from app.capability_scout.score import bump_score
+
                     await bump_score(db, api_key_id, tool)
                 except Exception as exc:
                     logger.debug("capability_scout.score_bump failed: %s", exc)
@@ -268,8 +313,8 @@ async def emit_suggestions(
 async def scan_and_emit_for_response(
     *,
     db,
-    api_key_id: Optional[str],
-    provider_id: Optional[int],
+    api_key_id: str | None,
+    provider_id: int | None,
     anthropic_response: Any,
 ) -> int:
     """End-to-end helper for the hook in messages.py.

@@ -28,6 +28,7 @@ Behavior preserved verbatim:
   ``AsyncSessionLocal`` for callers (like ``acompletion_with_retry``)
   that don't carry a session in scope. Shares the same cache.
 """
+
 from __future__ import annotations
 
 import json as _json
@@ -36,7 +37,6 @@ import secrets
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -77,7 +77,7 @@ class BoolSystemSetting:
     ttl_sec: float = 30.0
 
     # Mutable per-instance cache state.
-    _cache_value: Optional[bool] = field(default=None, init=False, repr=False)
+    _cache_value: bool | None = field(default=None, init=False, repr=False)
     _cache_at: float = field(default=0.0, init=False, repr=False)
 
     def invalidate_cache(self) -> None:
@@ -86,9 +86,8 @@ class BoolSystemSetting:
 
     async def _read_from_db(self, db: AsyncSession) -> bool:
         from app.models.db import SystemSetting
-        rs = await db.execute(
-            select(SystemSetting).where(SystemSetting.key == self.setting_key)
-        )
+
+        rs = await db.execute(select(SystemSetting).where(SystemSetting.key == self.setting_key))
         row = rs.scalar_one_or_none()
         if row is None:
             return self.default
@@ -108,7 +107,10 @@ class BoolSystemSetting:
         except Exception as exc:
             logger.warning(
                 "%s.read_failed key=%s err=%r — defaulting to %s",
-                self.log_prefix, self.setting_key, exc, self.default,
+                self.log_prefix,
+                self.setting_key,
+                exc,
+                self.default,
             )
             val = self.default
         self._cache_value = val
@@ -125,12 +127,16 @@ class BoolSystemSetting:
             return self._cache_value
         try:
             from app.models.database import AsyncSessionLocal
+
             async with AsyncSessionLocal() as db:
                 val = await self._read_from_db(db)
         except Exception as exc:
             logger.warning(
                 "%s.read_failed_sessionless key=%s err=%r — defaulting to %s",
-                self.log_prefix, self.setting_key, exc, self.default,
+                self.log_prefix,
+                self.setting_key,
+                exc,
+                self.default,
             )
             val = self.default
         self._cache_value = val
@@ -142,7 +148,7 @@ class BoolSystemSetting:
         db: AsyncSession,
         enabled: bool,
         actor: str,
-        reason: Optional[str] = None,
+        reason: str | None = None,
     ) -> dict:
         """Persist + audit + invalidate. Returns a status dict matching
         the pre-refactor contract of both modules (``ok``, ``enabled``,
@@ -152,23 +158,23 @@ class BoolSystemSetting:
         row so the operator's intent is recorded. Matches both modules'
         pre-refactor behavior.
         """
-        from app.models.db import SystemSetting, CompliancePolicyChange
+        from app.models.db import CompliancePolicyChange, SystemSetting
 
         prior = await self._read_from_db(db)
         noop = prior == enabled
         new_state_str = "true" if enabled else "false"
 
-        rs = await db.execute(
-            select(SystemSetting).where(SystemSetting.key == self.setting_key)
-        )
+        rs = await db.execute(select(SystemSetting).where(SystemSetting.key == self.setting_key))
         row = rs.scalar_one_or_none()
         if row is None:
-            db.add(SystemSetting(
-                key=self.setting_key,
-                value=new_state_str,
-                value_type="bool",
-                updated_at=time.time(),
-            ))
+            db.add(
+                SystemSetting(
+                    key=self.setting_key,
+                    value=new_state_str,
+                    value_type="bool",
+                    updated_at=time.time(),
+                )
+            )
         else:
             row.value = new_state_str
             row.updated_at = time.time()
@@ -180,26 +186,32 @@ class BoolSystemSetting:
             + (f"; reason: {reason}" if reason else "")
             + (" (no-op re-affirmation)" if noop else "")
         )
-        db.add(CompliancePolicyChange(
-            policy_change_id=audit_id,
-            changed_at=datetime.utcnow(),
-            changed_by_user_id=actor,
-            scope="system",
-            target_id=None,
-            before_state=_json.dumps({self.audit_subject: prior}),
-            after_state=_json.dumps({self.audit_subject: enabled}),
-            reason=summary,
-            applied_to_peers=_json.dumps([]),
-            pending_peers=None,
-            cluster_sync_status="local_only",
-        ))
+        db.add(
+            CompliancePolicyChange(
+                policy_change_id=audit_id,
+                changed_at=datetime.utcnow(),
+                changed_by_user_id=actor,
+                scope="system",
+                target_id=None,
+                before_state=_json.dumps({self.audit_subject: prior}),
+                after_state=_json.dumps({self.audit_subject: enabled}),
+                reason=summary,
+                applied_to_peers=_json.dumps([]),
+                pending_peers=None,
+                cluster_sync_status="local_only",
+            )
+        )
 
         await db.commit()
         self.invalidate_cache()
 
         logger.warning(
             "%s enabled=%s actor=%s reason=%r noop=%s",
-            self.log_prefix, enabled, actor, reason, noop,
+            self.log_prefix,
+            enabled,
+            actor,
+            reason,
+            noop,
         )
         return {
             "ok": True,

@@ -6,24 +6,57 @@ orchestrator stays focused on flow control. All functions here are pure
 (no I/O, no async) and are imported by ``pipeline.py`` at the top-level
 module scope.
 """
+
 from __future__ import annotations
 
 import json as _json
 import re
 
 # Infrastructure CLI tools whose presence signals a verifiable answer
-INFRA_TOOLS: frozenset[str] = frozenset({
-    "docker", "kubectl", "systemctl", "journalctl", "service ",
-    "rabbitmqctl", "rabbitmq-plugins", "rabbitmq-diagnostics",
-    "asterisk", "fs_cli", "opensips", "osipsctl",
-    "nginx", "apache2ctl", "httpd",
-    "certbot", "acme.sh",
-    "iptables", "ufw", "firewall-cmd",
-    "ip route", "ip addr", "ip link", "nmcli", "netstat", "ss -",
-    "mysql", "mysqladmin", "psql", "redis-cli", "mongosh",
-    "curl -", "wget ", "ssh ", "scp ", "rsync ",
-    "supervisorctl", "pm2 ", "gunicorn", "uwsgi",
-})
+INFRA_TOOLS: frozenset[str] = frozenset(
+    {
+        "docker",
+        "kubectl",
+        "systemctl",
+        "journalctl",
+        "service ",
+        "rabbitmqctl",
+        "rabbitmq-plugins",
+        "rabbitmq-diagnostics",
+        "asterisk",
+        "fs_cli",
+        "opensips",
+        "osipsctl",
+        "nginx",
+        "apache2ctl",
+        "httpd",
+        "certbot",
+        "acme.sh",
+        "iptables",
+        "ufw",
+        "firewall-cmd",
+        "ip route",
+        "ip addr",
+        "ip link",
+        "nmcli",
+        "netstat",
+        "ss -",
+        "mysql",
+        "mysqladmin",
+        "psql",
+        "redis-cli",
+        "mongosh",
+        "curl -",
+        "wget ",
+        "ssh ",
+        "scp ",
+        "rsync ",
+        "supervisorctl",
+        "pm2 ",
+        "gunicorn",
+        "uwsgi",
+    }
+)
 
 SHELL_CODE_BLOCK = re.compile(r"```(?:bash|sh|shell|zsh|fish|powershell)", re.IGNORECASE)
 
@@ -53,7 +86,7 @@ def parse_critique(critique: str) -> dict:
     end = cleaned.rfind("}")
     if start >= 0 and end > start:
         try:
-            obj = _json.loads(cleaned[start:end + 1])
+            obj = _json.loads(cleaned[start : end + 1])
             return {
                 "factual_issues": list(obj.get("factual_issues") or []),
                 "missing_coverage": list(obj.get("missing_coverage") or []),

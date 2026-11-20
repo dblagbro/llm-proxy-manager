@@ -18,42 +18,47 @@ ARCH-A discipline: the DB session is never held across a notification
 send (SMTP) — the loop collects notes and sends them after the session
 closes.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
+from app.airi.notify import airi_notify
 from app.config import settings
 from app.models.db import ActivityLog, AiriRule
-from app.airi.notify import airi_notify
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_COOLDOWN_SEC = 600
 _DEFAULT_MAX_RUNS_PER_HOUR = 5
 _OPS = {
-    ">": lambda a, b: a > b, ">=": lambda a, b: a >= b,
-    "<": lambda a, b: a < b, "<=": lambda a, b: a <= b,
+    ">": lambda a, b: a > b,
+    ">=": lambda a, b: a >= b,
+    "<": lambda a, b: a < b,
+    "<=": lambda a, b: a <= b,
 }
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 async def _provider_error_rate(db, provider_id: str, window_min: int):
     """(total, errors, pct) for a provider over the window. Excludes
     internal-source traffic (BUG-026). pct is None when total == 0."""
     cutoff = _now() - timedelta(minutes=int(window_min or 30))
-    rows = (await db.execute(
-        select(ActivityLog.severity, ActivityLog.event_meta)
-        .where(ActivityLog.event_type == "llm_request")
-        .where(ActivityLog.provider_id == provider_id)
-        .where(ActivityLog.created_at >= cutoff)
-    )).all()
+    rows = (
+        await db.execute(
+            select(ActivityLog.severity, ActivityLog.event_meta)
+            .where(ActivityLog.event_type == "llm_request")
+            .where(ActivityLog.provider_id == provider_id)
+            .where(ActivityLog.created_at >= cutoff)
+        )
+    ).all()
     total = errors = 0
     for severity, meta in rows:
         m = meta if isinstance(meta, dict) else {}
@@ -78,13 +83,14 @@ async def evaluate_condition(db, condition: dict):
     op = _OPS.get(condition.get("op", ">"))
     if op is None:
         return False, None, f"unsupported operator {condition.get('op')!r}"
-    total, _errors, pct = await _provider_error_rate(
-        db, pid, condition.get("window_min", 30))
+    total, _errors, pct = await _provider_error_rate(db, pid, condition.get("window_min", 30))
     if pct is None:
         return False, None, "no traffic in the window"
     fired = op(pct, float(condition.get("value", 0)))
-    detail = (f"error rate {pct:.1f}% over {total} requests "
-              f"(threshold {condition.get('op')} {condition.get('value')}%)")
+    detail = (
+        f"error rate {pct:.1f}% over {total} requests "
+        f"(threshold {condition.get('op')} {condition.get('value')}%)"
+    )
     return fired, pct, detail
 
 
@@ -93,6 +99,7 @@ async def _act_conditional(db, rule: AiriRule, spec: dict, detail: str):
     oscillation breaker. Returns ``(outcome, note_or_None)`` where note is
     ``(subject, message, severity)`` to send after the session closes."""
     from app.airi import proposals
+
     now = _now()
     osc = dict(rule.oscillation_state or {})
     acts = []
@@ -113,8 +120,10 @@ async def _act_conditional(db, rule: AiriRule, spec: dict, detail: str):
         # Oscillation breaker — the rule has acted too often; disable it.
         rule.enabled = False
         rule.last_action = "tripped — oscillation breaker"
-        rule.oscillation_state = {"acts": [t.isoformat() for t in acts],
-                                  "tripped_at": now.isoformat()}
+        rule.oscillation_state = {
+            "acts": [t.isoformat() for t in acts],
+            "tripped_at": now.isoformat(),
+        }
         return "tripped", (
             f"rule '{rule.name}' DISABLED — oscillation breaker",
             f"Scheduled rule '{rule.name}' acted {len(acts)} times in the last "
@@ -132,7 +141,10 @@ async def _act_conditional(db, rule: AiriRule, spec: dict, detail: str):
     hours = int(action.get("hours") or 1)
     pid = (spec.get("condition") or {}).get("provider_id")
     res = await proposals.create_provider_change(
-        db, provider_ref=pid, field="auto_skip_hours", value=hours,
+        db,
+        provider_ref=pid,
+        field="auto_skip_hours",
+        value=hours,
         mode=("apply" if rule.mode == "auto_apply" else "suggest"),
         created_by=f"airi-scheduled-rule:{rule.name}",
         prompt=f"scheduled rule '{rule.name}' fired — {detail}",
@@ -142,14 +154,21 @@ async def _act_conditional(db, rule: AiriRule, spec: dict, detail: str):
     status = res.get("status", "pending")
     rule.last_action = f"{status} — auto_skip {hours}h ({detail})"
     if status == "applied":
-        note = (f"rule '{rule.name}' auto-skipped a provider",
-                f"Scheduled rule '{rule.name}' fired ({detail}) and auto-skipped "
-                f"the provider for {hours}h.", "warning", "automation")
+        note = (
+            f"rule '{rule.name}' auto-skipped a provider",
+            f"Scheduled rule '{rule.name}' fired ({detail}) and auto-skipped "
+            f"the provider for {hours}h.",
+            "warning",
+            "automation",
+        )
     else:
-        note = (f"rule '{rule.name}' raised a pending proposal",
-                f"Scheduled rule '{rule.name}' fired ({detail}). A proposal to "
-                f"auto-skip the provider for {hours}h is PENDING your approval.",
-                "warning", "automation")
+        note = (
+            f"rule '{rule.name}' raised a pending proposal",
+            f"Scheduled rule '{rule.name}' fired ({detail}). A proposal to "
+            f"auto-skip the provider for {hours}h is PENDING your approval.",
+            "warning",
+            "automation",
+        )
     return "acted", note
 
 
@@ -157,8 +176,15 @@ async def evaluate_due_rules(db):
     """One evaluator pass. Returns ``(summary, notifications)`` — the caller
     sends the notifications after the DB session is closed."""
     from app.airi import rules
-    summary = {"evaluated": 0, "fired": 0, "acted": 0, "notified": 0,
-               "cooled_down": 0, "tripped": 0}
+
+    summary = {
+        "evaluated": 0,
+        "fired": 0,
+        "acted": 0,
+        "notified": 0,
+        "cooled_down": 0,
+        "tripped": 0,
+    }
     notifications: list[tuple] = []
     now = _now()
 
@@ -188,12 +214,14 @@ async def evaluate_due_rules(db):
         if rule.kind == "monitor":
             rule.last_action = f"fired — {detail}"
             await db.commit()
-            notifications.append((
-                f"monitor '{rule.name}' fired",
-                f"Monitor rule '{rule.name}': {detail}.",
-                "warning",
-                "monitor",
-            ))
+            notifications.append(
+                (
+                    f"monitor '{rule.name}' fired",
+                    f"Monitor rule '{rule.name}': {detail}.",
+                    "warning",
+                    "monitor",
+                )
+            )
             summary["notified"] += 1
             continue
 
@@ -210,7 +238,7 @@ async def evaluate_due_rules(db):
 # A runtime override on top of the airi_automation_enabled env default.
 # None = follow the env setting; True/False = explicit operator override.
 # Resets to the env default on restart (fail-safe — automation off by default).
-_automation_override: "bool | None" = None
+_automation_override: bool | None = None
 
 
 def is_automation_enabled() -> bool:
@@ -226,11 +254,12 @@ def set_automation(enabled: bool) -> None:
 
 # ── background loop ──────────────────────────────────────────────────────────
 
-_task: "asyncio.Task | None" = None
+_task: asyncio.Task | None = None
 
 
 async def _loop() -> None:
     from app.models.database import AsyncSessionLocal
+
     await asyncio.sleep(20)  # boot delay — don't fight startup
     while True:
         interval = max(15, int(getattr(settings, "airi_evaluator_interval_sec", 60)))

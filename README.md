@@ -4,7 +4,7 @@ Self-hosted LLM routing gateway — Python/FastAPI rewrite of llm-proxy v1.
 
 **LMRH semantic routing · circuit breaker failover · CoT-E augmentation · cluster sync · Run runtime · per-provider keep-alive probes · proxy-side caller memory (#267) · AIRI conversational config (v4.0+) · voice IO (v4.2+v4.3) · React dashboard**
 
-Current version: **v5.22.13** (see [CHANGELOG.md](CHANGELOG.md))
+Current version: **v5.22.69** (see [CHANGELOG.md](CHANGELOG.md))
 
 ## v4 highlights
 
@@ -42,7 +42,36 @@ Current version: **v5.22.13** (see [CHANGELOG.md](CHANGELOG.md))
 - **Auth**: bcrypt passwords, HTTP-only session cookies, API key auth (`x-api-key` or `Authorization: Bearer`)
 - **Deployment**: Docker, served at `/llm-proxy2/` via nginx reverse proxy
 
-## Quick Start (Docker)
+## Deploying the gateway container
+
+Add the gateway to the Compose project that runs your reverse proxy. Select a reviewed
+image tag or digest and supply a stable private secret. On the project's Docker network
+nginx can route to `llm-proxy2:3000`. Configure the first admin login before exposing the
+dashboard, then configure the model providers you intend to use.
+
+```yaml
+services:
+  llm-proxy2:
+    image: ${LLM_PROXY_IMAGE:?Set a gateway image tag or digest}
+    restart: unless-stopped
+    environment:
+      SECRET_KEY: ${LLM_PROXY_SECRET_KEY:?Set a stable private secret}
+    volumes:
+      - gateway-data:/app/data
+      - gateway-logs:/app/logs
+
+volumes:
+  gateway-data:
+  gateway-logs:
+```
+
+The image provides its own non-root runtime account. Docker initializes fresh named
+volumes from the image directories. Restored volumes must be writable by the image's
+numeric UID/GID. The default data store is SQLite on the data volume. Standard proxy
+traffic uses the operator's configured upstream endpoints and requires no host login,
+host SSH keys, tunnel service or vendor CLI.
+
+## TMR deployment
 
 The service is in the main `docker-compose.yml` on both nodes (tmrwww01, tmrwww02):
 

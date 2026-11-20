@@ -1,17 +1,16 @@
 """v3.7.18 — LMRHv2 Q1 (public endpoint) + Q6 (per-node override)."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import patch
-
-import pytest
-
 
 # ── Q6: per-node env-var override ─────────────────────────────────
 
 
 def test_settings_has_node_override_field():
     from app.config import settings
+
     assert hasattr(settings, "lmrh_v2_node_override")
     # Default is "auto" (follow SystemSetting)
     assert isinstance(settings.lmrh_v2_node_override, str)
@@ -21,6 +20,7 @@ def test_v2_enabled_override_on_wins():
     """LMRH_V2_NODE_OVERRIDE=on must enable LMRH v2 even when the
     cluster-synced setting is False."""
     from app.api.lmrh_v2 import _v2_enabled
+
     with patch("app.api.lmrh_v2.settings") as s:
         s.lmrh_v2_node_override = "on"
         s.lmrh_v2_enabled = False
@@ -31,6 +31,7 @@ def test_v2_enabled_override_off_wins():
     """LMRH_V2_NODE_OVERRIDE=off must disable LMRH v2 even when the
     cluster-synced setting is True."""
     from app.api.lmrh_v2 import _v2_enabled
+
     with patch("app.api.lmrh_v2.settings") as s:
         s.lmrh_v2_node_override = "off"
         s.lmrh_v2_enabled = True
@@ -40,6 +41,7 @@ def test_v2_enabled_override_off_wins():
 def test_v2_enabled_override_auto_follows_cluster():
     """Default 'auto' falls back to the cluster SystemSetting."""
     from app.api.lmrh_v2 import _v2_enabled
+
     with patch("app.api.lmrh_v2.settings") as s:
         s.lmrh_v2_node_override = "auto"
         s.lmrh_v2_enabled = True
@@ -51,6 +53,7 @@ def test_v2_enabled_override_auto_follows_cluster():
 def test_override_string_case_insensitive():
     """ON/On/on all work — tolerate case."""
     from app.api.lmrh_v2 import _v2_enabled
+
     for val in ("ON", "On", "on", "  ON  "):
         with patch("app.api.lmrh_v2.settings") as s:
             s.lmrh_v2_node_override = val
@@ -65,45 +68,78 @@ def _make_snap():
     """Synthesize a minimal LmrhSnapshot fixture covering 2 providers,
     1 model each (one shared route + one subscription route)."""
     from app.routing.lmrh.snapshot import (
-        LmrhSnapshot, _ProviderSnap, _ModelSnap,
+        LmrhSnapshot,
+        _ModelSnap,
+        _ProviderSnap,
     )
+
     m1 = _ModelSnap(
-        model_id="claude-sonnet-4-6", kind="chat", context_length=200000,
-        native_tools=True, native_reasoning=False,
-        cost_per_1m_input_usd=3.0, cost_per_1m_output_usd=15.0,
+        model_id="claude-sonnet-4-6",
+        kind="chat",
+        context_length=200000,
+        native_tools=True,
+        native_reasoning=False,
+        cost_per_1m_input_usd=3.0,
+        cost_per_1m_output_usd=15.0,
         rated_quota_per_1m_input_usd=None,
-        latency_p50_ms=1200, latency_p95_ms=2800,
-        ttft_p50_ms=400, ttft_p95_ms=900,
-        success_rate=0.99, samples=120,
+        latency_p50_ms=1200,
+        latency_p95_ms=2800,
+        ttft_p50_ms=400,
+        ttft_p95_ms=900,
+        success_rate=0.99,
+        samples=120,
         aliases=["claude-sonnet-4-6"],
-        family="anthropic-sonnet-4", variant="direct",
+        family="anthropic-sonnet-4",
+        variant="direct",
     )
     m2 = _ModelSnap(
-        model_id="claude-sonnet-4-6", kind="chat", context_length=200000,
-        native_tools=True, native_reasoning=False,
-        cost_per_1m_input_usd=0.0, cost_per_1m_output_usd=0.0,
+        model_id="claude-sonnet-4-6",
+        kind="chat",
+        context_length=200000,
+        native_tools=True,
+        native_reasoning=False,
+        cost_per_1m_input_usd=0.0,
+        cost_per_1m_output_usd=0.0,
         rated_quota_per_1m_input_usd=15.0,
-        latency_p50_ms=1500, latency_p95_ms=3200,
-        ttft_p50_ms=500, ttft_p95_ms=1100,
-        success_rate=0.98, samples=84,
+        latency_p50_ms=1500,
+        latency_p95_ms=3200,
+        ttft_p50_ms=500,
+        ttft_p95_ms=1100,
+        success_rate=0.98,
+        samples=84,
         aliases=["claude-sonnet-4-6"],
-        family="anthropic-sonnet-4", variant="oauth",
+        family="anthropic-sonnet-4",
+        variant="oauth",
     )
     p1 = _ProviderSnap(
-        id="abc123", name="Anthropic-Direct", type="anthropic",
-        priority=1, cost_class="per_call", circuit="closed",
-        regions=["us"], owned_by_key_id=None, models=[m1],
+        id="abc123",
+        name="Anthropic-Direct",
+        type="anthropic",
+        priority=1,
+        cost_class="per_call",
+        circuit="closed",
+        regions=["us"],
+        owned_by_key_id=None,
+        models=[m1],
         subscription_quota=None,
     )
     p2 = _ProviderSnap(
-        id="def456", name="Anthropic-Max-Gmail", type="claude-oauth",
-        priority=2, cost_class="subscription", circuit="closed",
-        regions=["us"], owned_by_key_id=None, models=[m2],
+        id="def456",
+        name="Anthropic-Max-Gmail",
+        type="claude-oauth",
+        priority=2,
+        cost_class="subscription",
+        circuit="closed",
+        regions=["us"],
+        owned_by_key_id=None,
+        models=[m2],
         subscription_quota=None,
     )
     return LmrhSnapshot(
-        as_of=datetime.now(timezone.utc),
-        window_sec=3600, providers=[p1, p2], etag="W/\"test\"",
+        as_of=datetime.now(UTC),
+        window_sec=3600,
+        providers=[p1, p2],
+        etag='W/"test"',
     )
 
 
@@ -111,6 +147,7 @@ def test_public_view_omits_operator_provider_names():
     """The redacted view must NOT contain operator-internal names like
     'Anthropic-Max-Gmail' anywhere in the response."""
     import json
+
     snap = _make_snap()
     out = snap.to_public_view()
     body = json.dumps(out)
@@ -134,6 +171,7 @@ def test_public_view_aggregates_by_model():
 def test_public_view_exposes_cost_tiers_not_numbers():
     """Coarse tier buckets only — no exact $/1M numbers."""
     import json
+
     snap = _make_snap()
     out = snap.to_public_view()
     body = json.dumps(out)
@@ -181,9 +219,12 @@ def test_public_view_capabilities_exposed():
 
 def test_public_view_empty_snapshot_handles_no_providers():
     from app.routing.lmrh.snapshot import LmrhSnapshot
+
     snap = LmrhSnapshot(
-        as_of=datetime.now(timezone.utc),
-        window_sec=3600, providers=[], etag="W/\"empty\"",
+        as_of=datetime.now(UTC),
+        window_sec=3600,
+        providers=[],
+        etag='W/"empty"',
     )
     out = snap.to_public_view()
     assert out["models_count"] == 0
@@ -193,17 +234,20 @@ def test_public_view_empty_snapshot_handles_no_providers():
 def test_well_known_advertises_public_endpoint():
     """When v2 is enabled, /.well-known/lmrh-config must list /lmrh/public."""
     from pathlib import Path
+
     src = Path("app/api/lmrh_v2.py").read_text()
     assert '"public": "/lmrh/public"' in src
 
 
 def test_public_endpoint_route_registered():
     from pathlib import Path
+
     src = Path("app/api/lmrh_v2.py").read_text()
     assert '@router.get("/lmrh/public")' in src
 
 
 def test_version_bumped():
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     assert parts >= (3, 7, 18)

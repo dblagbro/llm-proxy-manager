@@ -10,12 +10,13 @@ Guardrails:
 - Opt-in only: request header X-Hedge: on OR LMRH hedge=on.
 - Only streaming requests hedge; non-streaming is cheaper to just retry.
 """
+
 import asyncio
 import logging
 import time
 from collections import deque
+from collections.abc import AsyncIterator
 from statistics import quantiles
-from typing import AsyncIterator, Optional
 
 from app.config import settings
 
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 _WINDOW_SIZE = 200  # samples per provider
-_MIN_SAMPLES = 20   # below this, p95 is too noisy to act on
+_MIN_SAMPLES = 20  # below this, p95 is too noisy to act on
 
 _ttft_samples: dict[str, deque[float]] = {}
 
@@ -58,7 +59,7 @@ def record_ttft_sample(provider_id: str, ttft_ms: float) -> None:
         _peak_ewma_ms[provider_id] = max(prev, updated) if ttft_ms > prev else updated
 
 
-def provider_p95_ms(provider_id: str) -> Optional[float]:
+def provider_p95_ms(provider_id: str) -> float | None:
     buf = _ttft_samples.get(provider_id)
     if buf is None or len(buf) < _MIN_SAMPLES:
         return None
@@ -96,7 +97,7 @@ async def _try_consume_hedge_token() -> bool:
         return False
 
 
-def should_hedge_header(hedge_header: Optional[str], lmrh_hedge: Optional[str]) -> bool:
+def should_hedge_header(hedge_header: str | None, lmrh_hedge: str | None) -> bool:
     if hedge_header and hedge_header.lower() in ("on", "true", "1"):
         return True
     if lmrh_hedge and lmrh_hedge.lower() == "on":
@@ -104,7 +105,7 @@ def should_hedge_header(hedge_header: Optional[str], lmrh_hedge: Optional[str]) 
     return False
 
 
-def wait_budget_ms(provider_id: str) -> Optional[float]:
+def wait_budget_ms(provider_id: str) -> float | None:
     """How long to wait before firing the backup. None = don't hedge (no signal)."""
     p95 = provider_p95_ms(provider_id)
     if p95 is None:
@@ -116,7 +117,7 @@ def wait_budget_ms(provider_id: str) -> Optional[float]:
 # ── Hedged streamer ──────────────────────────────────────────────────────────
 
 
-def _chunk_ok(chunk: Optional[bytes]) -> bool:
+def _chunk_ok(chunk: bytes | None) -> bool:
     """A streamed first chunk is "healthy" — a genuine race win — only if
     it exists and is not a terminal SSE error frame. An empty stream or a
     pre-stream error frame counts as a FAILURE, not a win."""
@@ -124,6 +125,7 @@ def _chunk_ok(chunk: Optional[bytes]) -> bool:
         return False
     try:
         from app.api._messages_streaming import _sse_frame_error
+
         return _sse_frame_error(chunk) is None
     except Exception:
         # Detector unavailable — treat as healthy (never regress to worse
@@ -158,19 +160,17 @@ async def race_streams(
     """
     primary_iter = primary_factory()
     first_task = asyncio.create_task(_first_chunk(primary_iter))
-    primary_first: Optional[bytes] = None
+    primary_first: bytes | None = None
     primary_settled = False
     try:
-        primary_first = await asyncio.wait_for(
-            asyncio.shield(first_task), timeout=wait_ms / 1000.0
-        )
+        primary_first = await asyncio.wait_for(asyncio.shield(first_task), timeout=wait_ms / 1000.0)
         primary_settled = True
         if _chunk_ok(primary_first):
             # Primary won on its own with a healthy first chunk.
             return _replay(primary_first, primary_iter), "primary"
         # Primary produced an error frame / empty stream — it failed;
         # fall through and give the backup a chance.
-    except asyncio.TimeoutError:
+    except TimeoutError:
         pass  # primary slow — race the backup
 
     backup_iter = backup_factory()
@@ -193,7 +193,7 @@ async def race_streams(
     # first HEALTHY chunk.
     await asyncio.wait({first_task, backup_task}, return_when=asyncio.FIRST_COMPLETED)
 
-    def _task_chunk(task) -> Optional[bytes]:
+    def _task_chunk(task) -> bytes | None:
         if task.done() and not task.cancelled() and task.exception() is None:
             return task.result()
         return None
@@ -250,7 +250,7 @@ async def _first_chunk(stream: AsyncIterator[bytes]):
     return None
 
 
-async def _replay(first: Optional[bytes], rest: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+async def _replay(first: bytes | None, rest: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
     """Re-yield the already-consumed first chunk, then the rest of the stream."""
     if first is not None:
         yield first

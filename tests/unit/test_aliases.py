@@ -1,6 +1,8 @@
 """Unit tests for model alias resolver."""
+
 import sys
 import types
+
 import pytest
 
 _stub = types.ModuleType("litellm")
@@ -9,7 +11,7 @@ sys.modules.setdefault("litellm", _stub)
 if not hasattr(sys.modules["litellm"], "RateLimitError"):
     sys.modules["litellm"].RateLimitError = type("RateLimitError", (Exception,), {})
 
-from app.routing.aliases import resolve_alias
+from app.routing.aliases import resolve_alias  # noqa: E402
 
 
 class _FakeAliasRow:

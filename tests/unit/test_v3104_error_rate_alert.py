@@ -7,12 +7,12 @@ rate ``>= threshold_pct``, fires ``alert_high_error_rate``. Without this
 a sustained spike runs unnoticed — the v3.10.0 translation bug went
 ~3 weeks unalerted.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
 
 from app.monitoring.observability_sampler import _should_alert_error_rate
-
 
 # ── decision logic ─────────────────────────────────────────────────
 
@@ -50,7 +50,7 @@ def test_exactly_at_thresholds_alerts():
 def test_threshold_is_configurable():
     # Same traffic, stricter threshold → no alert; looser → alert.
     assert _should_alert_error_rate(20, 100, 10, 50.0) is False  # 20% < 50%
-    assert _should_alert_error_rate(20, 100, 10, 5.0) is True    # 20% >= 5%
+    assert _should_alert_error_rate(20, 100, 10, 5.0) is True  # 20% >= 5%
 
 
 # ── config ─────────────────────────────────────────────────────────
@@ -58,6 +58,7 @@ def test_threshold_is_configurable():
 
 def test_error_rate_alert_settings_exist():
     from app.config import settings
+
     assert settings.error_rate_alert_enabled is True
     assert settings.error_rate_alert_window_min == 15
     assert settings.error_rate_alert_threshold_pct == 10.0
@@ -69,13 +70,14 @@ def test_error_rate_alert_settings_exist():
 
 def test_alert_high_error_rate_exists():
     from app.monitoring import notifications
+
     assert hasattr(notifications, "alert_high_error_rate")
 
 
 def test_alert_high_error_rate_is_error_severity_and_throttled():
     src = Path("app/monitoring/notifications.py").read_text()
     idx = src.index("async def alert_high_error_rate(")
-    fn = src[idx:idx + 900]
+    fn = src[idx : idx + 900]
     assert '"error"' in fn  # operator-actionable severity
     assert 'throttle_key="high_error_rate"' in fn  # one mail per incident
 

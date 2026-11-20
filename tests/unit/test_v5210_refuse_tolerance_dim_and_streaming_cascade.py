@@ -13,11 +13,13 @@
    ``X-Refusal-Cascade-Unavailable: streaming`` transparency header
    with a working ``X-Refusal-Cascade-Mode: buffered`` marker.
 """
+
 from __future__ import annotations
+
 from pathlib import Path
 
-
 # ── refuse-tolerance dim ─────────────────────────────────────────────
+
 
 def test_refuse_tolerance_dim_registered_in_weights():
     src = Path("app/routing/lmrh/types.py").read_text()
@@ -38,9 +40,10 @@ def test_refuse_tolerance_floor_ceil_maps_are_symmetric():
     """Both dicts must have the same keys — asymmetric maps would
     silently drop candidates for some values."""
     from app.routing.lmrh.types import (
-        _REFUSE_TOLERANCE_TO_SAFETY_FLOOR,
         _REFUSE_TOLERANCE_TO_SAFETY_CEIL,
+        _REFUSE_TOLERANCE_TO_SAFETY_FLOOR,
     )
+
     assert set(_REFUSE_TOLERANCE_TO_SAFETY_FLOOR) == set(_REFUSE_TOLERANCE_TO_SAFETY_CEIL)
     for k in _REFUSE_TOLERANCE_TO_SAFETY_FLOOR:
         assert _REFUSE_TOLERANCE_TO_SAFETY_FLOOR[k] <= _REFUSE_TOLERANCE_TO_SAFETY_CEIL[k], (
@@ -52,9 +55,10 @@ def test_refuse_tolerance_semantic_ordering():
     """strict should map to a higher safety range than lenient.
     (strict = wants MORE refusals; lenient = wants FEWER refusals.)"""
     from app.routing.lmrh.types import (
-        _REFUSE_TOLERANCE_TO_SAFETY_FLOOR,
         _REFUSE_TOLERANCE_TO_SAFETY_CEIL,
+        _REFUSE_TOLERANCE_TO_SAFETY_FLOOR,
     )
+
     strict_range = (
         _REFUSE_TOLERANCE_TO_SAFETY_FLOOR["strict"],
         _REFUSE_TOLERANCE_TO_SAFETY_CEIL["strict"],
@@ -70,20 +74,28 @@ def test_refuse_tolerance_semantic_ordering():
 
 def test_refuse_tolerance_scoring_matches_provider_safety():
     """A provider with safety=4 should score for strict but not lenient."""
-    from app.routing.lmrh.types import LMRHHint, HintDimension, CapabilityProfile
     from app.routing.lmrh.score import score_candidate
+    from app.routing.lmrh.types import CapabilityProfile, HintDimension, LMRHHint
 
     prof = CapabilityProfile(
-        provider_id="p1", provider_type="anthropic", model_id="claude-sonnet",
+        provider_id="p1",
+        provider_type="anthropic",
+        model_id="claude-sonnet",
         safety=4,
     )
 
-    strict_hint = LMRHHint(raw="", dimensions=[
-        HintDimension(key="refuse-tolerance", value="strict"),
-    ])
-    lenient_hint = LMRHHint(raw="", dimensions=[
-        HintDimension(key="refuse-tolerance", value="lenient"),
-    ])
+    strict_hint = LMRHHint(
+        raw="",
+        dimensions=[
+            HintDimension(key="refuse-tolerance", value="strict"),
+        ],
+    )
+    lenient_hint = LMRHHint(
+        raw="",
+        dimensions=[
+            HintDimension(key="refuse-tolerance", value="lenient"),
+        ],
+    )
 
     strict_score, strict_unmet = score_candidate(prof, strict_hint)
     lenient_score, lenient_unmet = score_candidate(prof, lenient_hint)
@@ -101,15 +113,21 @@ def test_refuse_tolerance_scoring_matches_provider_safety():
 
 def test_refuse_tolerance_required_hard_gates():
     """``refuse-tolerance=strict;require`` should hard-drop lenient providers."""
-    from app.routing.lmrh.types import LMRHHint, HintDimension, CapabilityProfile
     from app.routing.lmrh.score import score_candidate
+    from app.routing.lmrh.types import CapabilityProfile, HintDimension, LMRHHint
 
     lenient_prof = CapabilityProfile(
-        provider_id="p1", provider_type="grok", model_id="grok-3", safety=1,
+        provider_id="p1",
+        provider_type="grok",
+        model_id="grok-3",
+        safety=1,
     )
-    strict_required = LMRHHint(raw="", dimensions=[
-        HintDimension(key="refuse-tolerance", value="strict", required=True),
-    ])
+    strict_required = LMRHHint(
+        raw="",
+        dimensions=[
+            HintDimension(key="refuse-tolerance", value="strict", required=True),
+        ],
+    )
     score, unmet = score_candidate(lenient_prof, strict_required)
     assert score == float("-inf"), (
         "required strict must hard-drop lenient providers, got score={score}"
@@ -117,6 +135,7 @@ def test_refuse_tolerance_required_hard_gates():
 
 
 # ── buffered-cascade streaming ────────────────────────────────────────
+
 
 def test_buffered_stream_mode_marker_wired():
     """v5.22.35 — the marker's producer moved out of messages.py.
@@ -173,10 +192,9 @@ def test_sse_emission_at_return_point():
 
 def test_version_bumped():
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m
     major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    assert (major, minor, patch) >= (5, 21, 0), (
-        f"expected >= 5.21.0, got {major}.{minor}.{patch}"
-    )
+    assert (major, minor, patch) >= (5, 21, 0), f"expected >= 5.21.0, got {major}.{minor}.{patch}"

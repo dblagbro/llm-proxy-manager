@@ -18,10 +18,11 @@ Inspired by OpenRouter's `:nitro` / `:floor` / `:exacto` variant suffixes
 adapted to operate over our existing capability profile + circuit breaker
 + PeakEWMA telemetry instead of OpenRouter's provider-level fan-out.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Literal
 
 SortMode = Literal["floor", "nitro", "exacto"]
 _SHORTCUT_SUFFIXES: tuple[SortMode, ...] = ("floor", "nitro", "exacto")
@@ -34,7 +35,7 @@ _SHORTCUT_SUFFIXES: tuple[SortMode, ...] = ("floor", "nitro", "exacto")
 AUTO_MODEL_ALIASES: frozenset[str] = frozenset({"auto", "llmp-auto"})
 
 
-def is_auto_model(model: Optional[str]) -> bool:
+def is_auto_model(model: str | None) -> bool:
     """True if the requested model name is one of the auto-routing aliases.
     The slug must already have been parsed (suffix stripped) before calling."""
     return bool(model) and model.lower() in AUTO_MODEL_ALIASES
@@ -43,10 +44,10 @@ def is_auto_model(model: Optional[str]) -> bool:
 @dataclass(frozen=True)
 class ParsedSlug:
     bare_model: str
-    sort_mode: Optional[SortMode]
+    sort_mode: SortMode | None
 
 
-def parse_model_slug(model: Optional[str]) -> ParsedSlug:
+def parse_model_slug(model: str | None) -> ParsedSlug:
     """Strip a recognized ``:floor`` / ``:nitro`` / ``:exacto`` suffix.
 
     Unrecognized suffixes (or no suffix at all) pass through unchanged.

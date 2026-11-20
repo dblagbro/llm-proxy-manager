@@ -9,13 +9,13 @@ All gated by ``require_admin``. Each write emits a
 ``CompliancePolicyChange`` audit row (policy_change_id, before/after,
 actor, reason). Mirrors the v5.2.x policy-edit audit story.
 """
+
 from __future__ import annotations
 
 import json
 import secrets
 import time
 from datetime import datetime
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -30,13 +30,13 @@ router = APIRouter(prefix="/api/admin/mcp/keys", tags=["admin", "mcp"])
 
 class McpPolicyResponse(BaseModel):
     api_key_id: str
-    mcp_tools_allow: Optional[list[str]] = None
-    mcp_tools_deny: Optional[list[str]] = None
-    mcp_schema_token_budget: Optional[int] = None
+    mcp_tools_allow: list[str] | None = None
+    mcp_tools_deny: list[str] | None = None
+    mcp_schema_token_budget: int | None = None
 
 
 class McpPolicyPutBody(BaseModel):
-    mcp_tools_allow: Optional[list[str]] = Field(
+    mcp_tools_allow: list[str] | None = Field(
         None,
         description=(
             "List of fnmatch globs (e.g. ['read_*', 'fetch_*']) that "
@@ -44,14 +44,14 @@ class McpPolicyPutBody(BaseModel):
             "[] = no tools allowed. Deny list takes precedence."
         ),
     )
-    mcp_tools_deny: Optional[list[str]] = Field(
+    mcp_tools_deny: list[str] | None = Field(
         None,
         description=(
             "List of fnmatch globs that explicitly deny tools. "
             "Takes precedence over the allow list."
         ),
     )
-    mcp_schema_token_budget: Optional[int] = Field(
+    mcp_schema_token_budget: int | None = Field(
         None,
         ge=0,
         description=(
@@ -59,7 +59,7 @@ class McpPolicyPutBody(BaseModel):
             "key's MCP list_tools. NULL = unlimited."
         ),
     )
-    reason: Optional[str] = Field(
+    reason: str | None = Field(
         None,
         max_length=2000,
         description="Free-text justification captured in the audit row.",
@@ -73,6 +73,7 @@ async def get_mcp_policy(
     _admin: AdminUser = Depends(require_admin),
 ) -> McpPolicyResponse:
     from app.models.db import ApiKey
+
     rs = await db.execute(select(ApiKey).where(ApiKey.id == key_id))
     key = rs.scalar_one_or_none()
     if not key:
@@ -93,6 +94,7 @@ async def put_mcp_policy(
     admin: AdminUser = Depends(require_admin),
 ) -> McpPolicyResponse:
     from app.models.db import ApiKey, CompliancePolicyChange
+
     rs = await db.execute(select(ApiKey).where(ApiKey.id == key_id))
     key = rs.scalar_one_or_none()
     if not key:
@@ -113,23 +115,25 @@ async def put_mcp_policy(
         "mcp_schema_token_budget": body.mcp_schema_token_budget,
     }
 
-    audit_id = f"ppc_{int(time.time()*1000):013x}{secrets.token_hex(6)}"
-    db.add(CompliancePolicyChange(
-        policy_change_id=audit_id,
-        changed_at=datetime.utcnow(),
-        changed_by_user_id=admin.username,
-        scope="api_key",
-        target_id=key.id,
-        before_state=json.dumps(before),
-        after_state=json.dumps(after),
-        reason=(
-            f"mcp_policy edit on key {key.name} by {admin.username}"
-            + (f"; reason: {body.reason}" if body.reason else "")
-        ),
-        applied_to_peers=json.dumps([]),
-        pending_peers=None,
-        cluster_sync_status="local_only",
-    ))
+    audit_id = f"ppc_{int(time.time() * 1000):013x}{secrets.token_hex(6)}"
+    db.add(
+        CompliancePolicyChange(
+            policy_change_id=audit_id,
+            changed_at=datetime.utcnow(),
+            changed_by_user_id=admin.username,
+            scope="api_key",
+            target_id=key.id,
+            before_state=json.dumps(before),
+            after_state=json.dumps(after),
+            reason=(
+                f"mcp_policy edit on key {key.name} by {admin.username}"
+                + (f"; reason: {body.reason}" if body.reason else "")
+            ),
+            applied_to_peers=json.dumps([]),
+            pending_peers=None,
+            cluster_sync_status="local_only",
+        )
+    )
     await db.commit()
 
     return McpPolicyResponse(
@@ -147,6 +151,7 @@ async def clear_mcp_policy(
     admin: AdminUser = Depends(require_admin),
 ) -> McpPolicyResponse:
     from app.models.db import ApiKey, CompliancePolicyChange
+
     rs = await db.execute(select(ApiKey).where(ApiKey.id == key_id))
     key = rs.scalar_one_or_none()
     if not key:
@@ -161,26 +166,33 @@ async def clear_mcp_policy(
     key.mcp_tools_deny = None
     key.mcp_schema_token_budget = None
 
-    audit_id = f"ppc_{int(time.time()*1000):013x}{secrets.token_hex(6)}"
-    db.add(CompliancePolicyChange(
-        policy_change_id=audit_id,
-        changed_at=datetime.utcnow(),
-        changed_by_user_id=admin.username,
-        scope="api_key",
-        target_id=key.id,
-        before_state=json.dumps(before),
-        after_state=json.dumps({
-            "mcp_tools_allow": None, "mcp_tools_deny": None,
-            "mcp_schema_token_budget": None,
-        }),
-        reason=f"mcp_policy CLEAR on key {key.name} by {admin.username}",
-        applied_to_peers=json.dumps([]),
-        pending_peers=None,
-        cluster_sync_status="local_only",
-    ))
+    audit_id = f"ppc_{int(time.time() * 1000):013x}{secrets.token_hex(6)}"
+    db.add(
+        CompliancePolicyChange(
+            policy_change_id=audit_id,
+            changed_at=datetime.utcnow(),
+            changed_by_user_id=admin.username,
+            scope="api_key",
+            target_id=key.id,
+            before_state=json.dumps(before),
+            after_state=json.dumps(
+                {
+                    "mcp_tools_allow": None,
+                    "mcp_tools_deny": None,
+                    "mcp_schema_token_budget": None,
+                }
+            ),
+            reason=f"mcp_policy CLEAR on key {key.name} by {admin.username}",
+            applied_to_peers=json.dumps([]),
+            pending_peers=None,
+            cluster_sync_status="local_only",
+        )
+    )
     await db.commit()
 
     return McpPolicyResponse(
-        api_key_id=key.id, mcp_tools_allow=None,
-        mcp_tools_deny=None, mcp_schema_token_budget=None,
+        api_key_id=key.id,
+        mcp_tools_allow=None,
+        mcp_tools_deny=None,
+        mcp_schema_token_budget=None,
     )

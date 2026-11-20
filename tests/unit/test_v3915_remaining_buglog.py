@@ -21,14 +21,13 @@ What stays open (deferred with justification):
            isn't from naive unmanaged sessions. Needs more diagnostic
            data from the next live recurrence to localize.
 """
+
 from __future__ import annotations
 
 import asyncio
-import inspect
 from pathlib import Path
 
 import pytest
-
 
 # ── BUG-007: rename + deprecation alias ────────────────────────────
 
@@ -36,6 +35,7 @@ import pytest
 def test_internal_refresh_helper_exists():
     """The renamed canonical helper must exist."""
     from app.providers.claude_oauth_flow import _internal_refresh_access_token
+
     assert asyncio.iscoroutinefunction(_internal_refresh_access_token)
 
 
@@ -44,12 +44,14 @@ def test_old_name_still_importable_as_alias():
     don't break callers in flight (the burn test is the only known one;
     migrated in the same release)."""
     from app.providers.claude_oauth_flow import refresh_access_token
+
     assert asyncio.iscoroutinefunction(refresh_access_token)
 
 
 def test_old_name_emits_deprecation_warning():
     """The alias must warn the caller so they migrate."""
     import warnings
+
     from app.providers.claude_oauth_flow import refresh_access_token
 
     # Capture warnings without actually doing the HTTP call — the
@@ -81,9 +83,12 @@ def test_production_code_does_not_use_old_name():
     _internal_refresh_access_token (the new canonical name) are
     acceptable imports."""
     import re
+
     app_root = Path("app")
     bad_imports: list[str] = []
-    pattern = re.compile(r"\bimport\s+refresh_access_token\b|from\s+\S+\s+import\s+refresh_access_token\b")
+    pattern = re.compile(
+        r"\bimport\s+refresh_access_token\b|from\s+\S+\s+import\s+refresh_access_token\b"
+    )
     for p in app_root.rglob("*.py"):
         src = p.read_text()
         # The aliased re-import in claude_oauth_flow.py itself is fine
@@ -115,7 +120,7 @@ def test_skip_destructive_flag_parsed():
     src = Path("scripts/test_claude_oauth_live.py").read_text()
     assert "--skip-destructive" in src
     assert "argparse" in src
-    assert "action=\"store_true\"" in src or "action='store_true'" in src
+    assert 'action="store_true"' in src or "action='store_true'" in src
 
 
 def test_main_accepts_skip_destructive_kwarg():
@@ -136,6 +141,6 @@ def test_skipped_destructive_records_pass_not_fail():
     weekly job would record a false negative every run."""
     src = Path("scripts/test_claude_oauth_live.py").read_text()
     idx = src.index("_DESTRUCTIVE_TESTS")
-    fn = src[idx:idx + 1500]
+    fn = src[idx : idx + 1500]
     assert "_record(name, True," in fn
     assert "skipped" in fn.lower()

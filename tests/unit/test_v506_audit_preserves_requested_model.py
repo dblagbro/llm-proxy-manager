@@ -14,6 +14,7 @@ This test pins the fix: the route ran with original
 model="claude-haiku" and the audit row's ``requested_model`` MUST be
 "claude-haiku" (not the served Gemini model).
 """
+
 from __future__ import annotations
 
 import inspect
@@ -31,6 +32,7 @@ def test_messages_captures_orig_request_model_before_body_mutation():
     # Assert the handler binds _orig_request_model from that call and that the
     # call precedes the mutation (the real "capture before mutation" invariant).
     from app.api import messages as msg_mod
+
     src = inspect.getsource(msg_mod.messages)
     capture_idx = src.find("normalize_request_body(")
     mutation_idx = src.find('body = {**body, "model": route.served_model_native}')
@@ -46,6 +48,7 @@ def test_messages_captures_orig_request_model_before_body_mutation():
 def test_completions_captures_orig_request_model_before_body_mutation():
     """Mirror of messages.py check for completions.py."""
     from app.api import completions as cmp_mod
+
     src = inspect.getsource(cmp_mod.chat_completions)
     capture_idx = src.find("normalize_request_body(")
     mutation_idx = src.find('body = {**body, "model": route.served_model_native}')
@@ -91,11 +94,14 @@ def _compliance_kwarg_blocks(src: str) -> list[str]:
     i = 0
     while i < len(lines):
         line = lines[i]
-        if any(needle in line for needle in (
-            "compliance_headers(",
-            "build_disclosure_payload(",
-            "_ch(",
-        )):
+        if any(
+            needle in line
+            for needle in (
+                "compliance_headers(",
+                "build_disclosure_payload(",
+                "_ch(",
+            )
+        ):
             depth = line.count("(") - line.count(")")
             buf = [line]
             j = i + 1
@@ -110,16 +116,20 @@ def _compliance_kwarg_blocks(src: str) -> list[str]:
     return blocks
 
 
-@pytest.mark.parametrize("module_name, fn_name", [
-    ("app.api.messages", "messages"),
-    ("app.api.completions", "chat_completions"),
-])
+@pytest.mark.parametrize(
+    "module_name, fn_name",
+    [
+        ("app.api.messages", "messages"),
+        ("app.api.completions", "chat_completions"),
+    ],
+)
 def test_emit_event_uses_orig_request_model_for_compliance_audits(module_name, fn_name):
     """Every ``await emit_event(...)`` block that records a
     ``compliance_*`` event_type MUST pass ``_orig_request_model`` (or
     a variable derived from it) — not ``body.get("model")``. Non-
     compliance emit_event calls are out of scope."""
     import importlib
+
     mod = importlib.import_module(module_name)
     fn = getattr(mod, fn_name)
     src = inspect.getsource(fn)
@@ -144,21 +154,24 @@ def test_emit_event_uses_orig_request_model_for_compliance_audits(module_name, f
                 bad.append(stripped + f"   (in {module_name})")
     assert not bad, (
         "Compliance emit_event sites still reading the post-mutation "
-        "body.get(\"model\") for the audit's requested_model field: "
-        + "\n  ".join(bad)
+        'body.get("model") for the audit\'s requested_model field: ' + "\n  ".join(bad)
     )
 
 
-@pytest.mark.parametrize("module_name, fn_name", [
-    ("app.api.messages", "messages"),
-    ("app.api.completions", "chat_completions"),
-])
+@pytest.mark.parametrize(
+    "module_name, fn_name",
+    [
+        ("app.api.messages", "messages"),
+        ("app.api.completions", "chat_completions"),
+    ],
+)
 def test_compliance_headers_use_orig_request_model(module_name, fn_name):
     """Every ``compliance_headers(...)`` / ``build_disclosure_payload(...)``
     / ``_ch(...)`` call MUST pass ``_orig_request_model`` for
     ``requested_model``. Otherwise the X-Compliance-Requested-Model
     response header records the served model."""
     import importlib
+
     mod = importlib.import_module(module_name)
     fn = getattr(mod, fn_name)
     src = inspect.getsource(fn)
@@ -170,8 +183,7 @@ def test_compliance_headers_use_orig_request_model(module_name, fn_name):
                 bad.append(stripped + f"   (in {module_name})")
     assert not bad, (
         "Compliance-header builder sites still reading the post-mutation "
-        "body.get(\"model\") for X-Compliance-Requested-Model: "
-        + "\n  ".join(bad)
+        'body.get("model") for X-Compliance-Requested-Model: ' + "\n  ".join(bad)
     )
 
 
@@ -183,8 +195,9 @@ def test_orig_request_model_capture_is_isinstance_dict_guarded():
     # v5.7.18+: the guarded capture lives in the shared
     # _handler_shared.normalize_request_body that BOTH handlers call at entry.
     from app.api._handler_shared import normalize_request_body
+
     src = inspect.getsource(normalize_request_body)
-    assert "_orig_request_model = body.get(\"model\") if isinstance(body, dict) else None" in src, (
+    assert '_orig_request_model = body.get("model") if isinstance(body, dict) else None' in src, (
         "normalize_request_body _orig_request_model capture is missing the "
         "isinstance(body, dict) guard — malformed JSON could crash here"
     )

@@ -20,9 +20,8 @@ imported — which ``app/models/db.py`` guarantees.
 
 Sits alongside ``db_model_pricing.py`` (the LiteLLM cost-map catalog).
 """
-from sqlalchemy import (
-    Column, String, Integer, Boolean, Float, DateTime, Text, JSON, ForeignKey
-)
+
+from sqlalchemy import JSON, Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -40,13 +39,13 @@ class ModelCapability(Base):
     # node is silently re-inserted by the next sync push from a peer
     # that still has the row.
     deleted_at = Column(DateTime, nullable=True, index=True)
-    tasks = Column(JSON, default=list)          # ["reasoning","code","chat",...]
+    tasks = Column(JSON, default=list)  # ["reasoning","code","chat",...]
     latency = Column(String, default="medium")  # low|medium|high
     cost_tier = Column(String, default="standard")  # economy|standard|premium
-    safety = Column(Integer, default=3)         # 1-5
+    safety = Column(Integer, default=3)  # 1-5
     context_length = Column(Integer, default=128000)
-    regions = Column(JSON, default=list)        # ["us","eu",...]
-    modalities = Column(JSON, default=list)     # ["text","vision","audio"]
+    regions = Column(JSON, default=list)  # ["us","eu",...]
+    modalities = Column(JSON, default=list)  # ["text","vision","audio"]
     native_reasoning = Column(Boolean, default=False)
     native_tools = Column(Boolean, default=True)
     native_vision = Column(Boolean, default=True)
@@ -55,7 +54,7 @@ class ModelCapability(Base):
     # native_tools). Populated by ai_tool_prober's
     # update_native_tools_from_rolling() helper.
     tool_call_success_rate = Column(Float, nullable=True)
-    source = Column(String, default="inferred") # inferred|manual
+    source = Column(String, default="inferred")  # inferred|manual
     # v3.4.1 — alternate spellings the router will accept and route to
     # this same capability row. Solves the "grok-3 vs x-ai/grok-3"
     # leak in /v1/models (same physical model showing as two list
@@ -100,23 +99,25 @@ class ModelToolProbe(Base):
     deterministic-ish per node since the same prompt should produce
     the same answer, but rate-limit / network-error skew can differ).
     """
+
     __tablename__ = "model_tool_probe"
     id = Column(Integer, primary_key=True, autoincrement=True)
     provider_id = Column(String, ForeignKey("providers.id"), nullable=False, index=True)
     model_id = Column(String, nullable=False, index=True)
     captured_at = Column(DateTime, server_default=func.now(), index=True)
     # Outcome flags
-    called = Column(Boolean, default=False)         # did the response contain ANY tool_call?
-    parseable = Column(Boolean, default=False)      # was the tool_call name + JSON args parseable?
-    correct_args = Column(Boolean, default=False)   # did the args contain the expected key?
+    called = Column(Boolean, default=False)  # did the response contain ANY tool_call?
+    parseable = Column(Boolean, default=False)  # was the tool_call name + JSON args parseable?
+    correct_args = Column(Boolean, default=False)  # did the args contain the expected key?
     # Diagnostic context
-    error = Column(Text, nullable=True)             # non-null on http / network errors
-    raw_excerpt = Column(Text, nullable=True)       # first 500 chars of model output for inspection
-    response_format = Column(String, nullable=True) # "native" | "emulated" | None
+    error = Column(Text, nullable=True)  # non-null on http / network errors
+    raw_excerpt = Column(Text, nullable=True)  # first 500 chars of model output for inspection
+    response_format = Column(String, nullable=True)  # "native" | "emulated" | None
 
 
 class ModelAlias(Base):
     """Client-facing model name → specific provider + model mapping."""
+
     __tablename__ = "model_aliases"
 
     alias = Column(String, primary_key=True)

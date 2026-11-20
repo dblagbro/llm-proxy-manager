@@ -75,6 +75,7 @@ class TestSlowFailuresStillEscalate:
             await cb.record_auth_failure("bursty", "401")
         assert captured == []
 
+
 class TestSuccessBreaksTheStreak:
     @pytest.mark.asyncio
     async def test_success_still_clears_the_streak_counter(self, monkeypatch):

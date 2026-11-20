@@ -1,8 +1,11 @@
 """Unit tests for retry with exponential backoff (M6)."""
+
+import asyncio
 import sys
 import types
-import asyncio
+
 import pytest
+
 
 # v5.22.32 — the fallback stub's RateLimitError now mirrors the real
 # constructor. It used to be a bare `Exception` subclass, so this file built
@@ -18,7 +21,9 @@ def _stub_rate_limit_init(self, message, llm_provider=None, model=None, **kw):
 
 _stub = types.ModuleType("litellm")
 _stub.RateLimitError = type(
-    "RateLimitError", (Exception,), {"__init__": _stub_rate_limit_init},
+    "RateLimitError",
+    (Exception,),
+    {"__init__": _stub_rate_limit_init},
 )
 _stub.acompletion = None  # pre-declare for monkeypatch
 sys.modules.setdefault("litellm", _stub)
@@ -27,9 +32,10 @@ if not hasattr(sys.modules["litellm"], "RateLimitError"):
 if not hasattr(sys.modules["litellm"], "acompletion"):
     sys.modules["litellm"].acompletion = None
 
-from app.routing.retry import acompletion_with_retry, _parse_retry_after, _backoff
 # Use the same RateLimitError reference that retry.py imported at module-load
-import app.routing.retry as _retry_mod
+import app.routing.retry as _retry_mod  # noqa: E402
+from app.routing.retry import _backoff, _parse_retry_after, acompletion_with_retry  # noqa: E402
+
 RateLimitError = _retry_mod.RateLimitError
 
 
@@ -45,6 +51,7 @@ def _rate_limit_error(message="rate limited"):
 
 def _exc_with_header(retry_after_value, case="cap"):
     """Build a fake RateLimitError carrying a mock response with Retry-After."""
+
     class _Resp:
         def __init__(self):
             if case == "cap":
@@ -117,6 +124,7 @@ class TestAcompletionWithRetry:
     async def test_billing_error_not_retried(self, monkeypatch):
         """Billing-related RateLimitErrors must raise immediately."""
         import litellm
+
         call_count = {"n": 0}
 
         async def _always_fail(model, messages, **kwargs):
@@ -125,12 +133,15 @@ class TestAcompletionWithRetry:
 
         monkeypatch.setattr(litellm, "acompletion", _always_fail)
         with pytest.raises(RateLimitError):
-            await acompletion_with_retry("gpt-4o", [{"role": "user", "content": "hi"}], max_retries=3)
+            await acompletion_with_retry(
+                "gpt-4o", [{"role": "user", "content": "hi"}], max_retries=3
+            )
         assert call_count["n"] == 1
 
     @pytest.mark.asyncio
     async def test_exhausts_max_retries(self, monkeypatch):
         import litellm
+
         call_count = {"n": 0}
 
         async def _always_rate_limit(model, messages, **kwargs):
@@ -144,12 +155,15 @@ class TestAcompletionWithRetry:
         monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
 
         with pytest.raises(RateLimitError):
-            await acompletion_with_retry("gpt-4o", [{"role": "user", "content": "hi"}], max_retries=2)
+            await acompletion_with_retry(
+                "gpt-4o", [{"role": "user", "content": "hi"}], max_retries=2
+            )
         assert call_count["n"] == 3
 
     @pytest.mark.asyncio
     async def test_retry_then_succeeds(self, monkeypatch):
         import litellm
+
         call_count = {"n": 0}
 
         async def _flaky(model, messages, **kwargs):
@@ -164,7 +178,9 @@ class TestAcompletionWithRetry:
         monkeypatch.setattr(litellm, "acompletion", _flaky)
         monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
 
-        result = await acompletion_with_retry("gpt-4o", [{"role": "user", "content": "hi"}], max_retries=3)
+        result = await acompletion_with_retry(
+            "gpt-4o", [{"role": "user", "content": "hi"}], max_retries=3
+        )
         assert result == {"content": "recovered"}
         assert call_count["n"] == 2
 
@@ -173,6 +189,7 @@ class TestAcompletionWithRetry:
 class TestDeprecationAutoBump:
     def test_replacement_for_with_prefix(self):
         from app.routing.retry import _replacement_for
+
         assert _replacement_for("gemini/gemini-2.0-flash") == "gemini/gemini-2.5-flash"
         assert _replacement_for("anthropic/claude-3-opus-20240229") == "anthropic/claude-opus-4-7"
         assert _replacement_for("totally-fictional-model") is None
@@ -180,11 +197,14 @@ class TestDeprecationAutoBump:
     @pytest.mark.asyncio
     async def test_not_found_triggers_bump_and_retry(self, monkeypatch):
         import litellm
+
         import app.routing.retry as _r
+
         calls = []
 
         class _NF(Exception):
             pass
+
         monkeypatch.setattr(litellm, "NotFoundError", _NF, raising=False)
         monkeypatch.setattr(_r, "NotFoundError", _NF)
 
@@ -211,10 +231,12 @@ class TestDeprecationAutoBump:
     @pytest.mark.asyncio
     async def test_not_found_without_replacement_reraises(self, monkeypatch):
         import litellm
+
         import app.routing.retry as _r
 
         class _NF(Exception):
             pass
+
         monkeypatch.setattr(litellm, "NotFoundError", _NF, raising=False)
         monkeypatch.setattr(_r, "NotFoundError", _NF)
 
@@ -238,6 +260,7 @@ _SPEND_LIMIT_MSG = "Your project has reached its configured enforced spend limit
 
 def test_spend_limit_text_is_billing_error():
     from app.routing.circuit_breaker import classify_error, is_billing_error
+
     assert is_billing_error(_SPEND_LIMIT_MSG)
     assert is_billing_error("Error code: 429 - " + _SPEND_LIMIT_MSG.upper())
     assert classify_error(_SPEND_LIMIT_MSG) == "billing"

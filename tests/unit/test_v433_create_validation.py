@@ -12,6 +12,7 @@ caps = "clear" sentinel; empty password = "no change") — only CREATE
 gets the boundary check, because a fresh resource has nothing to clear
 and the empty-string case there represents a missing required value.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -20,15 +21,13 @@ from pydantic import ValidationError
 from app.api.apikeys import KeyCreate, KeyUpdate
 from app.api.users import UserCreate, UserUpdate
 
-
 # ── BUG-041 — KeyCreate rejects negative numeric fields ─────────────
 
 
 def test_keycreate_rejects_negative_rate_limit_rpm():
     with pytest.raises(ValidationError) as ex:
         KeyCreate(name="x", rate_limit_rpm=-5)
-    assert "greater than or equal to 0" in str(ex.value).lower() or \
-        "ge" in str(ex.value).lower()
+    assert "greater than or equal to 0" in str(ex.value).lower() or "ge" in str(ex.value).lower()
 
 
 def test_keycreate_rejects_negative_spending_cap():

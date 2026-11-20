@@ -4,10 +4,12 @@ Async tests are run via a thread-pool executor so they always get a clean
 event loop, regardless of what Playwright (session-scoped browser fixture)
 has left in the main thread's asyncio state.
 """
+
 import asyncio
 import concurrent.futures
 
 import pytest
+
 from app.routing import circuit_breaker as cb
 
 
@@ -34,7 +36,12 @@ class TestAuthErrorClassifier:
         assert cb.is_auth_error("litellm.AuthenticationError: invalid x-api-key") is True
 
     def test_oauth_invalid_credentials(self):
-        assert cb.is_auth_error('{"type":"authentication_error","message":"Invalid authentication credentials"}') is True
+        assert (
+            cb.is_auth_error(
+                '{"type":"authentication_error","message":"Invalid authentication credentials"}'
+            )
+            is True
+        )
 
     def test_403_permission_denied(self):
         assert cb.is_auth_error("HTTP 403: permission_denied") is True
@@ -43,10 +50,17 @@ class TestAuthErrorClassifier:
         assert cb.is_auth_error('{"error":"invalid_grant"}') is True
 
     def test_missing_gemini_key(self):
-        assert cb.is_auth_error("litellm.APIConnectionError: Missing Gemini API key. Set the GEMINI_API_KEY...") is True
+        assert (
+            cb.is_auth_error(
+                "litellm.APIConnectionError: Missing Gemini API key. Set the GEMINI_API_KEY..."
+            )
+            is True
+        )
 
     def test_missing_openai_key(self):
-        assert cb.is_auth_error("OpenAIException - The api_key client option must be set...") is True
+        assert (
+            cb.is_auth_error("OpenAIException - The api_key client option must be set...") is True
+        )
 
     def test_rate_limit_not_auth(self):
         # 429 / rate limit is transient, NOT an auth error
@@ -92,6 +106,7 @@ def test_initial_state_closed():
     async def _():
         assert await cb.get_state("p1") == cb.CBState.CLOSED
         assert await cb.is_available("p1") is True
+
     _run(_())
 
 
@@ -101,6 +116,7 @@ def test_opens_after_threshold():
             await cb.record_failure("p1")
         assert await cb.get_state("p1") == cb.CBState.OPEN
         assert await cb.is_available("p1") is False
+
     _run(_())
 
 
@@ -108,6 +124,7 @@ def test_billing_error_opens_immediately():
     async def _():
         await cb.record_failure("p1", billing_error=True)
         assert await cb.get_state("p1") == cb.CBState.OPEN
+
     _run(_())
 
 
@@ -119,6 +136,7 @@ def test_billing_error_uses_six_hour_hold_down():
         states = cb.get_all_states()
         # Within 5h: still in hold-down. After 6h+ would be 0.
         assert states["p1"]["hold_down_remaining"] > 5 * 3600
+
     _run(_())
 
 
@@ -130,6 +148,7 @@ def test_force_close_resets():
         await cb.force_close("p1")
         assert await cb.get_state("p1") == cb.CBState.CLOSED
         assert await cb.is_available("p1") is True
+
     _run(_())
 
 
@@ -208,7 +227,11 @@ class TestClassifyError:
         ``529: {"type":"error","error":{"type":"overloaded_error",...}}``.
         Pre-fix these classified as ``unknown`` because 529 wasn't in
         the 5xx pattern list (it's an Anthropic-specific status code)."""
-        msg = '529: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"},"request_id":"req_xyz"}'
+        msg = (
+            '529: {"type":"error","error":{"type'
+            '":"overloaded_error","message":"Ove'
+            'rloaded"},"request_id":"req_xyz"}'
+        )
         assert cb.classify_error(msg) == "upstream_5xx"
         assert cb.classify_error("overloaded_error") == "upstream_5xx"
         assert cb.classify_error("Anthropic API: Overloaded") == "upstream_5xx"
@@ -221,15 +244,12 @@ class TestClassifyError:
         """v3.0.89: SDK exception names are camelcase one-word, not the
         space-separated form earlier patterns expected. The 7d scan
         found ``ContextWindowExceededError`` falling through to unknown."""
-        assert cb.classify_error(
-            "litellm.ContextWindowExceededError: Input tokens 200000 > 100000"
-        ) == "bad_request"
-        assert cb.classify_error(
-            "litellm.BadRequestError: invalid model"
-        ) == "bad_request"
-        assert cb.classify_error(
-            "ContentPolicyViolationError: blocked"
-        ) == "bad_request"
+        assert (
+            cb.classify_error("litellm.ContextWindowExceededError: Input tokens 200000 > 100000")
+            == "bad_request"
+        )
+        assert cb.classify_error("litellm.BadRequestError: invalid model") == "bad_request"
+        assert cb.classify_error("ContentPolicyViolationError: blocked") == "bad_request"
         assert cb.classify_error("UnsupportedParamsError: bar") == "bad_request"
 
     def test_unknown_fallthrough(self):

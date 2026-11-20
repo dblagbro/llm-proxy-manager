@@ -29,9 +29,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-_cot_usage: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
-    "cot_usage", default=None
-)
+_cot_usage: contextvars.ContextVar[dict | None] = contextvars.ContextVar("cot_usage", default=None)
 
 
 def reset_cot_usage() -> None:
@@ -75,6 +73,9 @@ def fold_cot_usage(in_tok: int, out_tok: int, provider_id: str = "") -> tuple[in
         return in_tok, out_tok
     logger.info(
         "cot.usage_folded_in provider=%s calls=%d in_tok=%d out_tok=%d",
-        provider_id, usage["calls"], usage["input_tokens"], usage["output_tokens"],
+        provider_id,
+        usage["calls"],
+        usage["input_tokens"],
+        usage["output_tokens"],
     )
     return in_tok + usage["input_tokens"], out_tok + usage["output_tokens"]

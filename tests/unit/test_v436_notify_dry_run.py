@@ -11,16 +11,12 @@ production behaviour is unchanged when dry_run is false, and confirm
 the returned dict carries the same body the production path would
 have sent.
 """
-from __future__ import annotations
 
-import asyncio
-import os
-from unittest.mock import AsyncMock, patch
+from __future__ import annotations
 
 import pytest
 
 from app.airi import notify
-
 
 # ── dry_run via the param ─────────────────────────────────────────
 
@@ -34,17 +30,14 @@ async def test_dry_run_param_skips_send_and_returns_dict(monkeypatch):
     async def fake_send(*a, **kw):
         sent.append(kw.get("to"))
 
-    monkeypatch.setattr(
-        "app.monitoring.notifications.send_alert", fake_send, raising=False
-    )
+    monkeypatch.setattr("app.monitoring.notifications.send_alert", fake_send, raising=False)
 
     async def fake_resolve(db, *, category, severity):
         return {"alice@example.com"}
 
-    monkeypatch.setattr(
-        "app.airi.notify_prefs.resolve_recipients", fake_resolve, raising=False
-    )
+    monkeypatch.setattr("app.airi.notify_prefs.resolve_recipients", fake_resolve, raising=False)
     from app.config import settings
+
     monkeypatch.setattr(settings, "smtp_to", "ops@example.com", raising=False)
 
     result = await notify.airi_notify(
@@ -75,22 +68,17 @@ async def test_dry_run_env_var_flips_globally(monkeypatch):
     async def fake_send(*a, **kw):
         sent.append(kw.get("to"))
 
-    monkeypatch.setattr(
-        "app.monitoring.notifications.send_alert", fake_send, raising=False
-    )
+    monkeypatch.setattr("app.monitoring.notifications.send_alert", fake_send, raising=False)
 
     async def fake_resolve(db, *, category, severity):
         return set()
 
-    monkeypatch.setattr(
-        "app.airi.notify_prefs.resolve_recipients", fake_resolve, raising=False
-    )
+    monkeypatch.setattr("app.airi.notify_prefs.resolve_recipients", fake_resolve, raising=False)
     from app.config import settings
+
     monkeypatch.setattr(settings, "smtp_to", "ops@example.com", raising=False)
 
-    result = await notify.airi_notify(
-        "from env var", "body", "info", "automation"
-    )
+    result = await notify.airi_notify("from env var", "body", "info", "automation")
     assert sent == []
     assert result is not None and result["dry_run"] is True
     assert result["recipients"] == ["ops@example.com"]
@@ -116,21 +104,17 @@ async def test_production_path_calls_send_when_dry_run_false(monkeypatch):
     monkeypatch.delenv("AIRI_NOTIFY_DRY_RUN", raising=False)
     sent = []
 
-    async def fake_send(severity, subject, message, provider_id=None,
-                        throttle_key=None, to=None):
+    async def fake_send(severity, subject, message, provider_id=None, throttle_key=None, to=None):
         sent.append((to, subject, severity))
 
-    monkeypatch.setattr(
-        "app.monitoring.notifications.send_alert", fake_send, raising=False
-    )
+    monkeypatch.setattr("app.monitoring.notifications.send_alert", fake_send, raising=False)
 
     async def fake_resolve(db, *, category, severity):
         return {"alice@e.com"}
 
-    monkeypatch.setattr(
-        "app.airi.notify_prefs.resolve_recipients", fake_resolve, raising=False
-    )
+    monkeypatch.setattr("app.airi.notify_prefs.resolve_recipients", fake_resolve, raising=False)
     from app.config import settings
+
     monkeypatch.setattr(settings, "smtp_to", "ops@e.com", raising=False)
 
     result = await notify.airi_notify("subj", "body", "warning", "monitor")

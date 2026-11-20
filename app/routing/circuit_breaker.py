@@ -2,11 +2,13 @@
 Circuit breaker + hold-down timer per provider.
 State is stored in Redis when available; falls back to in-process dict.
 """
+
 import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from enum import Enum
+from datetime import UTC
+from enum import Enum, StrEnum
 
 from app.config import settings
 
@@ -15,7 +17,10 @@ logger = logging.getLogger(__name__)
 _REDIS_PREFIX = "llmproxy:cb:"
 
 
-class CBState(str, Enum):
+class CBState(StrEnum):
+    __str__ = Enum.__str__
+    __format__ = Enum.__format__
+
     CLOSED = "closed"
     OPEN = "open"
     HALF_OPEN = "half-open"
@@ -57,7 +62,10 @@ def _hold_down_sec(provider_id: str) -> int:
 
 
 def _failure_threshold(provider_id: str) -> int:
-    return _provider_overrides.get(provider_id, {}).get("failure_threshold") or settings.circuit_breaker_threshold
+    return (
+        _provider_overrides.get(provider_id, {}).get("failure_threshold")
+        or settings.circuit_breaker_threshold
+    )
 
 
 def _get_local(provider_id: str) -> _LocalState:
@@ -111,27 +119,33 @@ def _schedule_auto_probe(provider_id: str) -> None:
     selection."""
     try:
         import asyncio
+
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return  # not in an async context
+
     async def _probe():
         try:
             from sqlalchemy import select as _select
 
             from app.models.database import AsyncSessionLocal
             from app.models.db import Provider
+
             async with AsyncSessionLocal() as db:
                 rs = await db.execute(_select(Provider).where(Provider.id == provider_id))
                 provider = rs.scalar_one_or_none()
                 if provider is None or provider.deleted_at is not None:
                     return
                 from app.monitoring.keepalive import _probe_one
+
                 await _probe_one(provider)
         except Exception as exc:
             logger.debug(
                 "circuit_breaker.auto_probe_failed provider=%s err=%r",
-                provider_id, exc,
+                provider_id,
+                exc,
             )
+
     try:
         loop.create_task(_probe())
     except Exception:
@@ -151,6 +165,7 @@ def _export_gauge(provider_id: str, state: "CBState") -> None:
     # Prometheus gauge — local import keeps CB independent of observability in tests
     try:
         from app.observability.prometheus import observe_circuit_breaker_state
+
         observe_circuit_breaker_state(provider_id, state.value)
     except Exception:
         pass
@@ -229,8 +244,12 @@ async def record_failure(provider_id: str, billing_error: bool = False):
             multiplier = 1 << min(s.consecutive_opens - 1, 5)
             s.hold_down_until = now + base * multiplier
             logger.warning(
-                "circuit_breaker.opened provider=%s failures=%d hold_down_sec=%d consecutive_opens=%d",
-                provider_id, s.failures, base * multiplier, s.consecutive_opens,
+                "circuit_breaker.opened provider=%s failures=%d hold_down_sec=%d "
+                "consecutive_opens=%d",
+                provider_id,
+                s.failures,
+                base * multiplier,
+                s.consecutive_opens,
                 extra={
                     "provider": provider_id,
                     "failures": s.failures,
@@ -330,7 +349,7 @@ def is_billing_error(error_text: str) -> bool:
 # failures on ANY error class, which means a malformed body from a
 # caller (the bot sent an orphan tool_call_id, a list-content where
 # the upstream wanted string, etc.) trips OUR provider's CB as if the
-# UPSTREAM had failed. 2026-06-12 c1conv audit: ~62% of CB trips that
+# UPSTREAM had failed. 2026-06-12 integration audit: ~62% of CB trips that
 # day were caused by caller bugs, not by the providers themselves.
 # Punishing the provider for the bot's mistake forces operator
 # intervention (manual re-test) when nothing is actually wrong with the
@@ -563,7 +582,7 @@ _BAD_REQUEST_PATTERNS = [
     "contextwindowexceeded",
     "contentpolicyviolation",
     "unsupportedparams",
-    # v3.8.2 (#260): coordinator-hub sent ~370 requests in 24h that
+    # v3.8.2 (#260): integration client sent ~370 requests in 24h that
     # litellm rejects with "Invalid user message at index N" (malformed
     # messages[] array — e.g. message with role but no content). These
     # are caller-side bugs; do not retry on fallback providers.
@@ -736,8 +755,7 @@ async def record_auth_failure(provider_id: str, error_text: str) -> None:
         # dead provider still escalates without a rate dependency, while a
         # provider that is mostly working never persists.
         should_auto_skip = (
-            len(history) >= PERSISTENT_AUTH_THRESHOLD
-            or streak >= PERSISTENT_AUTH_THRESHOLD
+            len(history) >= PERSISTENT_AUTH_THRESHOLD or streak >= PERSISTENT_AUTH_THRESHOLD
         )
         logger.warning(
             "circuit_breaker.auth_failure_marked",
@@ -758,7 +776,8 @@ async def record_auth_failure(provider_id: str, error_text: str) -> None:
         except Exception as exc:
             logger.warning(
                 "circuit_breaker.auto_skip_persist_failed provider=%s err=%s",
-                provider_id, exc,
+                provider_id,
+                exc,
             )
 
 
@@ -773,13 +792,13 @@ async def _persist_auto_skip(provider_id: str, error_text: str) -> None:
     (no need to keep re-stamping the same window)."""
     from datetime import datetime as _dt
     from datetime import timedelta as _td
-    from datetime import timezone as _tz
 
     from sqlalchemy import select
 
     from app.models.database import AsyncSessionLocal
     from app.models.db import Provider
-    new_until = _dt.now(_tz.utc) + _td(hours=24)
+
+    new_until = _dt.now(UTC) + _td(hours=24)
     async with AsyncSessionLocal() as db:
         rs = await db.execute(select(Provider).where(Provider.id == provider_id))
         p = rs.scalar_one_or_none()
@@ -814,5 +833,7 @@ async def _persist_auto_skip(provider_id: str, error_text: str) -> None:
         await db.commit()
         logger.warning(
             "circuit_breaker.auto_skip_persisted provider=%s until=%s reason=%s",
-            provider_id, new_until.isoformat(), "persistent_auth_failure",
+            provider_id,
+            new_until.isoformat(),
+            "persistent_auth_failure",
         )

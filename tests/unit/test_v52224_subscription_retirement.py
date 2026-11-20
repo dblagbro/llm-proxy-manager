@@ -104,8 +104,11 @@ class TestWiredIntoBothModels:
         Neutralizing the provider_type validator on ProviderUpdate must not
         take the base_url SSRF guard with it."""
         with pytest.raises(Exception):
-            model(name="x", provider_type="openai",
-                  base_url="http://169.254.169.254/latest/meta-data/")
+            model(
+                name="x",
+                provider_type="openai",
+                base_url="http://169.254.169.254/latest/meta-data/",
+            )
 
 
 class TestUpdateChangeGate:

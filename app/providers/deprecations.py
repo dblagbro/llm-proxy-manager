@@ -23,12 +23,13 @@ entries on top, with the announcement date for traceability. Operators
 can also add custom mappings via the admin Settings page (TODO: future
 runtime extension if we ever need it; hard-coded is the right default).
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import select
+from sqlalchemy import update as update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.db import Provider
@@ -42,45 +43,43 @@ logger = logging.getLogger(__name__)
 # not an aspiration).
 MODEL_DEPRECATIONS: dict[str, str] = {
     # ── Google Gemini retirements (2026 sweep) ──
-    "gemini-2.0-flash":           "gemini-2.5-flash",
-    "gemini-2.0-flash-exp":       "gemini-2.5-flash",
-    "gemini-2.0-pro":             "gemini-2.5-pro",
-    "gemini-2.0-pro-exp":         "gemini-2.5-pro",
-    "gemini-1.5-flash":           "gemini-2.5-flash",
-    "gemini-1.5-flash-8b":        "gemini-2.5-flash",
-    "gemini-1.5-pro":             "gemini-2.5-pro",
-    "models/gemini-2.0-flash":    "gemini-2.5-flash",  # `models/` prefix variant
-    "models/gemini-1.5-flash":    "gemini-2.5-flash",
-    "models/gemini-1.5-pro":      "gemini-2.5-pro",
+    "gemini-2.0-flash": "gemini-2.5-flash",
+    "gemini-2.0-flash-exp": "gemini-2.5-flash",
+    "gemini-2.0-pro": "gemini-2.5-pro",
+    "gemini-2.0-pro-exp": "gemini-2.5-pro",
+    "gemini-1.5-flash": "gemini-2.5-flash",
+    "gemini-1.5-flash-8b": "gemini-2.5-flash",
+    "gemini-1.5-pro": "gemini-2.5-pro",
+    "models/gemini-2.0-flash": "gemini-2.5-flash",  # `models/` prefix variant
+    "models/gemini-1.5-flash": "gemini-2.5-flash",
+    "models/gemini-1.5-pro": "gemini-2.5-pro",
     # gemini/-prefix variants (litellm style)
-    "gemini/gemini-2.0-flash":    "gemini/gemini-2.5-flash",
-    "gemini/gemini-1.5-flash":    "gemini/gemini-2.5-flash",
-    "gemini/gemini-1.5-pro":      "gemini/gemini-2.5-pro",
-
+    "gemini/gemini-2.0-flash": "gemini/gemini-2.5-flash",
+    "gemini/gemini-1.5-flash": "gemini/gemini-2.5-flash",
+    "gemini/gemini-1.5-pro": "gemini/gemini-2.5-pro",
     # ── Anthropic Claude retirements (older snapshots) ──
     # Anthropic publishes the active model list at api.anthropic.com/v1/models
     # so check there before adding entries here. These are well-known
     # retirements as of early 2026.
     "claude-3-5-sonnet-20241022": "claude-sonnet-4-6",
     "claude-3-5-sonnet-20240620": "claude-sonnet-4-6",
-    "claude-3-opus-20240229":     "claude-opus-4-7",
-    "claude-3-haiku-20240307":    "claude-haiku-4-5",
+    "claude-3-opus-20240229": "claude-opus-4-7",
+    "claude-3-haiku-20240307": "claude-haiku-4-5",
     # anthropic/-prefix variants (litellm style)
     "anthropic/claude-3-5-sonnet-20241022": "anthropic/claude-sonnet-4-6",
-    "anthropic/claude-3-opus-20240229":     "anthropic/claude-opus-4-7",
-    "anthropic/claude-3-haiku-20240307":    "anthropic/claude-haiku-4-5",
-
+    "anthropic/claude-3-opus-20240229": "anthropic/claude-opus-4-7",
+    "anthropic/claude-3-haiku-20240307": "anthropic/claude-haiku-4-5",
     # ── OpenAI retirements ──
-    "gpt-4-turbo":             "gpt-4o",
-    "gpt-4-turbo-preview":     "gpt-4o",
-    "gpt-4-0125-preview":      "gpt-4o",
-    "gpt-3.5-turbo-16k":       "gpt-4o-mini",
-    "openai/gpt-4-turbo":      "openai/gpt-4o",
+    "gpt-4-turbo": "gpt-4o",
+    "gpt-4-turbo-preview": "gpt-4o",
+    "gpt-4-0125-preview": "gpt-4o",
+    "gpt-3.5-turbo-16k": "gpt-4o-mini",
+    "openai/gpt-4-turbo": "openai/gpt-4o",
     "openai/gpt-3.5-turbo-16k": "openai/gpt-4o-mini",
 }
 
 
-def check_model_deprecation(model: Optional[str]) -> Optional[str]:
+def check_model_deprecation(model: str | None) -> str | None:
     """Return the replacement model id if ``model`` is deprecated, else None.
 
     Used by /api/providers/{id}/test and /api/providers/{id}/scan-models
@@ -120,7 +119,10 @@ async def migrate_deprecated_default_models(db: AsyncSession) -> dict[str, str]:
         changed[prov.id] = f"{old} → {new}"
         logger.info(
             "providers.deprecation_migration provider=%s name=%r old=%r new=%r",
-            prov.id, prov.name, old, new,
+            prov.id,
+            prov.name,
+            old,
+            new,
         )
     if changed:
         await db.commit()

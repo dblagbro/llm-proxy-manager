@@ -14,10 +14,10 @@ This ship updates the frontend ProvidersPage badge logic:
 - If no refresh token OR auth_failed is set → keep the original
   red/amber alarmist colors (operator action genuinely needed).
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-
 
 # ── structural pins ────────────────────────────────────────────────────
 
@@ -38,7 +38,7 @@ def test_green_tone_used_for_auto_rotating():
     idx = src.find("if (autoRotating)")
     assert idx != -1
     # Look at the next 800 chars for the className
-    window = src[idx: idx + 800]
+    window = src[idx : idx + 800]
     assert "bg-emerald-100" in window, (
         "v5.7.22: auto-rotating badge must use emerald (green) — operator "
         "should see at a glance that no manual action is needed."
@@ -58,7 +58,7 @@ def test_fallback_red_path_preserved():
     # Find the close of the autoRotating return statement
     fallback_start = src.find("Original", auto_idx)
     assert fallback_start != -1, "Fallback path comment missing"
-    fallback_window = src[fallback_start: fallback_start + 1500]
+    fallback_window = src[fallback_start : fallback_start + 1500]
     assert "bg-red-100" in fallback_window
     assert "bg-amber-100" in fallback_window
 
@@ -70,10 +70,8 @@ def test_emoji_is_rotating_arrow():
     idx = src.find("if (autoRotating)")
     # Window covers through the close of the JSX return — emoji lives
     # inside the span body, which is past the title attribute.
-    window = src[idx: idx + 1500]
-    assert "🔄" in window, (
-        "v5.7.22: auto-rotating badge should use the 🔄 emoji"
-    )
+    window = src[idx : idx + 1500]
+    assert "🔄" in window, "v5.7.22: auto-rotating badge should use the 🔄 emoji"
 
 
 def test_hours_remaining_shown_for_sub_day_tokens():
@@ -81,7 +79,7 @@ def test_hours_remaining_shown_for_sub_day_tokens():
     shows hours remaining — operator can see the rotation cadence."""
     src = Path("frontend/src/pages/ProvidersPage.tsx").read_text()
     idx = src.find("if (autoRotating)")
-    window = src[idx: idx + 800]
+    window = src[idx : idx + 800]
     assert "hours" in window.lower() or "h left" in window
     assert "daysLeft * 24" in window or "daysLeft*24" in window
 
@@ -98,5 +96,6 @@ def test_provider_type_has_required_fields():
 def test_version_bumped():
     """v5.7.22 minimum — later patches keep this passing."""
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     assert parts >= (5, 7, 22), f"v5.7.22 must be reachable; got {__version__}"

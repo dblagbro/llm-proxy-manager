@@ -113,6 +113,5 @@ class TestDefaultIsSafe:
     def test_env_is_not_set_in_this_run(self):
         """Sanity: this suite itself is running in the safe default mode."""
         assert os.environ.get("LLMPROXY_TEST_LIVE") != "1", (
-            "this test run has live access enabled — it may be writing to "
-            "the production deployment"
+            "this test run has live access enabled — it may be writing to the production deployment"
         )

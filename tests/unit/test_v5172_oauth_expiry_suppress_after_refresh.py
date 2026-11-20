@@ -9,7 +9,9 @@ Fix: after refresh_outcome == "refreshed" AND provider has a
 refresh_token, suppress the low-days-left warning. Failed-refresh path
 still warns; missing-refresh-token path still warns.
 """
+
 from __future__ import annotations
+
 from pathlib import Path
 
 
@@ -35,7 +37,7 @@ def test_failed_refresh_still_warns():
     failed:* still triggers the warning as before."""
     src = Path("app/monitoring/cursor_oauth_expiry_monitor.py").read_text()
     # Failed refresh is detected via startswith("failed:")
-    assert 'startswith("failed:")' in src
+    assert 'startswith("failed:")' in "".join(src.split())
     # And included in eligibility check (must NOT be failed to be eligible)
     assert "and not _refresh_failed" in src
 
@@ -50,10 +52,9 @@ def test_missing_refresh_token_still_warns():
 
 def test_version_bumped():
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m
     major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    assert (major, minor, patch) >= (5, 17, 2), (
-        f"expected >= 5.17.2, got {major}.{minor}.{patch}"
-    )
+    assert (major, minor, patch) >= (5, 17, 2), f"expected >= 5.17.2, got {major}.{minor}.{patch}"

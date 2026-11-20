@@ -6,6 +6,7 @@ providers every 60s is wasted DB work — the UI ignores the result.
 
 This test locks the skip logic so it doesn't get re-removed in a refactor.
 """
+
 from __future__ import annotations
 
 from pathlib import Path

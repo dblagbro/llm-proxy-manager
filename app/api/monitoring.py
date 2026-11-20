@@ -1,16 +1,17 @@
 """Monitoring, metrics, and activity log endpoints."""
-from typing import Optional
+
+from datetime import UTC
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
 
+from app.auth.admin import AdminUser, require_admin
 from app.models.database import get_db
 from app.models.db import ActivityLog
-from app.auth.admin import require_admin, AdminUser
 from app.monitoring.activity import get_recent, subscribe, unsubscribe
-from app.monitoring.metrics import get_provider_history, get_all_provider_summary
+from app.monitoring.metrics import get_all_provider_summary, get_provider_history
 from app.monitoring.status import get_status_summary
 from app.routing.circuit_breaker import get_all_states
 from app.utils.timefmt import utc_iso
@@ -21,16 +22,36 @@ router = APIRouter(prefix="/api/monitoring", tags=["monitoring"])
 @router.get("/activity")
 async def activity_log(
     limit: int = Query(100, le=1000),
-    severity: Optional[str] = None,
-    provider_id: Optional[str] = None,
-    api_key_id: Optional[str] = Query(None, description="v3.0.35: filter to a single API key's events"),
-    event_type: Optional[str] = Query(None, description="v3.0.35: filter to a single event_type (e.g. llm_request)"),
-    error_class: Optional[str] = Query(None, description="v3.0.78: filter to a single error_class bucket (auth, billing, rate_limit, timeout, network, upstream_5xx, bad_request, unknown)"),
-    since: Optional[str] = Query(None, description="v3.0.35: ISO 8601 timestamp lower bound (inclusive)"),
-    until: Optional[str] = Query(None, description="v3.0.35: ISO 8601 timestamp upper bound (exclusive)"),
-    sort: str = Query("desc", description="v3.0.35: 'desc' (default, newest first) or 'asc' (oldest first)"),
-    before_id: Optional[int] = Query(None, description="Return events with id < this; cursor for paging back"),
-    search: Optional[str] = Query(None, description="Substring match across message, provider_id, and metadata"),
+    severity: str | None = None,
+    provider_id: str | None = None,
+    api_key_id: str | None = Query(
+        None, description="v3.0.35: filter to a single API key's events"
+    ),
+    event_type: str | None = Query(
+        None, description="v3.0.35: filter to a single event_type (e.g. llm_request)"
+    ),
+    error_class: str | None = Query(
+        None,
+        description=(
+            "v3.0.78: filter to a single error_class bucket (auth, billing, rate_limit, "
+            "timeout, network, upstream_5xx, bad_request, unknown)"
+        ),
+    ),
+    since: str | None = Query(
+        None, description="v3.0.35: ISO 8601 timestamp lower bound (inclusive)"
+    ),
+    until: str | None = Query(
+        None, description="v3.0.35: ISO 8601 timestamp upper bound (exclusive)"
+    ),
+    sort: str = Query(
+        "desc", description="v3.0.35: 'desc' (default, newest first) or 'asc' (oldest first)"
+    ),
+    before_id: int | None = Query(
+        None, description="Return events with id < this; cursor for paging back"
+    ),
+    search: str | None = Query(
+        None, description="Substring match across message, provider_id, and metadata"
+    ),
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(require_admin),
 ):
@@ -40,8 +61,9 @@ async def activity_log(
     ``before_id`` is the cursor for desc paging (pass the smallest id from
     the prior page). For asc, ``since`` is the natural cursor.
     """
-    from sqlalchemy import cast, String
     from datetime import datetime as _dt
+
+    from sqlalchemy import String, cast
 
     if sort.lower() == "asc":
         order_clause = ActivityLog.created_at.asc()
@@ -70,6 +92,7 @@ async def activity_log(
         # ?error_class=rate_limit,timeout. SQLite json_extract works on
         # both string and dict-typed JSON columns.
         from sqlalchemy import func
+
         ec_list = [e.strip() for e in error_class.split(",") if e.strip()]
         if len(ec_list) == 1:
             query = query.where(
@@ -134,17 +157,21 @@ async def activity_log(
 
 @router.get("/activity/count")
 async def activity_count(
-    severity: Optional[str] = None,
-    provider_id: Optional[str] = None,
-    error_class: Optional[str] = Query(None, description="v3.0.78: filter to a single error_class bucket (or comma-separated for OR)"),
-    search: Optional[str] = None,
+    severity: str | None = None,
+    provider_id: str | None = None,
+    error_class: str | None = Query(
+        None,
+        description="v3.0.78: filter to a single error_class bucket (or comma-separated for OR)",
+    ),
+    search: str | None = None,
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(require_admin),
 ):
     """v2.8.5: total matching event count for the current filter — lets
     the UI show "showing 200 of N" so operators know how much they can
     page back through. v3.0.78 adds error_class for parity with /activity."""
-    from sqlalchemy import func, cast, String
+    from sqlalchemy import String, cast, func
+
     query = select(func.count(ActivityLog.id))
     if provider_id:
         query = query.where(ActivityLog.provider_id == provider_id)
@@ -184,16 +211,18 @@ async def activity_stream(_: AdminUser = Depends(require_admin)):
         # Send recent history first
         for event in get_recent(50):
             import json
+
             yield f"data: {json.dumps(event)}\n\n"
         # Then live events
         try:
             while True:
                 import asyncio
                 import json
+
                 try:
                     event = await asyncio.wait_for(q.get(), timeout=30)
                     yield f"data: {json.dumps(event)}\n\n"
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     yield ": keepalive\n\n"
         finally:
             unsubscribe(q)
@@ -211,14 +240,17 @@ async def metrics_summary(
     circuit_states = get_all_states()
     # v4.4.21 — label which node served this response so the UI can
     # distinguish the local view from a peer-fanned one.
-    from app.config import settings as _settings
     # v5.22.0 — expose runtime health of the aiosqlite thread-per-connection
     # model. ``threads`` is the true leak metric (see pool_leak_watcher);
     # ``db_pool`` gives at-a-glance pool state. Both O(1), no DB access.
     import threading as _threading
+
+    from app.config import settings as _settings
+
     runtime = {"threads": _threading.active_count()}
     try:
         from app.models.database import engine as _engine
+
         _pool = _engine.pool
         runtime["db_pool"] = {
             "size": _pool.size(),
@@ -270,20 +302,25 @@ async def metrics_summary_by_node(
     """
     # Local node first (no HTTP hop needed).
     from app.config import settings as _settings
+
     own_summary = await get_all_provider_summary(db, hours=hours)
-    nodes = [{
-        "node_id": _settings.cluster_node_id or "local",
-        "ok": True,
-        "providers": own_summary,
-    }]
+    nodes = [
+        {
+            "node_id": _settings.cluster_node_id or "local",
+            "ok": True,
+            "providers": own_summary,
+        }
+    ]
 
     if not _settings.cluster_enabled:
         return {"hours": hours, "nodes": nodes}
 
     # Fan out to peers. Same HMAC-of(node_id) shape as oauth-pull.
     import httpx
+
     from app.cluster.auth import sign_payload
     from app.cluster.manager import _parse_peers
+
     peers = _parse_peers()
     if not peers:
         return {"hours": hours, "nodes": nodes}
@@ -298,8 +335,7 @@ async def metrics_summary_by_node(
 
     if not cluster_auth_configured():
         _logging.getLogger(__name__).error(
-            "metrics_by_node.peers_skipped reason=no_secret — returning this "
-            "node's metrics only"
+            "metrics_by_node.peers_skipped reason=no_secret — returning this node's metrics only"
         )
         return {"hours": hours, "nodes": nodes}
 
@@ -318,22 +354,30 @@ async def metrics_summary_by_node(
             try:
                 r = await client.get(url, headers=headers, params={"hours": hours})
                 if r.status_code != 200:
-                    nodes.append({
-                        "node_id": peer.id, "ok": False,
-                        "error": f"HTTP {r.status_code}",
-                    })
+                    nodes.append(
+                        {
+                            "node_id": peer.id,
+                            "ok": False,
+                            "error": f"HTTP {r.status_code}",
+                        }
+                    )
                     continue
                 data = r.json()
-                nodes.append({
-                    "node_id": data.get("node_id") or peer.id,
-                    "ok": True,
-                    "providers": data.get("providers", []),
-                })
+                nodes.append(
+                    {
+                        "node_id": data.get("node_id") or peer.id,
+                        "ok": True,
+                        "providers": data.get("providers", []),
+                    }
+                )
             except Exception as e:
-                nodes.append({
-                    "node_id": peer.id, "ok": False,
-                    "error": f"{type(e).__name__}: {e}"[:120],
-                })
+                nodes.append(
+                    {
+                        "node_id": peer.id,
+                        "ok": False,
+                        "error": f"{type(e).__name__}: {e}"[:120],
+                    }
+                )
     return {"hours": hours, "nodes": nodes}
 
 
@@ -368,15 +412,17 @@ async def prune_status(_: AdminUser = Depends(require_admin)):
       - row counts from the most recent sweep
       - activity_log_total (current row count for headroom display)
     """
-    from sqlalchemy import select, func
-    from app.monitoring.prune import get_last_sweep
+    from sqlalchemy import func, select
+
     from app.models.database import AsyncSessionLocal
+    from app.monitoring.prune import get_last_sweep
+
     out = get_last_sweep()
     try:
         async with AsyncSessionLocal() as db:
-            out["activity_log_total"] = (await db.execute(
-                select(func.count(ActivityLog.id))
-            )).scalar() or 0
+            out["activity_log_total"] = (
+                await db.execute(select(func.count(ActivityLog.id)))
+            ).scalar() or 0
     except Exception as e:
         out["activity_log_total"] = None
         out["error"] = str(e)[:200]
@@ -385,7 +431,7 @@ async def prune_status(_: AdminUser = Depends(require_admin)):
 
 # v3.0.72 — Cache-effectiveness rollup. Surfaces the cache_read /
 # cache_creation token counts that v3.0.71 started writing to
-# event_meta. Fleet currently reads ~650K cache_read tokens/hr on www01
+# event_meta. Fleet currently reads ~650K cache_read tokens/hr on the first gateway
 # alone (43.9% hit rate verified 2026-05-06); operator dashboards need
 # a stable endpoint to chart against rather than ad-hoc Python in a
 # docker exec.
@@ -394,8 +440,13 @@ async def cache_stats(
     window_minutes: int = Query(60, ge=1, le=1440, description="rolling window size"),
     group_by: str = Query("provider", description="'provider' (default), 'api_key', or 'none'"),
     bucket_minutes: int = Query(
-        0, ge=0, le=1440,
-        description="v3.0.80: when >0, return a ``time_series`` array bucketing the window into N-minute slices. 0 = aggregate-only response (default).",
+        0,
+        ge=0,
+        le=1440,
+        description=(
+            "v3.0.80: when >0, return a ``time_series`` array bucketing the window "
+            "into N-minute slices. 0 = aggregate-only response (default)."
+        ),
     ),
     rate_per_million: float = Query(
         3.0,
@@ -403,7 +454,9 @@ async def cache_stats(
         "(default 3.0 ≈ Claude Sonnet 4.6 input). Caller picks model price.",
     ),
     cache_discount_pct: float = Query(
-        0.9, ge=0.0, le=1.0,
+        0.9,
+        ge=0.0,
+        le=1.0,
         description="Cache-read discount fraction (default 0.9 = Anthropic's 90%).",
     ),
     _: AdminUser = Depends(require_admin),
@@ -423,27 +476,32 @@ async def cache_stats(
     Operator can re-run with their own rate for per-model accuracy.
     """
     import json
-    from datetime import datetime, timedelta, timezone
-    from sqlalchemy import select, desc
+    from datetime import datetime, timedelta
 
-    from app.models.db import Provider, ApiKey
+    from sqlalchemy import desc, select
 
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
-    rows = (await db.execute(
-        select(
-            ActivityLog.event_meta, ActivityLog.provider_id, ActivityLog.api_key_id,
-            ActivityLog.created_at,
+    from app.models.db import ApiKey, Provider
+
+    cutoff = datetime.now(UTC) - timedelta(minutes=window_minutes)
+    rows = (
+        await db.execute(
+            select(
+                ActivityLog.event_meta,
+                ActivityLog.provider_id,
+                ActivityLog.api_key_id,
+                ActivityLog.created_at,
+            )
+            .where(ActivityLog.created_at >= cutoff)
+            .where(ActivityLog.event_type == "llm_request")
+            .where(ActivityLog.severity == "info")
+            # Cap at a sane upper bound — even at 1k events/min for 24h that's
+            # 1.4M rows; the in-Python aggregation tops out around 100k before
+            # latency becomes user-visible. Operator picks a tighter window
+            # for high-volume periods.
+            .order_by(desc(ActivityLog.created_at))
+            .limit(50000)
         )
-        .where(ActivityLog.created_at >= cutoff)
-        .where(ActivityLog.event_type == "llm_request")
-        .where(ActivityLog.severity == "info")
-        # Cap at a sane upper bound — even at 1k events/min for 24h that's
-        # 1.4M rows; the in-Python aggregation tops out around 100k before
-        # latency becomes user-visible. Operator picks a tighter window
-        # for high-volume periods.
-        .order_by(desc(ActivityLog.created_at))
-        .limit(50000)
-    )).all()
+    ).all()
 
     def _bucket():
         return {
@@ -496,7 +554,7 @@ async def cache_stats(
             # tz-aware path so floor-by-bucket-size is correct.
             try:
                 if ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=timezone.utc)
+                    ts = ts.replace(tzinfo=UTC)
                 epoch = int(ts.timestamp())
             except Exception:
                 continue
@@ -514,14 +572,18 @@ async def cache_stats(
     # Resolve display names for the grouped keys.
     name_lookup: dict[str, str] = {}
     if group_by == "provider" and by_group:
-        ps = (await db.execute(
-            select(Provider).where(Provider.id.in_(list(by_group.keys())))
-        )).scalars().all()
+        ps = (
+            (await db.execute(select(Provider).where(Provider.id.in_(list(by_group.keys())))))
+            .scalars()
+            .all()
+        )
         name_lookup = {p.id: p.name for p in ps}
     elif group_by == "api_key" and by_group:
-        ks = (await db.execute(
-            select(ApiKey).where(ApiKey.id.in_(list(by_group.keys())))
-        )).scalars().all()
+        ks = (
+            (await db.execute(select(ApiKey).where(ApiKey.id.in_(list(by_group.keys())))))
+            .scalars()
+            .all()
+        )
         name_lookup = {k.id: k.name for k in ks}
 
     def _enrich(b: dict) -> dict:
@@ -552,12 +614,16 @@ async def cache_stats(
     time_series: list[dict] = []
     if bucket_secs > 0 and time_buckets:
         first_bucket = ((int(cutoff.timestamp()) // bucket_secs) + 1) * bucket_secs
-        last_bucket = (int(datetime.now(timezone.utc).timestamp()) // bucket_secs) * bucket_secs
+        last_bucket = (int(datetime.now(UTC).timestamp()) // bucket_secs) * bucket_secs
         for bk in range(first_bucket, last_bucket + bucket_secs, bucket_secs):
             b = time_buckets.get(bk, _bucket())
             entry = _enrich(b)
-            entry["bucket_start"] = datetime.fromtimestamp(bk, tz=timezone.utc).isoformat().replace("+00:00", "Z")
-            entry["bucket_end"] = datetime.fromtimestamp(bk + bucket_secs, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+            entry["bucket_start"] = (
+                datetime.fromtimestamp(bk, tz=UTC).isoformat().replace("+00:00", "Z")
+            )
+            entry["bucket_end"] = (
+                datetime.fromtimestamp(bk + bucket_secs, tz=UTC).isoformat().replace("+00:00", "Z")
+            )
             time_series.append(entry)
 
     response: dict = {
@@ -587,11 +653,14 @@ async def cache_stats(
 @router.get("/usage-report.csv")
 async def usage_report_csv(
     window_minutes: int = Query(
-        10080, ge=1, le=43200,
+        10080,
+        ge=1,
+        le=43200,
         description="rolling window (default 7 days = 10080 min; max 30 days = 43200 min)",
     ),
     group_by: str = Query(
-        "api_key", description="'api_key' (default) or 'provider'",
+        "api_key",
+        description="'api_key' (default) or 'provider'",
     ),
     rate_per_million: float = Query(
         3.0,
@@ -599,7 +668,9 @@ async def usage_report_csv(
         "(default 3.0 ≈ Claude Sonnet 4.6 input).",
     ),
     cache_discount_pct: float = Query(
-        0.9, ge=0.0, le=1.0,
+        0.9,
+        ge=0.0,
+        le=1.0,
         description="Cache-read discount fraction (default 0.9 = Anthropic's 90%).",
     ),
     _: AdminUser = Depends(require_admin),
@@ -620,25 +691,30 @@ async def usage_report_csv(
     import csv
     import io
     import json
-    from datetime import datetime, timedelta, timezone
-    from sqlalchemy import select, desc
+    from datetime import datetime, timedelta
 
-    from app.models.db import Provider, ApiKey
+    from sqlalchemy import desc, select
 
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
-    rows = (await db.execute(
-        select(
-            ActivityLog.event_meta, ActivityLog.provider_id, ActivityLog.api_key_id,
+    from app.models.db import ApiKey, Provider
+
+    cutoff = datetime.now(UTC) - timedelta(minutes=window_minutes)
+    rows = (
+        await db.execute(
+            select(
+                ActivityLog.event_meta,
+                ActivityLog.provider_id,
+                ActivityLog.api_key_id,
+            )
+            .where(ActivityLog.created_at >= cutoff)
+            .where(ActivityLog.event_type == "llm_request")
+            .where(ActivityLog.severity == "info")
+            # Same 50k cap as cache-stats; for 30-day windows operator should
+            # query the underlying activity_log directly if they need full
+            # fidelity. This endpoint is for typical billing-cycle rollups.
+            .order_by(desc(ActivityLog.created_at))
+            .limit(50000)
         )
-        .where(ActivityLog.created_at >= cutoff)
-        .where(ActivityLog.event_type == "llm_request")
-        .where(ActivityLog.severity == "info")
-        # Same 50k cap as cache-stats; for 30-day windows operator should
-        # query the underlying activity_log directly if they need full
-        # fidelity. This endpoint is for typical billing-cycle rollups.
-        .order_by(desc(ActivityLog.created_at))
-        .limit(50000)
-    )).all()
+    ).all()
 
     def _bucket():
         return {
@@ -678,39 +754,53 @@ async def usage_report_csv(
 
     name_lookup: dict[str, str] = {}
     if group_by == "provider" and by_group:
-        ps = (await db.execute(
-            select(Provider).where(Provider.id.in_(list(by_group.keys())))
-        )).scalars().all()
+        ps = (
+            (await db.execute(select(Provider).where(Provider.id.in_(list(by_group.keys())))))
+            .scalars()
+            .all()
+        )
         name_lookup = {p.id: p.name for p in ps}
     elif group_by == "api_key" and by_group:
-        ks = (await db.execute(
-            select(ApiKey).where(ApiKey.id.in_(list(by_group.keys())))
-        )).scalars().all()
+        ks = (
+            (await db.execute(select(ApiKey).where(ApiKey.id.in_(list(by_group.keys())))))
+            .scalars()
+            .all()
+        )
         name_lookup = {k.id: k.name for k in ks}
 
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow([
-        "id", "name", "events", "in_tokens", "out_tokens",
-        "cache_read_tokens", "cache_creation_tokens",
-        "cost_usd", "quota_usd_subscription",
-        "estimated_cache_savings_usd",
-    ])
+    writer.writerow(
+        [
+            "id",
+            "name",
+            "events",
+            "in_tokens",
+            "out_tokens",
+            "cache_read_tokens",
+            "cache_creation_tokens",
+            "cost_usd",
+            "quota_usd_subscription",
+            "estimated_cache_savings_usd",
+        ]
+    )
     # Sort by events desc — heaviest callers at top
     for key, b in sorted(by_group.items(), key=lambda kv: -kv[1]["events"]):
         savings = (b["cache_read_tokens"] / 1_000_000.0) * rate_per_million * cache_discount_pct
-        writer.writerow([
-            key,
-            name_lookup.get(key, key),
-            b["events"],
-            b["in_tokens"],
-            b["out_tokens"],
-            b["cache_read_tokens"],
-            b["cache_creation_tokens"],
-            f"{b['cost_usd']:.6f}",
-            f"{b['quota_usd']:.6f}",
-            f"{savings:.4f}",
-        ])
+        writer.writerow(
+            [
+                key,
+                name_lookup.get(key, key),
+                b["events"],
+                b["in_tokens"],
+                b["out_tokens"],
+                b["cache_read_tokens"],
+                b["cache_creation_tokens"],
+                f"{b['cost_usd']:.6f}",
+                f"{b['quota_usd']:.6f}",
+                f"{savings:.4f}",
+            ]
+        )
 
     csv_bytes = buf.getvalue()
     days = window_minutes // 1440
@@ -757,11 +847,13 @@ async def probe_state(
           "as_of": "2026-05-09T22:00:00+00:00"
         }
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     from app.monitoring.keepalive import get_backoff_state
+
     return {
         "providers_in_backoff": get_backoff_state(),
-        "as_of": datetime.now(timezone.utc).isoformat(),
+        "as_of": datetime.now(UTC).isoformat(),
     }
 
 
@@ -792,6 +884,7 @@ async def conversation_id_stats(_: AdminUser = Depends(require_admin)):
         }
     """
     from prometheus_client import REGISTRY
+
     by_endpoint: dict[str, dict] = {}
     for metric in REGISTRY.collect():
         if metric.name != "llm_proxy_conversation_id_requests":

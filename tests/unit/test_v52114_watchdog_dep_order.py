@@ -15,6 +15,7 @@ audio, images, integration, responses. This pins the invariant EVERYWHERE:
 in any route that uses BOTH deps, get_db must be declared before the
 watchdog.
 """
+
 from __future__ import annotations
 
 import re
@@ -35,7 +36,7 @@ _WATCHDOG_ROUTES = [
 
 
 def _line_indices(lines, needle):
-    return [i for i, l in enumerate(lines) if needle in l]
+    return [i for i, line in enumerate(lines) if needle in line]
 
 
 @pytest.mark.parametrize("path", _WATCHDOG_ROUTES)
@@ -51,7 +52,7 @@ def test_get_db_declared_before_watchdog(path):
     for w in wd_lines:
         earlier_db = [d for d in db_lines if d < w and (w - d) <= 8]
         assert earlier_db, (
-            f"{path}: watch_for_disconnect at line {w+1} has no Depends(get_db) "
+            f"{path}: watch_for_disconnect at line {w + 1} has no Depends(get_db) "
             f"declared before it in the same signature — LIFO cleanup would "
             f"close get_db while the watcher is still live and leak a pool slot"
         )
@@ -65,9 +66,8 @@ def test_no_watchdog_route_regresses_to_watchdog_first():
     for path in _WATCHDOG_ROUTES:
         lines = Path(path).read_text().splitlines()
         for i in range(len(lines) - 1):
-            if ("Depends(watch_for_disconnect)" in lines[i]
-                    and "Depends(get_db)" in lines[i + 1]):
-                bad.append(f"{path}:{i+1}")
+            if "Depends(watch_for_disconnect)" in lines[i] and "Depends(get_db)" in lines[i + 1]:
+                bad.append(f"{path}:{i + 1}")
     assert not bad, f"watchdog-immediately-before-get_db (buggy order) at: {bad}"
 
 

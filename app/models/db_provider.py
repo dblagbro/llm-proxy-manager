@@ -17,11 +17,10 @@ module back under the 500-LOC domain ceiling. They are keyed by
 ``(provider_id, model_id)`` rather than describing the provider itself, so
 they were the natural seam. Import them from ``app.models.db`` as before.
 """
+
 import secrets
 
-from sqlalchemy import (
-    Column, String, Integer, Boolean, Float, DateTime, Text, JSON, ForeignKey
-)
+from sqlalchemy import JSON, Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -33,8 +32,10 @@ class Provider(Base):
 
     id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
     name = Column(String, nullable=False)
-    provider_type = Column(String, nullable=False)  # anthropic|openai|google|ollama|compatible|vertex|grok|claude-oauth
-    api_key = Column(String)                         # PLAINTEXT. for OAuth providers: stores the access_token
+    provider_type = Column(
+        String, nullable=False
+    )  # anthropic|openai|google|ollama|compatible|vertex|grok|claude-oauth
+    api_key = Column(String)  # PLAINTEXT. for OAuth providers: stores the access_token
     base_url = Column(String)
     default_model = Column(String)
     priority = Column(Integer, default=10)
@@ -67,8 +68,8 @@ class Provider(Base):
     # key_encryption module is used only for api_keys.encrypted_key). Treat
     # llmproxy.db as a cleartext upstream-credential store until this is either
     # encrypted with a KMS/env key or the fact is documented in backup-plan.md.
-    oauth_refresh_token = Column(String, nullable=True)    # PLAINTEXT (see note above)
-    oauth_expires_at = Column(Float, nullable=True)        # unix timestamp
+    oauth_refresh_token = Column(String, nullable=True)  # PLAINTEXT (see note above)
+    oauth_expires_at = Column(Float, nullable=True)  # unix timestamp
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     # v3.0.11: Unix timestamp set ONLY by user-facing admin edits. Cluster
@@ -108,12 +109,18 @@ class Provider(Base):
     # oauth, future grok/azure-oauth) can be tracked. NULL/False fields
     # leave behavior unchanged.
     usage_tracking_enabled = Column(Boolean, default=False)
-    usage_session_window_sec = Column(Integer, nullable=True)        # e.g. 18000 = 5h (claude.ai default)
-    usage_weekly_reset_dow = Column(Integer, nullable=True)          # 0=Mon … 6=Sun (claude.ai = 6)
-    usage_weekly_reset_hour = Column(Integer, nullable=True)         # 0..23 local hour (claude.ai = 16, 4pm)
-    usage_session_limit_tokens = Column(Integer, nullable=True)      # operator's estimate of plan ceiling
+    usage_session_window_sec = Column(Integer, nullable=True)  # e.g. 18000 = 5h (claude.ai default)
+    usage_weekly_reset_dow = Column(Integer, nullable=True)  # 0=Mon … 6=Sun (claude.ai = 6)
+    usage_weekly_reset_hour = Column(
+        Integer, nullable=True
+    )  # 0..23 local hour (claude.ai = 16, 4pm)
+    usage_session_limit_tokens = Column(
+        Integer, nullable=True
+    )  # operator's estimate of plan ceiling
     usage_weekly_limit_tokens = Column(Integer, nullable=True)
-    usage_rotation_threshold_pct = Column(Integer, nullable=True)    # rotate when max/min ratio exceeds this; default 30
+    usage_rotation_threshold_pct = Column(
+        Integer, nullable=True
+    )  # rotate when max/min ratio exceeds this; default 30
 
     # v3.7.0 — external billing scrape (Anthropic Console).
     # When the operator pastes a captured browser session, store the
@@ -128,8 +135,11 @@ class Provider(Base):
     # event and the operator pastes a fresh capture via the admin
     # endpoint at ``POST /api/providers/{id}/anthropic-billing-credentials``.
     anthropic_org_uuid = Column(String, nullable=True)
-    anthropic_session_cookies = Column(String, nullable=True)        # JSON dict: {sessionKey, sessionKeyLC, routingHint, lastActiveOrg, cf_clearance, __cf_bm, ...}
-    anthropic_session_captured_at = Column(Float, nullable=True)     # unix ts of last operator paste; for "cookies are N days old" UI
+    # JSON dict: session keys, routing hint, last active org and Cloudflare cookies.
+    anthropic_session_cookies = Column(String, nullable=True)
+    anthropic_session_captured_at = Column(
+        Float, nullable=True
+    )  # unix ts of last operator paste; for "cookies are N days old" UI
 
     # v3.7.27 (#245) — Codex / ChatGPT Plus usage scrape. Same problem
     # as the Anthropic Pro Max case: the same ChatGPT Plus subscription
@@ -151,9 +161,11 @@ class Provider(Base):
     # operator copies the chatgpt.com cookies from DevTools →
     # Application → Cookies into a JSON blob and pastes both via
     # ``POST /api/providers/{id}/codex-billing-credentials``.
-    codex_session_cookies = Column(String, nullable=True)            # JSON dict of chatgpt.com session cookies
-    codex_usage_endpoint_url = Column(String, nullable=True)         # full URL captured from DevTools
-    codex_session_captured_at = Column(Float, nullable=True)         # unix ts of last operator paste
+    codex_session_cookies = Column(
+        String, nullable=True
+    )  # JSON dict of chatgpt.com session cookies
+    codex_usage_endpoint_url = Column(String, nullable=True)  # full URL captured from DevTools
+    codex_session_captured_at = Column(Float, nullable=True)  # unix ts of last operator paste
 
     # v3.7.28 (#252 phase 1) — manual override escape hatch for the
     # upcoming AI provider supervisor. When non-null, the supervisor
@@ -167,9 +179,9 @@ class Provider(Base):
     # Cluster sync replicates these fields via the existing Provider
     # sync path (LWW conflict resolution applies).
     manual_override_until = Column(DateTime, nullable=True)
-    manual_override_set_by = Column(String, nullable=True)           # admin user id for audit
+    manual_override_set_by = Column(String, nullable=True)  # admin user id for audit
     manual_override_set_at = Column(DateTime, nullable=True)
-    manual_override_reason = Column(Text, nullable=True)             # optional operator note
+    manual_override_reason = Column(Text, nullable=True)  # optional operator note
 
     # v3.7.1 — auto-rotation: when an external snapshot reports a
     # provider above the at-capacity threshold (default 95% weekly
@@ -195,7 +207,9 @@ class Provider(Base):
     # effective blocklist.
     owner_company = Column(String, nullable=True)
 
-    capabilities = relationship("ModelCapability", back_populates="provider", cascade="all, delete-orphan")
+    capabilities = relationship(
+        "ModelCapability", back_populates="provider", cascade="all, delete-orphan"
+    )
 
     # v5.15.0 (#508) — per-account OAuth fan-out. Providers that hold multiple
     # OAuth sessions (cursor-oauth today; codex-oauth + claude-oauth in scope
@@ -237,6 +251,7 @@ class ProviderOAuthAccount(Base):
     a ``captured_via='migration_from_provider'`` row so v5.15.1 dispatch
     picks up seamlessly.
     """
+
     __tablename__ = "provider_oauth_accounts"
 
     id = Column(
@@ -276,11 +291,14 @@ class ProviderUsageWindow(Base):
     """v3.0.62: cached per-provider rolling usage totals. Recomputed every
     60s from ``activity_log`` by the usage_tracker task; serves
     ``GET /api/providers/{id}/usage`` reads in O(1)."""
+
     __tablename__ = "provider_usage_windows"
     provider_id = Column(String, ForeignKey("providers.id"), primary_key=True)
     session_tokens = Column(Integer, default=0)
     session_window_start = Column(DateTime, nullable=True)
-    session_pct = Column(Float, nullable=True)        # session_tokens / usage_session_limit_tokens × 100; null if no limit set
+    session_pct = Column(
+        Float, nullable=True
+    )  # session_tokens / usage_session_limit_tokens × 100; null if no limit set
     weekly_tokens = Column(Integer, default=0)
     weekly_reset_at = Column(DateTime, nullable=True)  # next reset (last reset + 7 days)
     weekly_pct = Column(Float, nullable=True)
@@ -294,7 +312,7 @@ class ProviderNodeAuthState(Base):
     to cover any future per-node-session provider type).
 
     Why this table exists: pre-v4.4 grok-web ran on a shared bridge
-    on tmrwww01 only, and the CB state cluster-synced like every
+    on the first gateway only, and the CB state cluster-synced like every
     other provider. When the shared bridge crashed (BUG-025), grok-
     web went down fleet-wide. The v4.4 per-node-bridge design
     (`docs/4.4-per-node-bridge-design.md` Path A) gives each proxy
@@ -317,6 +335,7 @@ class ProviderNodeAuthState(Base):
     only on this node — never overwrite a peer's row even if our
     sync sees a stale timestamp.
     """
+
     __tablename__ = "provider_node_auth_state"
     provider_id = Column(String, ForeignKey("providers.id"), primary_key=True)
     node_id = Column(String, primary_key=True)
@@ -365,6 +384,7 @@ class ExternalUsageSnapshot(Base):
     body is preserved as ``raw_response`` JSON for forward-compat
     with response-shape changes Anthropic ships.
     """
+
     __tablename__ = "external_usage_snapshot"
     id = Column(Integer, primary_key=True, autoincrement=True)
     provider_id = Column(String, ForeignKey("providers.id"), nullable=False, index=True)
@@ -372,8 +392,10 @@ class ExternalUsageSnapshot(Base):
     source = Column(String, default="anthropic_console_v1")
     # Capture diagnostics
     http_status = Column(Integer, nullable=True)
-    error = Column(Text, nullable=True)              # non-null when scrape failed
-    auth_state = Column(String, nullable=True)       # "ok" | "session_expired" | "cf_blocked" | "network_error"
+    error = Column(Text, nullable=True)  # non-null when scrape failed
+    auth_state = Column(
+        String, nullable=True
+    )  # "ok" | "session_expired" | "cf_blocked" | "network_error"
     # Core utilization fields (percent 0-100)
     five_hour_utilization = Column(Float, nullable=True)
     five_hour_resets_at = Column(DateTime, nullable=True)
@@ -428,6 +450,7 @@ class ProviderAiReview(Base):
     Cluster sync replicates this table via the BUG-016 pattern (added
     in Phase 4/5 ship).
     """
+
     __tablename__ = "provider_ai_review"
     id = Column(Integer, primary_key=True, autoincrement=True)
     provider_id = Column(String, ForeignKey("providers.id"), nullable=False, index=True)
@@ -441,19 +464,20 @@ class ProviderAiReview(Base):
     # Lifecycle: applied / dismissed / reverted (mirrors ApiKeyAiReview)
     applied_at = Column(DateTime, nullable=True)
     applied_action = Column(String, nullable=True)
-    prior_priority = Column(Integer, nullable=True)             # for revert
-    prior_auto_skip_until = Column(DateTime, nullable=True)     # for revert
+    prior_priority = Column(Integer, nullable=True)  # for revert
+    prior_auto_skip_until = Column(DateTime, nullable=True)  # for revert
     reverted_at = Column(DateTime, nullable=True)
     dismissed_at = Column(DateTime, nullable=True)
 
 
 class ProviderMetric(Base):
     """Time-series health/usage data per provider (5-minute buckets)."""
+
     __tablename__ = "provider_metrics"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     provider_id = Column(String, nullable=False)
-    bucket_ts = Column(DateTime, nullable=False)   # floored to 5-min
+    bucket_ts = Column(DateTime, nullable=False)  # floored to 5-min
     requests = Column(Integer, default=0)
     successes = Column(Integer, default=0)
     failures = Column(Integer, default=0)

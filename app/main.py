@@ -1,89 +1,108 @@
 """
 llm-proxy v2 — FastAPI application entry point.
 """
+
 import json
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 
 import structlog
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi import Request as _LmrhRequest
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse, FileResponse
-import os
+from sqlalchemy import select
+from starlette.requests import ClientDisconnect as _ClientDisconnect
 
 from app.__version__ import __version__
-from app.config import settings
-from app.models.database import init_db, AsyncSessionLocal
-from app.auth.admin import ensure_default_admin
-from app.monitoring.status import start_monitor, register_provider
-from app.monitoring.notifications import alert_cluster_node_down, alert_all_providers_down
-from app.cluster.manager import start_cluster, get_cluster_status
-from app.models.db import Provider
-from sqlalchemy import select
-
-# ── Routers ──────────────────────────────────────────────────────────────────
-from app.api.messages import router as messages_router
-from app.api.completions import router as completions_router
-from app.api.responses import router as responses_router
-from app.api.embeddings import router as embeddings_router
-from app.api.models import router as models_router
-from app.api.aliases import router as aliases_router
-from app.api.auth import router as auth_router
-from app.api.auth_sso import router as auth_sso_router  # v5.22.9 — OIDC SSO
-from app.api.providers import router as providers_router
-from app.api.providers_oauth import router as providers_oauth_router
-from app.api.apikeys import router as apikeys_router
-from app.api.integration import router as integration_router
-from app.api.users import router as users_router
-from app.api.cluster import router as cluster_router
-from app.api.monitoring import router as monitoring_router
-from app.api.settings_api import router as settings_router
-from app.api.audit import router as audit_router
-from app.api.admin_logging import router as admin_logging_router
 from app.api.admin_activity_purge import router as admin_activity_purge_router
+from app.api.admin_ai_supervisor import router as admin_ai_supervisor_router
+from app.api.admin_cluster_read import router as admin_cluster_read_router
+from app.api.admin_compliance_epoch_purge import router as admin_compliance_epoch_purge_router
+
 # v5.2.0 / Batch V1 — LLM-call emergency stop (separate from the
 # v5.1.0 logging panic button; this one stops LLM dispatch, not log
 # writes).
 from app.api.admin_llm_emergency import router as admin_llm_emergency_router
-from app.api.admin_ai_supervisor import router as admin_ai_supervisor_router
-from app.api.admin_compliance_epoch_purge import router as admin_compliance_epoch_purge_router
+from app.api.admin_logging import router as admin_logging_router
+from app.api.admin_mcp_capability_suggestions import router as admin_mcp_capability_router
 from app.api.admin_mcp_policy import router as admin_mcp_policy_router
 from app.api.admin_mcp_summary import router as admin_mcp_summary_router
-from app.api.admin_mcp_capability_suggestions import router as admin_mcp_capability_router
+from app.api.admin_provider_oauth_accounts import router as admin_provider_oauth_accounts_router
 from app.api.admin_requests_stream import router as admin_requests_stream_router
-from app.api.oauth_capture import router as oauth_capture_router
-from app.api.runs import router as runs_router
-from app.api.lmrh import router as lmrh_router
-from app.api.llm_models import router as llm_models_router
+from app.api.ai_provider_supervisor import router as ai_provider_supervisor_router
+from app.api.ai_rate_limiter import router as ai_rate_limiter_router
+from app.api.airi import router as airi_router
+from app.api.aliases import router as aliases_router
 from app.api.anthropic_billing import router as anthropic_billing_router
+from app.api.apikeys import router as apikeys_router
+from app.api.audit import router as audit_router
+from app.api.auth import router as auth_router
+from app.api.auth_sso import router as auth_sso_router  # v5.22.9 — OIDC SSO
+from app.api.blocked_ips import router as blocked_ips_router
+from app.api.cluster import router as cluster_router
 from app.api.codex_billing import router as codex_billing_router
+from app.api.completions import router as completions_router
+
+# v5.0.0 — compliance admin + user surfaces
+from app.api.compliance import router as compliance_router
+
 # v5.3.5 — cursor billing parity (Anthropic + Codex equivalent).
 from app.api.cursor_billing import router as cursor_billing_router
-from app.api.admin_cluster_read import router as admin_cluster_read_router
-from app.api.ai_provider_supervisor import router as ai_provider_supervisor_router
-from app.api.airi import router as airi_router
-from app.api.tool_prober import router as tool_prober_router
-from app.api.ai_rate_limiter import router as ai_rate_limiter_router
-from app.api.blocked_ips import router as blocked_ips_router
+from app.api.embeddings import router as embeddings_router
+from app.api.integration import router as integration_router
+from app.api.llm_models import router as llm_models_router
+from app.api.lmrh import router as lmrh_router
+from app.api.local_accelerators import router as local_accelerators_router
 from app.api.memory_admin import router as memory_admin_router
+
 # v3.9.12 — api-key-scoped memory CRUD (hub-team can purge memory on
 # room archival without holding an admin session)
 from app.api.memory_scoped import router as memory_scoped_router
+
+# ── Routers ──────────────────────────────────────────────────────────────────
+from app.api.messages import router as messages_router
+from app.api.models import router as models_router
+from app.api.monitoring import router as monitoring_router
+from app.api.oauth_capture import router as oauth_capture_router
+from app.api.provider_attention import router as provider_attention_router
+from app.api.provider_capabilities import router as provider_capabilities_router
+
 # v3.9.8 (P5 refactor) — providers.py split into 3 siblings to stay <1000 lines.
 # Each owns its own APIRouter at the same /api/providers prefix; no path
 # collisions because the endpoints don't overlap.
 from app.api.provider_lifecycle import router as provider_lifecycle_router
-from app.api.provider_attention import router as provider_attention_router
-from app.api.provider_capabilities import router as provider_capabilities_router
+from app.api.providers import router as providers_router
+from app.api.providers_oauth import router as providers_oauth_router
+
 # v4.4.14: 4th sibling for the read-side / stats endpoints
 from app.api.providers_stats import router as providers_stats_router
-# v5.0.0 — compliance admin + user surfaces
-from app.api.compliance import router as compliance_router
-from app.api.local_accelerators import router as local_accelerators_router
+from app.api.responses import router as responses_router
+from app.api.runs import router as runs_router
+from app.api.settings_api import router as settings_router
+from app.api.tool_prober import router as tool_prober_router
+from app.api.users import router as users_router
+from app.auth.admin import ensure_default_admin
+from app.cluster.manager import get_cluster_status as get_cluster_status
+from app.cluster.manager import start_cluster
+from app.config import settings
+from app.models.database import AsyncSessionLocal, init_db
+from app.models.db import Provider
+from app.monitoring.notifications import alert_all_providers_down as alert_all_providers_down
+from app.monitoring.notifications import alert_cluster_node_down
+from app.monitoring.status import register_provider, start_monitor
+from app.observability.infra_error_tap import install_infra_error_tap
+from app.observability.openai_retry_tap import install_openai_retry_tap
 from app.observability.otel import init_tracer
-from app.observability.prometheus import metrics_response, set_service_info, observe_circuit_breaker_state
+from app.observability.prometheus import (
+    metrics_response,
+    observe_circuit_breaker_state,
+    set_service_info,
+)
+from app.routing.lmrh.parse import parse_hint as _lmrh_parse
 
 logging.basicConfig(level=settings.log_level.upper())
 logger = structlog.get_logger()
@@ -99,7 +118,7 @@ class _HealthAccessLogFilter(logging.Filter):
         except Exception:
             return True
         # uvicorn access log format: '%(client_addr)s - "%(request_line)s" %(status_code)s'
-        return " /health " not in msg and " /health\"" not in msg
+        return " /health " not in msg and ' /health"' not in msg
 
 
 logging.getLogger("uvicorn.access").addFilter(_HealthAccessLogFilter())
@@ -107,19 +126,20 @@ logging.getLogger("uvicorn.access").addFilter(_HealthAccessLogFilter())
 # v3.10.15 BUG-032 — tap ASGI + DB-pool error logs into a classified
 # Prometheus counter (llm_proxy_infra_errors_total) so they are no
 # longer invisible to observability.
-from app.observability.infra_error_tap import install_infra_error_tap
+
 install_infra_error_tap()
 # v5.3.4 — tap openai-python's transparent-retry INFO line into a
 # Prometheus counter + stop it from spamming stdout. Pre-tap, the
 # openai-python http layer would absorb 14 retries during a 13-min
-# burst (c1conv 2026-06-09 04:22-04:35 UTC) with no signal anywhere.
-from app.observability.openai_retry_tap import install_openai_retry_tap
+# burst (integration 2026-06-09 04:22-04:35 UTC) with no signal anywhere.
+
 install_openai_retry_tap()
 
 # v3.0.24 (#136): tone down litellm's INFO-level chatter (per-call
 # "LiteLLM completion() model=..." lines). Errors / warnings still flow.
 try:
     import litellm as _litellm
+
     _litellm.set_verbose = False
     logging.getLogger("LiteLLM").setLevel(logging.WARNING)
     # v3.0.30: silence the colored "Give Feedback / Get Help" print() spam
@@ -128,7 +148,7 @@ try:
     # banner and the "If you need to debug this error" line. Both go
     # straight to stderr via print(), so the existing logger-level knob
     # didn't catch them. Discovered during the v3.0.30 log-mining audit:
-    # 35 "Give Feedback" prints in 3h on www01 — exactly matching the 35
+    # 35 "Give Feedback" prints in 3h on the first gateway — exactly matching the 35
     # CB openings on the cohere-keepalive bug being fixed in this same
     # version. Belt-and-suspenders: even after the keepalive fix, real
     # upstream errors during normal traffic shouldn't decorate stderr.
@@ -149,13 +169,12 @@ except Exception:
 # our own "ERROR" log-mining filters. Demote to DEBUG so the signal is
 # preserved if anyone explicitly enables debug logging.
 try:
+
     class _UnclosedSessionFilter(logging.Filter):
         def filter(self, record: logging.LogRecord) -> bool:
             msg = str(record.getMessage())
-            return not (
-                "Unclosed client session" in msg
-                or "Unclosed connector" in msg
-            )
+            return not ("Unclosed client session" in msg or "Unclosed connector" in msg)
+
     logging.getLogger("asyncio").addFilter(_UnclosedSessionFilter())
 except Exception:
     pass
@@ -200,12 +219,14 @@ async def lifespan(app: FastAPI):
     # need the trace). Send with: docker kill --signal=SIGUSR2 llm-proxy2
     try:
         from app.monitoring.pool_trace_signal import install_pool_trace_signal_handler
+
         install_pool_trace_signal_handler()
     except Exception as _sig_exc:
         logger.warning("pool_trace_signal install failed: %r", _sig_exc)
     async with AsyncSessionLocal() as db:
         await ensure_default_admin(db)
         from app import config_runtime
+
         await config_runtime.load(db)
         # v3.0.8: warn loud at boot for any SCHEMA/pydantic type drift —
         # the v3.0.1 bug class is now structurally impossible (load()
@@ -216,6 +237,7 @@ async def lifespan(app: FastAPI):
         # v2.8.2: one-shot resolve any pre-existing priority ties so we
         # start each boot with a strict total order. Idempotent.
         from app.api.providers import normalize_priority_ties
+
         bumped = await normalize_priority_ties(db)
         if bumped:
             await db.commit()
@@ -227,11 +249,13 @@ async def lifespan(app: FastAPI):
         # of truth: app/providers/deprecations.py::MODEL_DEPRECATIONS.
         try:
             from app.providers.deprecations import migrate_deprecated_default_models
+
             migrated = await migrate_deprecated_default_models(db)
             if migrated:
                 logger.info(
                     "providers.deprecation_migration_summary count=%d details=%s",
-                    len(migrated), migrated,
+                    len(migrated),
+                    migrated,
                 )
         except Exception as e:
             logger.warning(f"deprecation migration failed: {e}")
@@ -242,11 +266,13 @@ async def lifespan(app: FastAPI):
         # tombstones the rest. Idempotent.
         try:
             from app.providers.dedup import dedup_providers_by_name
+
             deduped = await dedup_providers_by_name(db)
             if deduped:
                 logger.warning(
                     "providers.dedup_summary count=%d actions=%s",
-                    len(deduped), deduped,
+                    len(deduped),
+                    deduped,
                 )
         except Exception as e:
             logger.warning(f"provider dedup migration failed: {e}")
@@ -267,6 +293,7 @@ async def lifespan(app: FastAPI):
     # timeline can render the boundary cleanly.
     try:
         from app.runs.worker import recover_orphans
+
         recovered = await recover_orphans()
         if recovered:
             logger.info(f"runs.recovered count={recovered}")
@@ -284,6 +311,7 @@ async def lifespan(app: FastAPI):
     # in the last 2× interval.
     try:
         from app.monitoring.keepalive import start as start_keepalive
+
         start_keepalive()
     except Exception as e:
         logger.warning(f"keepalive probe loop failed to start: {e}")
@@ -293,6 +321,7 @@ async def lifespan(app: FastAPI):
     # 1h so startup isn't slowed by a first-sweep race.
     try:
         from app.monitoring.prune import start as start_prune
+
         start_prune()
     except Exception as e:
         logger.warning(f"prune loop failed to start: {e}")
@@ -305,7 +334,9 @@ async def lifespan(app: FastAPI):
     # this one fires autonomously.
     try:
         import asyncio as _leak_asyncio
+
         from app.monitoring.pool_leak_watcher import pool_leak_watcher_loop
+
         _leak_asyncio.create_task(pool_leak_watcher_loop())
     except Exception as e:
         logger.warning(f"pool_leak_watcher failed to start: {e}")
@@ -316,6 +347,7 @@ async def lifespan(app: FastAPI):
     # Boot-delayed 90 min so the prune sweep (1h delay) lands first.
     try:
         from app.monitoring.compliance_audit_worker import start as start_compliance_audit
+
         start_compliance_audit()
     except Exception as e:
         logger.warning(f"compliance audit worker failed to start: {e}")
@@ -325,6 +357,7 @@ async def lifespan(app: FastAPI):
     # registers separately via the callbacks.* settings (loaded after this).
     try:
         from app.api._response_hook_runner import register_builtin_hooks
+
         register_builtin_hooks()
         # v5.20.4 — Model cost-map sync worker. Pulls the LiteLLM
         # upstream ``model_prices_and_context_window.json`` daily so
@@ -334,6 +367,7 @@ async def lifespan(app: FastAPI):
         # litellm.cost_per_token path continues to work.
         try:
             from app.monitoring.model_cost_map_worker import start as _start_cost_map
+
             _start_cost_map()
         except Exception as exc:
             logger.warning("model_cost_map_worker.start_failed err=%r", exc)
@@ -345,6 +379,7 @@ async def lifespan(app: FastAPI):
     # back-pressure score table so it doesn't grow unbounded.
     try:
         from app.monitoring.caller_score_decay import start_decay_worker as start_caller_score_decay
+
         start_caller_score_decay()
     except Exception as e:
         logger.warning(f"caller score decay worker failed to start: {e}")
@@ -359,6 +394,7 @@ async def lifespan(app: FastAPI):
     # worker fires first.
     try:
         from app.monitoring.cursor_oauth_expiry_monitor import start as start_cursor_expiry
+
         start_cursor_expiry()
     except Exception as e:
         logger.warning(f"cursor-oauth expiry monitor failed to start: {e}")
@@ -371,6 +407,7 @@ async def lifespan(app: FastAPI):
     # refresh tokens. See the module docstring.
     try:
         from app.monitoring.claude_oauth_expiry_monitor import start as start_claude_expiry
+
         start_claude_expiry()
     except Exception as e:
         logger.warning(f"claude-oauth expiry monitor failed to start: {e}")
@@ -381,6 +418,7 @@ async def lifespan(app: FastAPI):
     # cache every 60s; ``GET /api/providers/{id}/usage`` reads from cache.
     try:
         from app.monitoring.usage_tracker import start as start_usage_tracker
+
         start_usage_tracker()
     except Exception as e:
         logger.warning(f"usage tracker failed to start: {e}")
@@ -391,6 +429,7 @@ async def lifespan(app: FastAPI):
     # interval, 30-min cooldown per pair, logged as usage_rotation events.
     try:
         from app.monitoring.usage_rotator import start as start_usage_rotator
+
         start_usage_rotator()
     except Exception as e:
         logger.warning(f"usage rotator failed to start: {e}")
@@ -404,6 +443,7 @@ async def lifespan(app: FastAPI):
     # to run unconditionally — endpoint gating happens at request time.
     try:
         from app.routing.lmrh import snapshot as _lmrh_snap
+
         _lmrh_snap.start()
     except Exception as e:
         logger.warning(f"lmrh snapshot loop failed to start: {e}")
@@ -413,6 +453,7 @@ async def lifespan(app: FastAPI):
     # path. No-op if the rewrite map is empty.
     try:
         from app.observability.request_context import prewarm_lan_egress_dns
+
         prewarm_lan_egress_dns()
     except Exception as e:
         logger.warning(f"lan_egress_dns_prewarm failed: {e}")
@@ -423,6 +464,7 @@ async def lifespan(app: FastAPI):
     # always start.
     try:
         from app.monitoring import anthropic_billing_worker as _ab_worker
+
         _ab_worker.start()
     except Exception as e:
         logger.warning(f"anthropic_billing_worker failed to start: {e}")
@@ -431,6 +473,7 @@ async def lifespan(app: FastAPI):
     # USAGE_RESET_ADVISOR_ENABLED=true; advisory email only, never redeems.
     try:
         from app.monitoring import usage_reset_advisor as _ura
+
         _ura.start()
     except Exception as e:
         logger.warning(f"usage_reset_advisor failed to start: {e}")
@@ -441,6 +484,7 @@ async def lifespan(app: FastAPI):
     # provider; safe to always start.
     try:
         from app.monitoring import codex_billing_worker as _cb_worker
+
         _cb_worker.start()
     except Exception as e:
         logger.warning(f"codex_billing_worker failed to start: {e}")
@@ -453,6 +497,7 @@ async def lifespan(app: FastAPI):
     # safe to always start.
     try:
         from app.monitoring import cursor_billing_worker as _cur_worker
+
         _cur_worker.start()
     except Exception as e:
         logger.warning(f"cursor_billing_worker failed to start: {e}")
@@ -461,6 +506,7 @@ async def lifespan(app: FastAPI):
     # Always-safe to start (no-op when there are no scraped providers).
     try:
         from app.monitoring import observability_sampler as _obs_sampler
+
         _obs_sampler.start()
     except Exception as e:
         logger.warning(f"observability_sampler failed to start: {e}")
@@ -469,6 +515,7 @@ async def lifespan(app: FastAPI):
     # caller_memory_enabled=False or when no api_key has TTL set.
     try:
         from app.monitoring import caller_memory_ttl_sweeper as _ttl_sweeper
+
         _ttl_sweeper.start()
     except Exception as e:
         logger.warning(f"caller_memory_ttl_sweeper failed to start: {e}")
@@ -478,17 +525,19 @@ async def lifespan(app: FastAPI):
     # disabled so safe to always start. Opt-in via env/setting.
     try:
         from app.monitoring import ai_provider_supervisor as _ai_sup
+
         _ai_sup.start()
     except Exception as e:
         logger.warning(f"ai_provider_supervisor failed to start: {e}")
 
     # v5.7.15 — burst-trigger force-open. Fast DB-only sweep (every 60s
     # by default) that closes the 30-min gap between AI-supervisor LLM
-    # classifications. Catches the case the 2026-06-17 c1conv incident
+    # classifications. Catches the case the 2026-06-17 integration incident
     # sat in: a degrading upstream throws empty-success bursts faster
     # than the LLM supervisor sweeps. Default ON.
     try:
         from app.monitoring import empty_success_burst_trigger as _esbt
+
         _esbt.start()
     except Exception as e:
         logger.warning(f"empty_success_burst_trigger failed to start: {e}")
@@ -496,10 +545,11 @@ async def lifespan(app: FastAPI):
     # v5.14.2 (#492) — cluster-sync 403-rate escalation trigger. Watches
     # the v5.14.2 in-process ``cluster_sync_metrics`` ring buffer and
     # emits an activity_log warning when ``recent_403_pct`` crosses the
-    # configured threshold. Quiet at the known tmrwww02-peer 50% baseline;
+    # configured threshold. Quiet at the known peer 50% baseline;
     # catches any regression above. Default ON.
     try:
         from app.monitoring import cluster_sync_403_monitor as _cs403m
+
         _cs403m.start()
     except Exception as e:
         logger.warning(f"cluster_sync_403_monitor failed to start: {e}")
@@ -509,6 +559,7 @@ async def lifespan(app: FastAPI):
     # ever runs in it.
     try:
         from app.airi import evaluator as _airi_eval
+
         _airi_eval.start()
     except Exception as e:
         logger.warning(f"airi evaluator failed to start: {e}")
@@ -517,6 +568,7 @@ async def lifespan(app: FastAPI):
     # (ai_tool_prober_enabled=False); worker no-ops when disabled.
     try:
         from app.monitoring import tool_capability_prober as _ai_tool_p
+
         _ai_tool_p.start()
     except Exception as e:
         logger.warning(f"ai_tool_prober failed to start: {e}")
@@ -526,6 +578,7 @@ async def lifespan(app: FastAPI):
     # safe to always start. Opt-in per node per operator Q6.
     try:
         from app.monitoring import ai_rate_limiter as _ai_rl
+
         _ai_rl.start()
     except Exception as e:
         logger.warning(f"ai_rate_limiter failed to start: {e}")
@@ -557,6 +610,7 @@ async def lifespan(app: FastAPI):
 
 async def _notify_provider_degraded(severity: str, message: str, provider_id: str):
     from app.monitoring.notifications import send_alert
+
     await send_alert(severity, "Provider status degraded", message, provider_id=provider_id)
 
 
@@ -578,9 +632,7 @@ app = FastAPI(
 # origins are "*" and that protection disappears — any site could then drive
 # the admin API as the logged-in operator. Browsers reject that pairing too,
 # but silently, which is a bad way to discover a security regression.
-_cors_origins = [
-    o.strip() for o in settings.cors_allow_origins.split(",") if o.strip()
-] or ["*"]
+_cors_origins = [o.strip() for o in settings.cors_allow_origins.split(",") if o.strip()] or ["*"]
 _cors_credentials = bool(settings.cors_allow_credentials)
 if _cors_credentials and "*" in _cors_origins:
     logger.error(
@@ -596,29 +648,52 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=[
-        "LLM-Capability", "X-Provider", "X-Resolved-Provider", "X-Resolved-Model", "X-Token-Budget-Remaining",
-        "X-Cache-Status", "X-Cache-Similarity", "X-Hedged-Winner",
-        "X-Budget-Warning", "X-Budget-Daily-Remaining", "X-Budget-Hourly-Remaining",
-        "X-Critique-Provider", "X-Cot-Samples", "X-Cot-Task-Branch",
+        "LLM-Capability",
+        "X-Provider",
+        "X-Resolved-Provider",
+        "X-Resolved-Model",
+        "X-Token-Budget-Remaining",
+        "X-Cache-Status",
+        "X-Cache-Similarity",
+        "X-Hedged-Winner",
+        "X-Budget-Warning",
+        "X-Budget-Daily-Remaining",
+        "X-Budget-Hourly-Remaining",
+        "X-Critique-Provider",
+        "X-Cot-Samples",
+        "X-Cot-Task-Branch",
         "X-Fallback-Chain",
-        "X-Cascade", "X-Cascade-Reason", "X-Cascade-Grader",
-        "X-Task-Auto-Detected", "X-Shadow-Queued",
+        "X-Cascade",
+        "X-Cascade-Reason",
+        "X-Cascade-Grader",
+        "X-Task-Auto-Detected",
+        "X-Shadow-Queued",
         "X-Emulation-Level",
         # v3.5.10 BUG-006 fix — easy-to-detect cross-family substitution
         # disclosure. Browser callers can read these without parsing the
         # complex LLM-Capability structured-field-value.
-        "X-Substituted-From", "X-Substituted-To",
+        "X-Substituted-From",
+        "X-Substituted-To",
         "LLM-Hint-Set",
         "X-Tool-Calls-Emitted",
-        "X-Structured-Output-Attempts", "X-Structured-Output-Status",
-        "X-Vision-Routed", "X-Context-Strategy-Applied",
-        "X-Resolved-Provider", "X-Emulation-Level", "X-Unsupported-Feature",
+        "X-Structured-Output-Attempts",
+        "X-Structured-Output-Status",
+        "X-Vision-Routed",
+        "X-Context-Strategy-Applied",
+        "X-Resolved-Provider",
+        "X-Emulation-Level",
+        "X-Unsupported-Feature",
         "X-PII-Masked",
-        "X-Sort-Mode", "X-Auto-Routed", "X-Fallback-From",
+        "X-Sort-Mode",
+        "X-Auto-Routed",
+        "X-Fallback-From",
         # v3.3.0 LMRHv2 — discovery + version negotiation
-        "Link", "LMRH-Version", "LMRH-Hint-Echo",
+        "Link",
+        "LMRH-Version",
+        "LMRH-Hint-Echo",
         # v3.6.0 — model-identity edit endpoint concurrency + soft-warn
-        "ETag", "X-Warning",
+        "ETag",
+        "X-Warning",
         # v3.6.1 — thin-content detector hint (defense-in-depth for callers
         # whose upstream content pipeline sometimes feeds the LLM junk)
         "X-Quality-Hint",
@@ -631,12 +706,14 @@ app.add_middleware(
 # last to see the response). Returns 403 early for blocked source IPs
 # without touching auth, routing, or any expensive code paths.
 from app.middleware.ip_block import ip_block_middleware  # noqa: E402
+
 app.middleware("http")(ip_block_middleware)
 
 # v5.0.0 — allowed_paths middleware. Registered AFTER ip_block so banned
 # IPs short-circuit first; runs before route resolution to deny disallowed
 # paths with a single DB lookup + audit row.
 from app.middleware.allowed_paths import allowed_paths_middleware  # noqa: E402
+
 app.middleware("http")(allowed_paths_middleware)
 
 
@@ -647,8 +724,11 @@ async def log_requests(request: Request, call_next):
     # Behind nginx the raw socket peer is the nginx container; the real
     # caller IP is in X-Forwarded-For. See observability/request_context.py.
     from app.observability.request_context import (
-        set_client_ip, extract_client_ip_from_request, set_internal_source,
+        extract_client_ip_from_request,
+        set_client_ip,
+        set_internal_source,
     )
+
     set_client_ip(extract_client_ip_from_request(request))
     # v3.7.15 — BUG-017: tag internally-generated traffic (currently
     # only the AI rate limiter) so its activity rows can be excluded
@@ -704,7 +784,6 @@ async def lmrh_link_header(request: Request, call_next):
 # an unhandled 500 with a full stack trace, polluting the error logs even
 # though there's nothing actionable — the client is gone. Return 499
 # (nginx convention for "client closed request") and log at debug only.
-from starlette.requests import ClientDisconnect as _ClientDisconnect
 
 
 @app.exception_handler(_ClientDisconnect)
@@ -726,8 +805,12 @@ async def _handle_json_decode_error(request: Request, exc: json.JSONDecodeError)
     # such failure into a clean 400 for every raw-body endpoint at once.
     return JSONResponse(
         status_code=400,
-        content={"error": {"type": "invalid_request_error",
-                            "message": f"Malformed JSON in request body: {exc}"}},
+        content={
+            "error": {
+                "type": "invalid_request_error",
+                "message": f"Malformed JSON in request body: {exc}",
+            }
+        },
     )
 
 
@@ -737,9 +820,10 @@ app.include_router(completions_router)
 app.include_router(responses_router)
 app.include_router(embeddings_router)
 app.include_router(models_router)
-# v5.9.0 — OpenAI-compatible audio + images endpoints (DevinGPT memo 2026-06-21).
+# v5.9.0 — OpenAI-compatible audio and image endpoints.
 from app.api.audio import router as audio_router  # noqa: E402
 from app.api.images import router as images_router  # noqa: E402
+
 app.include_router(audio_router)
 app.include_router(images_router)
 
@@ -776,7 +860,7 @@ app.include_router(admin_requests_stream_router)  # v5.11.0 — SSE live tail of
 # provider_oauth_accounts. Phase 1 doesn't change dispatch; the table + endpoints
 # exist so operator can seed accounts + verify audit rows before the v5.15.1
 # dispatch flip.
-from app.api.admin_provider_oauth_accounts import router as admin_provider_oauth_accounts_router
+
 app.include_router(admin_provider_oauth_accounts_router)
 
 # v5.7.0 — MCP aggregation endpoint mounted at /mcp. The FastMCP
@@ -784,6 +868,7 @@ app.include_router(admin_provider_oauth_accounts_router)
 # sub-app's task group is alive when the first request arrives.
 try:
     from app.mcp_server.server import build_mcp_app
+
     _mcp_sub_app = build_mcp_app()
     app.mount("/mcp", _mcp_sub_app)
     logger.info("mcp_aggregation.mounted path=/mcp")
@@ -814,6 +899,7 @@ app.include_router(local_accelerators_router)  # v5.23 — read-only accelerator
 # v3.3.0: LMRHv2 endpoints (feature-flagged via lmrh_v2_enabled).
 # Same /lmrh/* prefix as v1; new paths don't collide with existing ones.
 from app.api.lmrh_v2 import router as lmrh_v2_router  # noqa: E402
+
 app.include_router(lmrh_v2_router)
 
 
@@ -823,8 +909,6 @@ app.include_router(lmrh_v2_router)
 # so the caller knows their hint was silently ignored. Backwards-compat
 # preserved — existing clients aren't broken; new clients can fix or
 # register the dim.
-from fastapi import Request as _LmrhRequest
-from app.routing.lmrh.parse import parse_hint as _lmrh_parse
 
 
 _REGISTRY_CACHE: dict = {"ts": 0.0, "names": frozenset()}
@@ -839,13 +923,15 @@ def invalidate_registry_cache() -> None:
 
 
 async def _registry_names_cached() -> frozenset[str]:
-    import time as _t
     import asyncio as _aio
+    import time as _t
+
     now = _t.time()
     if now - _REGISTRY_CACHE["ts"] < _REGISTRY_CACHE_TTL_SEC and _REGISTRY_CACHE["names"]:
         return _REGISTRY_CACHE["names"]
     try:
         from app.api.lmrh import known_dim_names
+
         # v3.0.61: 3s timeout on the DB refresh. If the pool is exhausted
         # or the DB is slow, fall back to the stale cache rather than
         # blocking the request. The unknown-dim warning header is best-
@@ -854,6 +940,7 @@ async def _registry_names_cached() -> frozenset[str]:
         async def _fetch():
             async with AsyncSessionLocal() as db:
                 return await known_dim_names(db)
+
         names = await _aio.wait_for(_fetch(), timeout=3.0)
         _REGISTRY_CACHE["names"] = frozenset(names)
         _REGISTRY_CACHE["ts"] = now
@@ -863,9 +950,14 @@ async def _registry_names_cached() -> frozenset[str]:
     return _REGISTRY_CACHE["names"]
 
 
-_LMRH_MIDDLEWARE_SKIP_PATHS = frozenset({
-    "/health", "/version", "/metrics", "/favicon.ico",
-})
+_LMRH_MIDDLEWARE_SKIP_PATHS = frozenset(
+    {
+        "/health",
+        "/version",
+        "/metrics",
+        "/favicon.ico",
+    }
+)
 
 
 @app.middleware("http")
@@ -883,11 +975,8 @@ async def _lmrh_warning_middleware(request: _LmrhRequest, call_next):
     # actual route handlers. Starlette normalizes header lookups to
     # lowercase, so "llm-hint" catches every case-variant. v3.0.25 was
     # checking "x-llm-hint" only and silently missed every real LMRH
-    # request — DevinGPT verification turned this up on 2026-05-01.
-    hint_header = (
-        request.headers.get("llm-hint")
-        or request.headers.get("x-llm-hint")
-    )
+    # request — integration client verification turned this up on 2026-05-01.
+    hint_header = request.headers.get("llm-hint") or request.headers.get("x-llm-hint")
     if not hint_header:
         return response
     parsed = _lmrh_parse(hint_header)
@@ -897,10 +986,9 @@ async def _lmrh_warning_middleware(request: _LmrhRequest, call_next):
     unknowns = [d.key for d in parsed.dimensions if d.key not in known]
     if unknowns:
         warnings = ",".join(f"unknown-dim:{n}" for n in unknowns)
-        response.headers["X-LMRH-Warnings"] = (
-            f"{warnings} register-at:/lmrh/register spec:/lmrh.md"
-        )
+        response.headers["X-LMRH-Warnings"] = f"{warnings} register-at:/lmrh/register spec:/lmrh.md"
     return response
+
 
 # ── Utility endpoints ────────────────────────────────────────────────────────
 @app.get("/health")
@@ -976,7 +1064,7 @@ if os.path.isdir(_static_dir):
 
     # v3.0.23 (Q12): public no-auth route for the LMRH RFC draft so other
     # apps and humans can link to it as documentation. Cross-app integration
-    # docs (DevinGPT, coordinator-hub, future LMRH adopters) reference this URL.
+    # documentation can link to this URL.
     _docs_dir = os.path.join(os.path.dirname(__file__), "..", "docs")
 
     @app.get("/lmrh", include_in_schema=False)
@@ -1040,6 +1128,7 @@ if os.path.isdir(_static_dir):
         # preserves whatever URL prefix the browser was on.
         if full_path == "admin/login" or full_path == "admin/login/":
             from fastapi.responses import RedirectResponse
+
             return RedirectResponse("../login", status_code=302)
         # v5.8.2 — deep-route asset rescue. The bundle (Vite ``base: './'``)
         # emits ``./assets/X`` so a single build serves multiple URL
@@ -1057,6 +1146,7 @@ if os.path.isdir(_static_dir):
         # static file. Browser-side caches the corrected response and
         # subsequent navigations behave normally.
         import re as _re
+
         m = _re.match(r"^(?:.+/)?(assets/.+|favicon\.svg|icons\.svg)$", full_path)
         if m:
             # Confine to frontend/dist: the matched group is URL-derived and can

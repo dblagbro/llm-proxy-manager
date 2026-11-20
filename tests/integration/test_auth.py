@@ -1,18 +1,20 @@
 """Auth API tests — login, logout, session, unauthorized access."""
-import pytest
+
 import requests
 import urllib3
 
 urllib3.disable_warnings()
 
-from tests.conftest import BASE_URL, ADMIN_USER, ADMIN_PASS
+from tests.conftest import ADMIN_PASS, ADMIN_USER, BASE_URL  # noqa: E402
 
 
 class TestLogin:
     def test_valid_login_returns_user(self):
         s = requests.Session()
         s.verify = False
-        r = s.post(f"{BASE_URL}/api/auth/login", json={"username": ADMIN_USER, "password": ADMIN_PASS})
+        r = s.post(
+            f"{BASE_URL}/api/auth/login", json={"username": ADMIN_USER, "password": ADMIN_PASS}
+        )
         assert r.status_code == 200
         d = r.json()
         assert d["username"] == ADMIN_USER
@@ -61,6 +63,7 @@ class TestUnauthorized:
     def test_health_is_public(self):
         """Health endpoint must be reachable without auth (used by cluster peers)."""
         import re
+
         r = requests.get(f"{BASE_URL}/health", verify=False)
         assert r.status_code == 200
         d = r.json()

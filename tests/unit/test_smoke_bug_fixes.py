@@ -1,8 +1,6 @@
 """Regression guards for two hub-team smoke-bug fixes (v3.0.0-r5+)."""
+
 from __future__ import annotations
-
-import pytest
-
 
 # ── Bug 1: cookie path scope ────────────────────────────────────────────────
 
@@ -13,7 +11,8 @@ def test_session_cookie_path_is_root_for_multi_prefix_serving():
     so the same image works behind any URL prefix. Cookie *name*
     (``llmproxy_session``) is unique enough that wider scope no longer
     collides with other apps on the host."""
-    from app.auth.admin import SESSION_COOKIE_PATH, SESSION_COOKIE_NAME
+    from app.auth.admin import SESSION_COOKIE_NAME, SESSION_COOKIE_PATH
+
     assert SESSION_COOKIE_PATH == "/"
     assert SESSION_COOKIE_NAME == "llmproxy_session"
 
@@ -23,10 +22,12 @@ def test_session_cookie_path_is_root_for_multi_prefix_serving():
 
 def _fake_key(cap):
     """Minimal ApiKey-shaped object for the cap check path."""
+
     class K:
         id = "k-test"
         spending_cap_usd = cap
         total_cost_usd = 0.0
+
     return K()
 
 

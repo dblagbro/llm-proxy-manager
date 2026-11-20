@@ -15,18 +15,17 @@ that still hold after Phase 2 (table columns + worker module + router).
 The Phase 1 behavior tests for the cookie-paste path were superseded
 by ``test_v381_codex_billing_phase2.py``.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-
-import pytest
-
 
 # ── Provider schema (Phase 1 columns retained as no-ops) ───────────
 
 
 def test_provider_model_has_codex_columns():
     from app.models.db import Provider
+
     cols = {c.name for c in Provider.__table__.columns}
     assert "codex_session_cookies" in cols
     assert "codex_usage_endpoint_url" in cols
@@ -45,6 +44,7 @@ def test_migration_adds_codex_columns():
 
 def test_codex_billing_module_exists():
     import importlib
+
     mod = importlib.import_module("app.providers.codex_billing")
     for fn in ("fetch_usage", "parse_usage_response", "scrape_provider_into_snapshot"):
         assert hasattr(mod, fn), f"missing {fn} in codex_billing module"
@@ -52,14 +52,22 @@ def test_codex_billing_module_exists():
 
 def test_worker_module_exists():
     import importlib
+
     mod = importlib.import_module("app.monitoring.codex_billing_worker")
-    for fn in ("start", "_interval_sec", "_freshness_floor_sec",
-               "_latest_snapshot_age_sec", "_scrape_all_once", "_scrape_loop"):
+    for fn in (
+        "start",
+        "_interval_sec",
+        "_freshness_floor_sec",
+        "_latest_snapshot_age_sec",
+        "_scrape_all_once",
+        "_scrape_loop",
+    ):
         assert hasattr(mod, fn), f"missing {fn} in codex_billing_worker"
 
 
 def test_codex_billing_api_module_exists():
     import importlib
+
     mod = importlib.import_module("app.api.codex_billing")
     assert hasattr(mod, "router")
 
@@ -80,12 +88,14 @@ def test_refresh_endpoint_still_registered():
     """The manual-trigger endpoint stays — it's how operator smoke-tests
     after enabling a provider."""
     from app.api.codex_billing import router
+
     paths = {r.path for r in router.routes}
     assert "/api/providers/{provider_id}/codex-billing-refresh" in paths
 
 
 def test_config_has_codex_billing_settings():
     from app.config import settings
+
     assert hasattr(settings, "codex_billing_scrape_interval_sec")
     assert hasattr(settings, "codex_billing_min_scrape_gap_sec")
     assert settings.codex_billing_scrape_interval_sec == 14400

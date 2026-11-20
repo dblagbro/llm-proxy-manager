@@ -42,18 +42,18 @@ users got a generic "error logging you in" page after approving.
 Switching to the pre-registered UUID + platform.claude.com redirect
 (the same pair the CLI uses) is what actually works.
 """
+
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import secrets
 import time
 from dataclasses import dataclass
-from typing import Optional
-from urllib.parse import urlencode, urlparse, parse_qs
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
-
 
 # ── Endpoints (extracted from the @anthropic-ai/claude-code binary, v2.1.119) ─
 AUTHORIZE_URL = "https://claude.com/cai/oauth/authorize"
@@ -78,7 +78,7 @@ class _PendingFlow:
 _PENDING: dict[str, _PendingFlow] = {}
 
 
-def _sweep_pending(now: Optional[float] = None) -> None:
+def _sweep_pending(now: float | None = None) -> None:
     now = now if now is not None else time.time()
     stale = [k for k, v in _PENDING.items() if now - v.created_at > PENDING_TTL_SEC]
     for k in stale:
@@ -128,7 +128,7 @@ def start_authorize(scope: str = DEFAULT_SCOPE) -> AuthorizeStart:
     return AuthorizeStart(state=state, authorize_url=f"{AUTHORIZE_URL}?{urlencode(params)}")
 
 
-def extract_code_from_callback(raw: str) -> tuple[str, Optional[str]]:
+def extract_code_from_callback(raw: str) -> tuple[str, str | None]:
     """Accept any of the paste formats Anthropic's success page surfaces:
 
     - ``CODE#STATE`` — the single-token format CC's success page shows in
@@ -176,8 +176,8 @@ def extract_code_from_callback(raw: str) -> tuple[str, Optional[str]]:
 @dataclass
 class ExchangeResult:
     access_token: str
-    refresh_token: Optional[str]
-    expires_at: Optional[float]  # unix timestamp
+    refresh_token: str | None
+    expires_at: float | None  # unix timestamp
     raw: dict  # the full token response for debugging
 
 
@@ -186,7 +186,10 @@ class OAuthFlowError(Exception):
 
 
 async def exchange_code(
-    state: str, code: str, *, expected_state: Optional[str] = None,
+    state: str,
+    code: str,
+    *,
+    expected_state: str | None = None,
 ) -> ExchangeResult:
     """Trade the authorization code for access + refresh tokens.
 
@@ -226,9 +229,7 @@ async def exchange_code(
         # without re-clicking the authorize URL (Anthropic usually allows
         # the same auth code to be exchanged within a short window).
         _PENDING[state] = pending
-        raise OAuthFlowError(
-            f"Token exchange failed ({resp.status_code}): {resp.text[:400]}"
-        )
+        raise OAuthFlowError(f"Token exchange failed ({resp.status_code}): {resp.text[:400]}")
     data = resp.json()
     access = data.get("access_token")
     if not isinstance(access, str) or not access:
@@ -241,7 +242,10 @@ async def exchange_code(
         except (TypeError, ValueError):
             expires_at = None
     return ExchangeResult(
-        access_token=access, refresh_token=refresh, expires_at=expires_at, raw=data,
+        access_token=access,
+        refresh_token=refresh,
+        expires_at=expires_at,
+        raw=data,
     )
 
 
@@ -269,14 +273,14 @@ async def _internal_refresh_access_token(refresh_token: str) -> ExchangeResult:
     async with httpx.AsyncClient(timeout=30.0) as c:
         resp = await c.post(TOKEN_URL, json=form)
     if resp.status_code >= 400:
-        raise OAuthFlowError(
-            f"Refresh failed ({resp.status_code}): {resp.text[:400]}"
-        )
+        raise OAuthFlowError(f"Refresh failed ({resp.status_code}): {resp.text[:400]}")
     data = resp.json()
     access = data.get("access_token")
     if not isinstance(access, str) or not access:
         raise OAuthFlowError(f"Refresh returned no access_token: {data}")
-    new_refresh = data.get("refresh_token") if isinstance(data.get("refresh_token"), str) else refresh_token
+    new_refresh = (
+        data.get("refresh_token") if isinstance(data.get("refresh_token"), str) else refresh_token
+    )
     expires_at = None
     if "expires_in" in data:
         try:
@@ -284,7 +288,10 @@ async def _internal_refresh_access_token(refresh_token: str) -> ExchangeResult:
         except (TypeError, ValueError):
             expires_at = None
     return ExchangeResult(
-        access_token=access, refresh_token=new_refresh, expires_at=expires_at, raw=data,
+        access_token=access,
+        refresh_token=new_refresh,
+        expires_at=expires_at,
+        raw=data,
     )
 
 
@@ -295,6 +302,7 @@ async def _internal_refresh_access_token(refresh_token: str) -> ExchangeResult:
 # which is migrated in the same release.
 async def refresh_access_token(refresh_token: str) -> ExchangeResult:
     import warnings
+
     warnings.warn(
         "refresh_access_token is deprecated; this helper is internal-only. "
         "Use refresh_and_persist(provider, db) for production code paths, "
@@ -317,11 +325,12 @@ async def refresh_access_token(refresh_token: str) -> ExchangeResult:
 # (1369+1363 errors in 24h on Devin-Anthropic-Max-{Gmail,VG}) was
 # this. Lock is process-local; cluster-level races between nodes
 # still use the v3.0.18 peer-pull path.
-_refresh_locks: dict[str, "asyncio.Lock"] = {}
+_refresh_locks: dict[str, asyncio.Lock] = {}
 
 
-def _get_refresh_lock(provider_id: str) -> "asyncio.Lock":
+def _get_refresh_lock(provider_id: str) -> asyncio.Lock:
     import asyncio
+
     lock = _refresh_locks.get(provider_id)
     if lock is None:
         lock = asyncio.Lock()
@@ -360,7 +369,9 @@ async def refresh_and_persist(provider, db) -> ExchangeResult:
         # v5.8.3 — re-read the row inside the lock. If another waiter just
         # rotated the token, our pre-lock copy of refresh_token is now
         # stale; the value just persisted is in the DB.
-        await db.refresh(provider, attribute_names=["oauth_refresh_token", "api_key", "oauth_expires_at"])
+        await db.refresh(
+            provider, attribute_names=["oauth_refresh_token", "api_key", "oauth_expires_at"]
+        )
         if not provider.oauth_refresh_token:
             raise OAuthFlowError(
                 f"Provider {provider.id} ({provider.name!r}) lost its "
@@ -375,8 +386,10 @@ async def refresh_and_persist(provider, db) -> ExchangeResult:
             # peer-pull, then verify the adopted token before keeping it.
             if "invalid_grant" in str(e).lower():
                 from app.cluster.oauth_recovery import (
-                    pull_oauth_state_from_peers, adopt_peer_state,
+                    adopt_peer_state,
+                    pull_oauth_state_from_peers,
                 )
+
                 peer_state = await pull_oauth_state_from_peers(provider.id)
                 if peer_state is not None:
                     await adopt_peer_state(provider, db, peer_state)
@@ -418,6 +431,7 @@ async def _verify_oauth_access_token(token: str) -> bool:
     non-401 response (including 429 rate-limit) counts as authenticated.
     Returns ``False`` only when Anthropic explicitly rejects the token."""
     import httpx
+
     try:
         async with httpx.AsyncClient(timeout=8.0, verify=False) as cli:
             resp = await cli.post(

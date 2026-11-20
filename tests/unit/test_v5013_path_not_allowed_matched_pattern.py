@@ -14,9 +14,9 @@ mirrors that value into the audit table so the row is self-contained.
 
 Static-pin tests catch any future change that drops the wiring.
 """
+
 from __future__ import annotations
 
-import asyncio
 import hashlib
 from pathlib import Path
 from unittest.mock import patch
@@ -28,9 +28,8 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from app.models.db import ApiKey, Base, ComplianceEvent
 from app.middleware.allowed_paths import _emit_path_block_event
-
+from app.models.db import ApiKey, Base, ComplianceEvent
 
 # ── Source guard ────────────────────────────────────────────────────
 
@@ -53,7 +52,9 @@ def test_audit_event_signature_still_accepts_matched_pattern():
     signature. Pinning this prevents an unrelated refactor from
     silently dropping the column write."""
     import inspect
+
     from app.compliance.audit import emit_event
+
     sig = inspect.signature(emit_event)
     assert "matched_pattern" in sig.parameters
 
@@ -75,11 +76,14 @@ async def test_path_not_allowed_row_carries_rejected_path():
     Session = await _fresh_db()
     # Seed the API key the audit row will reference (FK)
     async with Session() as db:
-        db.add(ApiKey(
-            id="key-v5013", name="t",
-            key_hash=hashlib.sha256(b"sk-v5013").hexdigest(),
-            key_prefix="sk-v501",
-        ))
+        db.add(
+            ApiKey(
+                id="key-v5013",
+                name="t",
+                key_hash=hashlib.sha256(b"sk-v5013").hexdigest(),
+                key_prefix="sk-v501",
+            )
+        )
         await db.commit()
 
     # Patch AsyncSessionLocal so the helper's own session writes
@@ -87,7 +91,7 @@ async def test_path_not_allowed_row_carries_rejected_path():
     with patch("app.models.database.AsyncSessionLocal", Session):
         audit_id = await _emit_path_block_event(
             api_key_id="key-v5013",
-            path="/v1/v1/messages",   # the hub canary's double-prefix bug
+            path="/v1/v1/messages",  # the hub canary's double-prefix bug
             ua="claude-cli/2.1.118 (external, sdk-cli)",
         )
 
@@ -96,9 +100,10 @@ async def test_path_not_allowed_row_carries_rejected_path():
     # Confirm the row landed with the rejected path in matched_pattern
     async with Session() as db:
         from sqlalchemy import select
-        row = (await db.execute(
-            select(ComplianceEvent).where(ComplianceEvent.audit_id == audit_id)
-        )).scalar_one()
+
+        row = (
+            await db.execute(select(ComplianceEvent).where(ComplianceEvent.audit_id == audit_id))
+        ).scalar_one()
 
     assert row.event_type == "path_not_allowed"
     assert row.reason_code == "path-not-in-allowed_paths"

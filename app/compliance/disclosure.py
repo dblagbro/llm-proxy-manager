@@ -12,10 +12,11 @@ Two disclosure paths:
   disclosure is injected as a top-level ``compliance_substitution`` key on
   the first ``data:`` frame (decision 15).
 """
+
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Optional
+from typing import Any
 
 from app.compliance.company_map import KNOWN_COMPANIES
 
@@ -30,10 +31,10 @@ def compliance_headers(
     blocked_company: str,
     requested_model: str,
     served_model: str,
-    served_company: Optional[str],
+    served_company: str | None,
     served_provider_id: str,
     audit_id: str,
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """The seven X-Compliance-* response headers for a substituted 200 OK
     (decision 8). Caller merges into ``resp_headers`` after route
     resolution returns ``compliance_substituted=True``.
@@ -57,7 +58,7 @@ def refusal_headers_ua(
     matched_product: str,
     matched_company: str,
     audit_id: str,
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """Headers for the HTTP 451 client-product-refusal response."""
     return {
         "X-Compliance-Refusal": "true",
@@ -68,7 +69,7 @@ def refusal_headers_ua(
     }
 
 
-def refusal_headers_no_substitute(*, audit_id: str) -> Dict[str, str]:
+def refusal_headers_no_substitute(*, audit_id: str) -> dict[str, str]:
     """Headers for the HTTP 503 no-substitute response."""
     return {
         "X-Compliance-Refusal": "true",
@@ -77,7 +78,7 @@ def refusal_headers_no_substitute(*, audit_id: str) -> Dict[str, str]:
     }
 
 
-def refusal_headers_no_local(*, audit_id: str) -> Dict[str, str]:
+def refusal_headers_no_local(*, audit_id: str) -> dict[str, str]:
     """v5.0.4 — headers for the HTTP 503 coordinator-local-without-self-
     hosted-provider response. CADC §6.2 specifies
     ``no-compliant-local-provider``; v5.0.0–v5.0.3 omitted the header
@@ -90,7 +91,7 @@ def refusal_headers_no_local(*, audit_id: str) -> Dict[str, str]:
     }
 
 
-def refusal_headers_path(*, audit_id: str) -> Dict[str, str]:
+def refusal_headers_path(*, audit_id: str) -> dict[str, str]:
     """Headers for the HTTP 403 path-not-allowed response from the
     allowed_paths middleware."""
     return {
@@ -122,10 +123,10 @@ def build_disclosure_payload(
     blocked_company: str,
     requested_model: str,
     served_model: str,
-    served_company: Optional[str],
+    served_company: str | None,
     served_provider_id: str,
     audit_id: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Compact disclosure dict shared between the HTTP-header path and
     the SSE prelude path. Both surfaces use the same field names so
     callers writing dual-surface clients can deserialize once.
@@ -145,19 +146,19 @@ def build_disclosure_payload(
     }
 
 
-def sse_prelude_anthropic(disclosure: Dict[str, Any]) -> bytes:
+def sse_prelude_anthropic(disclosure: dict[str, Any]) -> bytes:
     """Anthropic-shape SSE prelude. Emitted BEFORE ``event: message_start``
     (decision 15). Caller yields the returned bytes verbatim into the
     response stream.
     """
     body = json.dumps(disclosure, separators=(",", ":"))
-    return f"event: compliance_substitution\ndata: {body}\n\n".encode("utf-8")
+    return f"event: compliance_substitution\ndata: {body}\n\n".encode()
 
 
 def sse_prelude_openai_inject(
-    first_frame: Dict[str, Any],
-    disclosure: Dict[str, Any],
-) -> Dict[str, Any]:
+    first_frame: dict[str, Any],
+    disclosure: dict[str, Any],
+) -> dict[str, Any]:
     """OpenAI-shape — inject the disclosure as a top-level
     ``compliance_substitution`` key on the first ``data:`` frame
     (decision 15). Mutates and returns the dict; caller serializes.

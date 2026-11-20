@@ -27,13 +27,14 @@ Overflow + TTL semantics borrowed from ccproxy's buffer:
   prepended to the next drain.
 - TTL = 1 hour. Entries older than that are pruned on each touch.
 """
+
 from __future__ import annotations
 
 import logging
 import threading
 import time
-from dataclasses import dataclass, field
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ _TTL_SEC = 3600.0
 @dataclass
 class _Notification:
     """One queued MCP notifications/message payload."""
+
     ts: float
     body: dict[str, Any]
 
@@ -79,9 +81,7 @@ class _NotificationBuffer:
             if len(bucket) > _MAX_PER_KEY:
                 drop = len(bucket) - _MAX_PER_KEY
                 self._buckets[api_key_id] = bucket[drop:]
-                self._overflow_seen[api_key_id] = (
-                    self._overflow_seen.get(api_key_id, 0) + drop
-                )
+                self._overflow_seen[api_key_id] = self._overflow_seen.get(api_key_id, 0) + drop
 
     def drain(self, api_key_id: str) -> list[dict[str, Any]]:
         """Return + clear pending notifications for ``api_key_id``.
@@ -104,14 +104,17 @@ class _NotificationBuffer:
         # next push raced TTL pruning).
         fresh = [n.body for n in bucket if n.ts >= cutoff]
         if overflow > 0:
-            fresh.insert(0, {
-                "type": "ccproxy_buffer_overflow",
-                "dropped_events": overflow,
-                "reason": "per_key_buffer_cap",
-            })
+            fresh.insert(
+                0,
+                {
+                    "type": "ccproxy_buffer_overflow",
+                    "dropped_events": overflow,
+                    "reason": "per_key_buffer_cap",
+                },
+            )
         return fresh
 
-    def peek_size(self, api_key_id: Optional[str] = None) -> int:
+    def peek_size(self, api_key_id: str | None = None) -> int:
         """Read-only buffer-depth count. ``None`` returns global size."""
         with self._lock:
             if api_key_id is None:
@@ -124,7 +127,7 @@ BUFFER = _NotificationBuffer()
 
 
 def push_suggestion_notification(
-    api_key_id: Optional[str],
+    api_key_id: str | None,
     tool: str,
     score: int,
     why: str,
@@ -139,18 +142,21 @@ def push_suggestion_notification(
     if not api_key_id or not tool:
         return
     try:
-        BUFFER.push(api_key_id, {
-            "type": "proxy_mcp_suggestion",
-            "tool": tool,
-            "score": score,
-            "why": why,
-            "ts": time.time(),
-        })
+        BUFFER.push(
+            api_key_id,
+            {
+                "type": "proxy_mcp_suggestion",
+                "tool": tool,
+                "score": score,
+                "why": why,
+                "ts": time.time(),
+            },
+        )
     except Exception as exc:
         logger.debug("push_suggestion_notification failed: %s", exc)
 
 
-def drain_pending(api_key_id: Optional[str]) -> list[dict[str, Any]]:
+def drain_pending(api_key_id: str | None) -> list[dict[str, Any]]:
     """Wrapper that the MCP server's tool-call hook calls at the start
     of each tool execution to fetch pending notifications for the
     caller. Returns ``[]`` when there's nothing to deliver."""

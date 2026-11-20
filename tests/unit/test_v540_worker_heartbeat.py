@@ -7,6 +7,7 @@ tests are used because exercising the full loop (asyncio.sleep)
 in-test is brittle and the wiring contract is the load-bearing
 guarantee — once the call is in the source, the heartbeat happens.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -14,16 +15,16 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-
 # ── Module exports ──────────────────────────────────────────────────
 
 
 def test_worker_heartbeat_module_exposes_factory_and_snapshot():
     from app.monitoring.worker_heartbeat import (
         WorkerHeartbeat,
-        snapshot_all,
         register_expected_interval,
+        snapshot_all,
     )
+
     assert callable(WorkerHeartbeat)
     assert callable(snapshot_all)
     assert callable(register_expected_interval)
@@ -34,15 +35,20 @@ def test_heartbeat_key_shape_is_stable():
     so /health's snapshot scan finds them. Locking the prefix prevents
     a refactor from breaking the implicit contract."""
     from app.monitoring import worker_heartbeat as wh
+
     assert wh._key("keepalive", "last_run") == "worker.keepalive.last_run"
-    assert wh._key("ai_provider_supervisor", "last_status") == "worker.ai_provider_supervisor.last_status"
+    assert (
+        wh._key("ai_provider_supervisor", "last_status")
+        == "worker.ai_provider_supervisor.last_status"
+    )
 
 
 def test_register_expected_interval_is_idempotent():
     from app.monitoring.worker_heartbeat import (
-        register_expected_interval,
         _EXPECTED_INTERVALS,
+        register_expected_interval,
     )
+
     register_expected_interval("test_w_idempotent", 100.0)
     register_expected_interval("test_w_idempotent", 100.0)
     assert _EXPECTED_INTERVALS["test_w_idempotent"] == 100.0
@@ -56,27 +62,27 @@ def test_register_expected_interval_is_idempotent():
 def test_keepalive_loop_calls_worker_heartbeat_tick():
     src = Path("app/monitoring/keepalive.py").read_text()
     assert "from app.monitoring.worker_heartbeat import" in src
-    assert "WorkerHeartbeat(name=\"keepalive\")" in src
+    assert 'WorkerHeartbeat(name="keepalive")' in src
     assert "await hb.tick(" in src
 
 
 def test_ai_supervisor_loop_calls_worker_heartbeat_tick():
     src = Path("app/monitoring/ai_provider_supervisor.py").read_text()
     assert "from app.monitoring.worker_heartbeat import" in src
-    assert "WorkerHeartbeat(name=\"ai_provider_supervisor\")" in src
+    assert 'WorkerHeartbeat(name="ai_provider_supervisor")' in src
     assert "await hb.tick(" in src
 
 
 def test_anthropic_billing_loop_calls_worker_heartbeat_tick():
     src = Path("app/monitoring/anthropic_billing_worker.py").read_text()
     assert "from app.monitoring.worker_heartbeat import" in src
-    assert "WorkerHeartbeat(name=\"anthropic_billing\")" in src
+    assert 'WorkerHeartbeat(name="anthropic_billing")' in src
 
 
 def test_cluster_sync_push_loop_calls_worker_heartbeat_tick():
     src = Path("app/cluster/manager.py").read_text()
     assert "from app.monitoring.worker_heartbeat import" in src
-    assert "WorkerHeartbeat(name=\"cluster_sync_push\")" in src
+    assert 'WorkerHeartbeat(name="cluster_sync_push")' in src
 
 
 # ── /health envelope surface ────────────────────────────────────────
@@ -116,7 +122,8 @@ def test_health_envelope_includes_workers_block_in_source():
         rhs = node.comparators[0]
         if isinstance(rhs, (ast.Tuple, ast.List, ast.Set)):
             excluded |= {
-                e.value for e in rhs.elts
+                e.value
+                for e in rhs.elts
                 if isinstance(e, ast.Constant) and isinstance(e.value, str)
             }
     assert "workers" in excluded, (
@@ -138,6 +145,7 @@ def test_health_envelope_workers_block_uses_snapshot_all():
 
 def test_admin_ai_supervisor_router_exists():
     from app.api.admin_ai_supervisor import router
+
     assert router is not None
     # Single endpoint: POST /api/admin/ai-supervisor/run-once
     routes = [r for r in router.routes if hasattr(r, "path")]
@@ -159,6 +167,7 @@ async def test_supervisor_run_once_endpoint_handles_crash():
     This is the bug-070 diagnostic value — capturing crashes that
     would otherwise be silent."""
     from app.api.admin_ai_supervisor import supervisor_run_once
+
     with patch(
         "app.monitoring.ai_provider_supervisor._scan_all_once",
         new=AsyncMock(side_effect=RuntimeError("simulated crash")),
@@ -174,6 +183,7 @@ async def test_supervisor_run_once_endpoint_returns_counts():
     """Happy path: _scan_all_once returns the count dict; endpoint
     surfaces it verbatim plus the friendly top-level keys."""
     from app.api.admin_ai_supervisor import supervisor_run_once
+
     fake_counts = {"reviewed": 3, "skipped_locked": 1, "skipped_no_traffic": 2}
     with patch(
         "app.monitoring.ai_provider_supervisor._scan_all_once",

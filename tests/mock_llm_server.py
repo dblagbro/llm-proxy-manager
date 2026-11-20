@@ -9,9 +9,9 @@ Usage in fixtures:
     received = srv.get_received()
     srv.stop()
 """
+
 import json
 import queue
-import re
 import threading
 import time
 import uuid
@@ -76,7 +76,9 @@ class _Handler(BaseHTTPRequestHandler):
             status = spec.get("status", 500)
             msg = spec.get("message", "mock error")
             body_str = spec.get("body", "")
-            payload = body_str or json.dumps({"error": {"message": msg, "type": "mock_error", "code": "mock"}})
+            payload = body_str or json.dumps(
+                {"error": {"message": msg, "type": "mock_error", "code": "mock"}}
+            )
             self._raw(status, payload.encode(), "application/json")
             return
 
@@ -84,7 +86,9 @@ class _Handler(BaseHTTPRequestHandler):
         if resp_type == "tool_emulation":
             tool_name = spec.get("tool_name", "test_tool")
             tool_input = spec.get("tool_input", {"query": "test"})
-            content = f'<tool_call>{json.dumps({"name": tool_name, "input": tool_input})}</tool_call>'
+            content = (
+                f"<tool_call>{json.dumps({'name': tool_name, 'input': tool_input})}</tool_call>"
+            )
             spec = {"type": "text", "content": content}
             resp_type = "text"
 
@@ -96,27 +100,86 @@ class _Handler(BaseHTTPRequestHandler):
             chunk_id = f"mock-{uuid.uuid4().hex[:8]}"
             if is_stream:
                 lines = [
-                    {"id": chunk_id, "object": "chat.completion.chunk", "created": _ts(), "model": "mock-gpt",
-                     "choices": [{"index": 0, "delta": {"role": "assistant", "content": None,
-                                   "tool_calls": [{"index": 0, "id": call_id, "type": "function",
-                                                   "function": {"name": tool_name, "arguments": ""}}]},
-                                  "finish_reason": None}]},
-                    {"id": chunk_id, "object": "chat.completion.chunk", "created": _ts(), "model": "mock-gpt",
-                     "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "function": {
-                                  "arguments": json.dumps(tool_input)}}]}, "finish_reason": None}]},
-                    {"id": chunk_id, "object": "chat.completion.chunk", "created": _ts(), "model": "mock-gpt",
-                     "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
-                     "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}},
+                    {
+                        "id": chunk_id,
+                        "object": "chat.completion.chunk",
+                        "created": _ts(),
+                        "model": "mock-gpt",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {
+                                    "role": "assistant",
+                                    "content": None,
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "id": call_id,
+                                            "type": "function",
+                                            "function": {"name": tool_name, "arguments": ""},
+                                        }
+                                    ],
+                                },
+                                "finish_reason": None,
+                            }
+                        ],
+                    },
+                    {
+                        "id": chunk_id,
+                        "object": "chat.completion.chunk",
+                        "created": _ts(),
+                        "model": "mock-gpt",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "function": {"arguments": json.dumps(tool_input)},
+                                        }
+                                    ]
+                                },
+                                "finish_reason": None,
+                            }
+                        ],
+                    },
+                    {
+                        "id": chunk_id,
+                        "object": "chat.completion.chunk",
+                        "created": _ts(),
+                        "model": "mock-gpt",
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+                        "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30},
+                    },
                 ]
                 self._sse(lines)
             else:
                 data = {
-                    "id": chunk_id, "object": "chat.completion", "created": _ts(), "model": "mock-gpt",
-                    "choices": [{"index": 0, "message": {"role": "assistant", "content": None,
-                                  "tool_calls": [{"id": call_id, "type": "function",
-                                                  "function": {"name": tool_name,
-                                                               "arguments": json.dumps(tool_input)}}]},
-                                 "finish_reason": "tool_calls"}],
+                    "id": chunk_id,
+                    "object": "chat.completion",
+                    "created": _ts(),
+                    "model": "mock-gpt",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": call_id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": tool_name,
+                                            "arguments": json.dumps(tool_input),
+                                        },
+                                    }
+                                ],
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
                     "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30},
                 }
                 self._json(200, data)
@@ -129,21 +192,58 @@ class _Handler(BaseHTTPRequestHandler):
 
         if is_stream:
             lines = [
-                {"id": chunk_id, "object": "chat.completion.chunk", "created": _ts(), "model": "mock-gpt",
-                 "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}]},
-                {"id": chunk_id, "object": "chat.completion.chunk", "created": _ts(), "model": "mock-gpt",
-                 "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}]},
-                {"id": chunk_id, "object": "chat.completion.chunk", "created": _ts(), "model": "mock-gpt",
-                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-                 "usage": {"prompt_tokens": 10, "completion_tokens": tok_count, "total_tokens": 10 + tok_count}},
+                {
+                    "id": chunk_id,
+                    "object": "chat.completion.chunk",
+                    "created": _ts(),
+                    "model": "mock-gpt",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"role": "assistant", "content": ""},
+                            "finish_reason": None,
+                        }
+                    ],
+                },
+                {
+                    "id": chunk_id,
+                    "object": "chat.completion.chunk",
+                    "created": _ts(),
+                    "model": "mock-gpt",
+                    "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}],
+                },
+                {
+                    "id": chunk_id,
+                    "object": "chat.completion.chunk",
+                    "created": _ts(),
+                    "model": "mock-gpt",
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                    "usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": tok_count,
+                        "total_tokens": 10 + tok_count,
+                    },
+                },
             ]
             self._sse(lines)
         else:
             data = {
-                "id": chunk_id, "object": "chat.completion", "created": _ts(), "model": "mock-gpt",
-                "choices": [{"index": 0, "message": {"role": "assistant", "content": content},
-                              "finish_reason": "stop"}],
-                "usage": {"prompt_tokens": 10, "completion_tokens": tok_count, "total_tokens": 10 + tok_count},
+                "id": chunk_id,
+                "object": "chat.completion",
+                "created": _ts(),
+                "model": "mock-gpt",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": content},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": tok_count,
+                    "total_tokens": 10 + tok_count,
+                },
             }
             self._json(200, data)
 
@@ -261,6 +361,7 @@ def start_mock_server(port: int = 0) -> MockServer:
 
     # Wait until port is accepting connections
     import socket
+
     for _ in range(30):
         try:
             with socket.create_connection(("127.0.0.1", bound_port), timeout=0.5):

@@ -9,12 +9,15 @@ Fix: gate keepalive probes when consecutive_opens crosses threshold
 (default 5). Apply a 6h backoff. When the backoff window elapses, let
 one probe fire to detect recovery.
 """
+
 from __future__ import annotations
+
 from pathlib import Path
 
 
 def test_circuit_breaker_exposes_consecutive_opens():
-    from app.routing.circuit_breaker import get_all_states, get_consecutive_opens
+    from app.routing.circuit_breaker import get_consecutive_opens
+
     # Callable
     assert callable(get_consecutive_opens)
     # Unknown provider → 0 (no probe has run yet)
@@ -34,15 +37,15 @@ def test_keepalive_reads_consecutive_opens_and_gates():
     # keepalive reads consecutive_opens and gates chronic-CB providers.
     src = Path("app/monitoring/keepalive.py").read_text()
     assert "from app.routing.circuit_breaker import get_consecutive_opens" in src
-    assert (
-        "get_consecutive_opens(p.id)" in src
-        or "get_consecutive_opens(provider.id)" in src
-    ), "keepalive must call get_consecutive_opens for gating"
+    assert "get_consecutive_opens(p.id)" in src or "get_consecutive_opens(provider.id)" in src, (
+        "keepalive must call get_consecutive_opens for gating"
+    )
     assert "keepalive.chronic_cb_gated" in src
 
 
 def test_keepalive_settings_default_threshold_and_backoff():
     from app.config import settings
+
     assert getattr(settings, "keepalive_chronic_cb_open_threshold") == 5
     assert getattr(settings, "keepalive_chronic_cb_open_backoff_sec") == 21600
 
@@ -52,6 +55,7 @@ def test_backoff_cache_separate_from_probe_backoff():
     existing _probe_backoff_until is used for rate-limit response
     backoffs and has different eviction semantics."""
     from app.monitoring import keepalive
+
     assert hasattr(keepalive, "_chronic_backoff_until")
     assert hasattr(keepalive, "_probe_backoff_until")
     assert keepalive._chronic_backoff_until is not keepalive._probe_backoff_until
@@ -59,10 +63,9 @@ def test_backoff_cache_separate_from_probe_backoff():
 
 def test_version_bumped():
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m
     major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    assert (major, minor, patch) >= (5, 17, 1), (
-        f"expected >= 5.17.1, got {major}.{minor}.{patch}"
-    )
+    assert (major, minor, patch) >= (5, 17, 1), f"expected >= 5.17.1, got {major}.{minor}.{patch}"

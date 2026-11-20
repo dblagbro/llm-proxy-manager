@@ -11,14 +11,12 @@ read from environment, defaulting to the existing values. The clone
 runs with ``SESSION_COOKIE_NAME=llmproxy_clone_session`` so the two
 instances coexist cleanly.
 """
+
 from __future__ import annotations
 
 import importlib
 import sys
 from pathlib import Path
-
-import pytest
-
 
 # ── Source guard ────────────────────────────────────────────────────
 

@@ -12,6 +12,7 @@ Endpoints:
   no-op compatibility endpoint so prior callers don't 404. Logs a
   deprecation warning. Will be removed in a future major version.
 """
+
 from __future__ import annotations
 
 import logging
@@ -30,8 +31,12 @@ router = APIRouter(prefix="/api/providers", tags=["codex-billing"])
 
 
 class _LegacyCredentialsBody(BaseModel):
-    endpoint_url: str = Field(default="", description="(deprecated) ignored — endpoint hardcoded since v3.8.1")
-    cookies: str = Field(default="", description="(deprecated) ignored — uses OAuth access_token since v3.8.1")
+    endpoint_url: str = Field(
+        default="", description="(deprecated) ignored — endpoint hardcoded since v3.8.1"
+    )
+    cookies: str = Field(
+        default="", description="(deprecated) ignored — uses OAuth access_token since v3.8.1"
+    )
 
 
 @router.post("/{provider_id}/codex-billing-credentials")
@@ -84,7 +89,8 @@ async def codex_refresh_now(
     if provider.provider_type != "ChatGPT-oauth-plan":
         raise HTTPException(
             400,
-            f"codex billing scraper only applies to ChatGPT-oauth-plan providers (got {provider.provider_type!r})",
+            "codex billing scraper only applies to ChatGPT-oauth-plan providers "
+            f"(got {provider.provider_type!r})",
         )
     if not provider.api_key:
         raise HTTPException(
@@ -120,12 +126,14 @@ async def refresh_all_codex_billing(
         try:
             r = await scrape_provider_into_snapshot(db, provider)
         except Exception as exc:  # noqa: BLE001 — one bad provider must not abort the sweep
-            results.append({
-                "provider_id": provider.id,
-                "provider_name": provider.name,
-                "ok": False,
-                "error": str(exc),
-            })
+            results.append(
+                {
+                    "provider_id": provider.id,
+                    "provider_name": provider.name,
+                    "ok": False,
+                    "error": str(exc),
+                }
+            )
             continue
         decision = (r.get("rotation_decision") or {}).get("decision")
         ok = bool(r.get("ok", False))
@@ -133,14 +141,16 @@ async def refresh_all_codex_billing(
             scraped_ok += 1
         if decision == "returned_to_service":
             returned_to_service += 1
-        results.append({
-            "provider_id": provider.id,
-            "provider_name": provider.name,
-            "ok": ok,
-            "auth_state": r.get("auth_state"),
-            "seven_day_utilization": r.get("seven_day_utilization"),
-            "rotation_decision": decision,
-        })
+        results.append(
+            {
+                "provider_id": provider.id,
+                "provider_name": provider.name,
+                "ok": ok,
+                "auth_state": r.get("auth_state"),
+                "seven_day_utilization": r.get("seven_day_utilization"),
+                "rotation_decision": decision,
+            }
+        )
     return {
         "providers": len(providers),
         "scraped_ok": scraped_ok,

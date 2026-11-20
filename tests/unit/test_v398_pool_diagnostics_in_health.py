@@ -5,6 +5,7 @@ SQLAlchemy QueuePool state was via ``sudo docker exec`` inside the
 container — surfacing it on /health closes that gap so operators can
 diagnose live pool state from the canonical URL.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -69,7 +70,8 @@ def test_health_cache_excludes_dbPool():
         rhs = node.comparators[0]
         if isinstance(rhs, (ast.Tuple, ast.List, ast.Set)):
             excluded |= {
-                e.value for e in rhs.elts
+                e.value
+                for e in rhs.elts
                 if isinstance(e, ast.Constant) and isinstance(e.value, str)
             }
 
@@ -86,6 +88,7 @@ def test_snapshot_function_runs_against_live_engine():
     """Smoke check: the helper produces a dict when called against
     the real configured engine."""
     from app.api.cluster import _db_pool_snapshot
+
     snap = _db_pool_snapshot()
     assert isinstance(snap, dict)
     # Either the function returned a real snapshot OR an error key —

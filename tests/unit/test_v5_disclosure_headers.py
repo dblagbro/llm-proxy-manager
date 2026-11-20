@@ -9,19 +9,18 @@ The full request handler is heavy to stand up; these tests exercise the
 header-building + audit-event-shape code directly via the compliance
 helpers (the integration surface the dispatchers call).
 """
+
 from __future__ import annotations
 
-import pytest
-
 from app.compliance import (
-    compliance_headers,
     build_disclosure_payload,
-    refusal_headers_ua,
+    compliance_headers,
+    generate_audit_id,
     refusal_headers_no_substitute,
-    wants_sse_prelude,
+    refusal_headers_ua,
     sse_prelude_anthropic,
     sse_prelude_openai_inject,
-    generate_audit_id,
+    wants_sse_prelude,
 )
 
 
@@ -36,9 +35,7 @@ def test_substitution_headers_carry_seven_fields():
         audit_id=audit_id,
     )
     assert headers["X-Compliance-Substitution"] == "true"
-    assert headers["X-Compliance-Substitution-Code"] == (
-        "api-key-policy:blocked-company:anthropic"
-    )
+    assert headers["X-Compliance-Substitution-Code"] == ("api-key-policy:blocked-company:anthropic")
     assert headers["X-Compliance-Requested-Model"] == "claude-haiku"
     assert headers["X-Compliance-Served-Model"] == "gpt-4o-mini"
     assert headers["X-Compliance-Served-Provider"] == "prov-openai-1"
@@ -135,6 +132,7 @@ def test_messages_py_calls_compliance_headers_helper():
     compliance_headers + build_disclosure_payload + emitting a
     model_substitution row) is asserted against the helper's source."""
     from pathlib import Path
+
     msg_src = Path("app/api/messages.py").read_text()
     helper_src = Path("app/api/_compliance_handler.py").read_text()
     assert "emit_substitution_disclosure_for_route(" in msg_src
@@ -146,6 +144,7 @@ def test_messages_py_calls_compliance_headers_helper():
 def test_completions_py_calls_compliance_headers_helper():
     """Mirror of messages.py — same v5.0.9 extraction."""
     from pathlib import Path
+
     cmp_src = Path("app/api/completions.py").read_text()
     helper_src = Path("app/api/_compliance_handler.py").read_text()
     assert "emit_substitution_disclosure_for_route(" in cmp_src
@@ -156,6 +155,7 @@ def test_completions_py_calls_compliance_headers_helper():
 
 def test_messages_streaming_threads_compliance_into_stream_anthropic():
     from pathlib import Path
+
     src = Path("app/api/_messages_streaming.py").read_text()
     assert "compliance_disclosure" in src
     assert "accept_compliance_events" in src
@@ -164,6 +164,7 @@ def test_messages_streaming_threads_compliance_into_stream_anthropic():
 
 def test_completions_streaming_threads_compliance_into_stream_openai():
     from pathlib import Path
+
     src = Path("app/api/_completions_streaming.py").read_text()
     assert "compliance_disclosure" in src
     assert "accept_compliance_events" in src
@@ -176,7 +177,9 @@ def test_record_outcome_accepts_compliance_kwargs():
     blocked_company / served_company as keyword args + propagate them
     into _build_event_meta_base."""
     import inspect
-    from app.monitoring.helpers import record_outcome, _build_event_meta_base
+
+    from app.monitoring.helpers import _build_event_meta_base, record_outcome
+
     rs = inspect.signature(record_outcome)
     assert "compliance_substituted" in rs.parameters
     assert "blocked_company" in rs.parameters
@@ -191,6 +194,7 @@ def test_event_meta_includes_compliance_block_when_substituted():
     """When compliance_substituted=True, _build_event_meta_base emits a
     ``compliance`` sub-dict with the three fields."""
     from app.monitoring.helpers import _build_event_meta_base
+
     meta = _build_event_meta_base(
         model="openai/gpt-4o-mini",
         provider_name="openai-1",
@@ -214,6 +218,7 @@ def test_event_meta_includes_compliance_block_when_substituted():
 def test_event_meta_omits_compliance_block_when_not_substituted():
     """No compliance sub-dict on requests that weren't substituted."""
     from app.monitoring.helpers import _build_event_meta_base
+
     meta = _build_event_meta_base(
         model="openai/gpt-4o",
         provider_name="openai-1",

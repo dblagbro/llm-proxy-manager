@@ -13,14 +13,17 @@ Conflict). All state is data — this module touches no DB, no asyncio,
 no clock; ``deadline_ts`` is compared against an injected ``now`` so
 tests are deterministic.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Optional
+from enum import Enum, StrEnum
 
 
-class RunStatus(str, Enum):
+class RunStatus(StrEnum):
+    __str__ = Enum.__str__
+    __format__ = Enum.__format__
+
     QUEUED = "queued"
     RUNNING = "running"
     REQUIRES_TOOL = "requires_tool"
@@ -32,34 +35,44 @@ class RunStatus(str, Enum):
     @property
     def terminal(self) -> bool:
         return self in (
-            RunStatus.COMPLETED, RunStatus.FAILED,
-            RunStatus.EXPIRED, RunStatus.CANCELLED,
+            RunStatus.COMPLETED,
+            RunStatus.FAILED,
+            RunStatus.EXPIRED,
+            RunStatus.CANCELLED,
         )
 
 
-class ErrorKind(str, Enum):
+class ErrorKind(StrEnum):
     """Maps to ``error.kind`` on the ``failed`` event payload (spec)."""
-    PROVIDER = "error_provider"            # all providers exhausted
+
+    __str__ = Enum.__str__
+    __format__ = Enum.__format__
+
+    PROVIDER = "error_provider"  # all providers exhausted
     TOOL_LOOP_EXCEEDED = "tool_loop_exceeded"
     CONTEXT_EXHAUSTED = "context_exhausted"
-    BAD_REQUEST = "bad_request"            # validation failure mid-run
-    INTERNAL = "internal"                  # unexpected; preserve detail
+    BAD_REQUEST = "bad_request"  # validation failure mid-run
+    INTERNAL = "internal"  # unexpected; preserve detail
 
 
-class EventKind(str, Enum):
+class EventKind(StrEnum):
     """Inputs that drive the FSM. Maps roughly to spec B.6 events but
     these are the *internal* event-types the worker posts at the FSM;
     the wire-event names are derived (see app/runs/events.py in R4)."""
-    START = "start"                              # queued → running
+
+    __str__ = Enum.__str__
+    __format__ = Enum.__format__
+
+    START = "start"  # queued → running
     MODEL_RETURNED_TEXT = "model_returned_text"  # running → completed (terminal text)
     MODEL_RETURNED_TOOL = "model_returned_tool"  # running → requires_tool
-    TOOL_RESULT = "tool_result"                  # requires_tool → running
-    PROVIDER_EXHAUSTED = "provider_exhausted"    # running → failed (kind=PROVIDER)
-    MAX_TURNS_HIT = "max_turns_hit"              # running → failed (kind=TOOL_LOOP_EXCEEDED)
-    CONTEXT_EXHAUSTED = "context_exhausted"      # running → failed (kind=CONTEXT_EXHAUSTED)
-    INTERNAL_ERROR = "internal_error"            # any non-terminal → failed (kind=INTERNAL)
-    DEADLINE_EXCEEDED = "deadline_exceeded"      # any non-terminal → expired
-    CANCEL = "cancel"                            # any non-terminal → cancelled
+    TOOL_RESULT = "tool_result"  # requires_tool → running
+    PROVIDER_EXHAUSTED = "provider_exhausted"  # running → failed (kind=PROVIDER)
+    MAX_TURNS_HIT = "max_turns_hit"  # running → failed (kind=TOOL_LOOP_EXCEEDED)
+    CONTEXT_EXHAUSTED = "context_exhausted"  # running → failed (kind=CONTEXT_EXHAUSTED)
+    INTERNAL_ERROR = "internal_error"  # any non-terminal → failed (kind=INTERNAL)
+    DEADLINE_EXCEEDED = "deadline_exceeded"  # any non-terminal → expired
+    CANCEL = "cancel"  # any non-terminal → cancelled
 
 
 class InvalidTransition(Exception):
@@ -68,6 +81,7 @@ class InvalidTransition(Exception):
     The API layer translates this into HTTP 409 Conflict per spec
     "Failure modes the proxy team must handle".
     """
+
     def __init__(self, state: RunStatus, event: EventKind, reason: str = ""):
         self.state = state
         self.event = event
@@ -85,22 +99,24 @@ class RunCtx:
     The persistence layer (R2) reads/writes the full Run row; the FSM
     only needs these fields.
     """
+
     status: RunStatus
     deadline_ts: float
     max_turns: int
-    turns_used: int = 0           # how many user/tool→model round-trips so far
-    error_kind: Optional[ErrorKind] = None
-    error_message: Optional[str] = None
+    turns_used: int = 0  # how many user/tool→model round-trips so far
+    error_kind: ErrorKind | None = None
+    error_message: str | None = None
 
 
 @dataclass
 class Transition:
     """Result of an FSM step: new state + (optional) error metadata that
     must be persisted alongside the status change."""
+
     status: RunStatus
     turns_used: int
-    error_kind: Optional[ErrorKind] = None
-    error_message: Optional[str] = None
+    error_kind: ErrorKind | None = None
+    error_message: str | None = None
     extra: dict = field(default_factory=dict)
 
 
@@ -133,7 +149,8 @@ def _model_tool(ctx: RunCtx, now: float, _data: dict) -> Transition:
         # Model wants another tool but we've exhausted the budget.
         # Spec: kind=tool_loop_exceeded; preserve final tool_use unsent.
         return Transition(
-            RunStatus.FAILED, new_turns,
+            RunStatus.FAILED,
+            new_turns,
             error_kind=ErrorKind.TOOL_LOOP_EXCEEDED,
             error_message=f"max_turns={ctx.max_turns} reached",
         )
@@ -143,7 +160,8 @@ def _model_tool(ctx: RunCtx, now: float, _data: dict) -> Transition:
 def _tool_result(ctx: RunCtx, now: float, _data: dict) -> Transition:
     if ctx.status is not RunStatus.REQUIRES_TOOL:
         raise InvalidTransition(
-            ctx.status, EventKind.TOOL_RESULT,
+            ctx.status,
+            EventKind.TOOL_RESULT,
             "run is not awaiting a tool result",
         )
     if now >= ctx.deadline_ts:
@@ -155,7 +173,8 @@ def _provider_exhausted(ctx: RunCtx, _now: float, data: dict) -> Transition:
     if ctx.status not in (RunStatus.RUNNING, RunStatus.REQUIRES_TOOL):
         raise InvalidTransition(ctx.status, EventKind.PROVIDER_EXHAUSTED)
     return Transition(
-        RunStatus.FAILED, ctx.turns_used,
+        RunStatus.FAILED,
+        ctx.turns_used,
         error_kind=ErrorKind.PROVIDER,
         error_message=data.get("detail") or "all providers exhausted",
     )
@@ -165,7 +184,8 @@ def _max_turns(ctx: RunCtx, _now: float, _data: dict) -> Transition:
     if ctx.status is not RunStatus.RUNNING:
         raise InvalidTransition(ctx.status, EventKind.MAX_TURNS_HIT)
     return Transition(
-        RunStatus.FAILED, ctx.turns_used,
+        RunStatus.FAILED,
+        ctx.turns_used,
         error_kind=ErrorKind.TOOL_LOOP_EXCEEDED,
         error_message=f"max_turns={ctx.max_turns} reached",
     )
@@ -175,7 +195,8 @@ def _context_exhausted(ctx: RunCtx, _now: float, _data: dict) -> Transition:
     if ctx.status not in (RunStatus.RUNNING, RunStatus.REQUIRES_TOOL):
         raise InvalidTransition(ctx.status, EventKind.CONTEXT_EXHAUSTED)
     return Transition(
-        RunStatus.FAILED, ctx.turns_used,
+        RunStatus.FAILED,
+        ctx.turns_used,
         error_kind=ErrorKind.CONTEXT_EXHAUSTED,
         error_message="context window exceeded even after compaction",
     )
@@ -185,7 +206,8 @@ def _internal(ctx: RunCtx, _now: float, data: dict) -> Transition:
     if ctx.status.terminal:
         raise InvalidTransition(ctx.status, EventKind.INTERNAL_ERROR)
     return Transition(
-        RunStatus.FAILED, ctx.turns_used,
+        RunStatus.FAILED,
+        ctx.turns_used,
         error_kind=ErrorKind.INTERNAL,
         error_message=data.get("detail") or "internal error",
     )
@@ -205,9 +227,9 @@ def _cancel(ctx: RunCtx, _now: float, _data: dict) -> Transition:
         return Transition(RunStatus.CANCELLED, ctx.turns_used)
     if ctx.status.terminal:
         # Already done; don't fight it. API returns the existing state.
-        return Transition(ctx.status, ctx.turns_used,
-                          error_kind=ctx.error_kind,
-                          error_message=ctx.error_message)
+        return Transition(
+            ctx.status, ctx.turns_used, error_kind=ctx.error_kind, error_message=ctx.error_message
+        )
     return Transition(RunStatus.CANCELLED, ctx.turns_used)
 
 
@@ -225,7 +247,7 @@ _HANDLERS = {
 }
 
 
-def advance(ctx: RunCtx, event: EventKind, now: float, data: Optional[dict] = None) -> Transition:
+def advance(ctx: RunCtx, event: EventKind, now: float, data: dict | None = None) -> Transition:
     """Compute the next state for ``ctx`` given an incoming ``event``.
 
     Raises ``InvalidTransition`` for illegal combinations. Pure: no IO,
@@ -239,6 +261,7 @@ def advance(ctx: RunCtx, event: EventKind, now: float, data: Optional[dict] = No
 
 
 # ── Helpers callers (API layer + worker) need ────────────────────────────────
+
 
 def clamp_max_turns(requested: int, default_ceiling: int, hard_ceiling: int) -> tuple[int, bool]:
     """Apply Q6 lock-in: default ceiling 50, hard ceiling 200.

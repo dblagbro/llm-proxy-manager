@@ -9,6 +9,7 @@ Two paths converge here:
 These guard against a class of regression where adding a new provider
 type silently drops the family filter and grok-web becomes invisible.
 """
+
 from __future__ import annotations
 
 from app.routing.router import (
@@ -16,7 +17,6 @@ from app.routing.router import (
     PROVIDER_TYPE_TO_LITELLM,
     _model_family_provider_types,
 )
-
 
 # ── Family filter ──────────────────────────────────────────────────────
 
@@ -29,7 +29,7 @@ def test_xai_slug_includes_grok_web_family():
     fam = _model_family_provider_types("x-ai/grok-4")
     assert fam is not None
     assert "grok-web" in fam
-    assert "grok" in fam      # paid xAI API
+    assert "grok" in fam  # paid xAI API
     assert "openrouter" in fam  # OpenRouter passthrough
 
 

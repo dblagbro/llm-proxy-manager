@@ -38,9 +38,8 @@ Semantics:
   - Audit row per blocked request: ``compliance_events`` with
     ``reason_code='llm-emergency-stop'``.
 """
-from __future__ import annotations
 
-from typing import Optional
+from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -88,7 +87,10 @@ class LLMEmergencyStopError(Exception):
     the emergency stop is engaged. Carries no upstream context — by
     design, no upstream call was attempted.
     """
-    def __init__(self, message: str = "LLM routing is halted by operator (emergency stop engaged)."):
+
+    def __init__(
+        self, message: str = "LLM routing is halted by operator (emergency stop engaged)."
+    ):
         super().__init__(message)
         self.message = message
 
@@ -97,7 +99,7 @@ async def set_llm_stopped(
     db: AsyncSession,
     enabled: bool,
     actor: str,
-    reason: Optional[str] = None,
+    reason: str | None = None,
 ) -> dict:
     """Flip the persistent setting + write a CompliancePolicyChange
     audit row + invalidate the cache. Returns a status dict.

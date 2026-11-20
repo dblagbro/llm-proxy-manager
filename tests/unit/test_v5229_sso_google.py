@@ -11,6 +11,7 @@ these tests pin the checks that stop it being an authentication bypass:
   * a provisioned user gets an unusable local password
   * /config leaks nothing beyond a boolean + label
 """
+
 import sys
 import time
 import types
@@ -35,10 +36,14 @@ def _jwt(payload: dict) -> str:
 
 
 CFG = {
-    "enabled": True, "issuer": "https://accounts.google.com",
-    "client_id": "cid", "client_secret": "csec",
+    "enabled": True,
+    "issuer": "https://accounts.google.com",
+    "client_id": "cid",
+    "client_secret": "csec",
     "redirect_uri": "https://x/llm-proxy2/api/auth/sso/callback",
-    "default_role": "user", "allowed_domains": [], "auto_provision": False,
+    "default_role": "user",
+    "allowed_domains": [],
+    "auto_provision": False,
 }
 
 
@@ -99,14 +104,19 @@ def _isolate(monkeypatch):
 def _arm(nonce="N", verifier="V", age=0.0):
     """Put a pending state in place as /start would have."""
     auth_sso._pending["S"] = {
-        "nonce": nonce, "verifier": verifier, "created_at": time.time() - age,
+        "nonce": nonce,
+        "verifier": verifier,
+        "created_at": time.time() - age,
     }
 
 
 def _token_response(monkeypatch, claims, status=200):
     payload = {
-        "iss": "https://accounts.google.com", "aud": "cid",
-        "exp": time.time() + 600, "nonce": "N", "email_verified": True,
+        "iss": "https://accounts.google.com",
+        "aud": "cid",
+        "exp": time.time() + 600,
+        "nonce": "N",
+        "email_verified": True,
     }
     payload.update(claims)
 
@@ -132,9 +142,12 @@ def _token_response(monkeypatch, claims, status=200):
 
 async def _callback(db, **kw):
     return await auth_sso.sso_callback(
-        _FakeRequest(), _FakeResponse(),
-        code=kw.get("code", "abc"), state=kw.get("state", "S"),
-        error=kw.get("error"), db=db,
+        _FakeRequest(),
+        _FakeResponse(),
+        code=kw.get("code", "abc"),
+        state=kw.get("state", "S"),
+        error=kw.get("error"),
+        db=db,
     )
 
 
@@ -162,8 +175,17 @@ class TestStateHandling:
     async def test_state_is_single_use(self, monkeypatch):
         _arm()
         _token_response(monkeypatch, {"email": "known@x.com"})
-        await _callback(_FakeDB([[types.SimpleNamespace(
-            id="u1", username="known", role="admin", email="known@x.com")]]))
+        await _callback(
+            _FakeDB(
+                [
+                    [
+                        types.SimpleNamespace(
+                            id="u1", username="known", role="admin", email="known@x.com"
+                        )
+                    ]
+                ]
+            )
+        )
         # replaying the same state must not mint a second session
         r2 = await _callback(_FakeDB())
         assert _redirect_reason(r2) == "expired"
@@ -228,8 +250,7 @@ class TestEmailPolicy:
 
     @pytest.mark.asyncio
     async def test_domain_allow_list_enforced(self, monkeypatch):
-        monkeypatch.setattr(auth_sso, "_cfg",
-                            lambda: dict(CFG, allowed_domains=["voipguru.org"]))
+        monkeypatch.setattr(auth_sso, "_cfg", lambda: dict(CFG, allowed_domains=["voipguru.org"]))
         _arm()
         _token_response(monkeypatch, {"email": "someone@gmail.com"})
         assert _redirect_reason(await _callback(_FakeDB())) == "domain"
@@ -240,15 +261,14 @@ class TestAccountBinding:
     async def test_unknown_account_refused_when_autoprovision_off(self, monkeypatch):
         _arm()
         _token_response(monkeypatch, {"email": "nobody@x.com"})
-        db = _FakeDB([[], []])          # no email match, no username match
+        db = _FakeDB([[], []])  # no email match, no username match
         assert _redirect_reason(await _callback(db)) == "no_account"
         assert db.added == [], "must not create an account"
 
     @pytest.mark.asyncio
     async def test_autoprovision_creates_user_with_unusable_password(self, monkeypatch):
         monkeypatch.setattr(auth_sso, "_cfg", lambda: dict(CFG, auto_provision=True))
-        monkeypatch.setattr(auth_sso, "create_session",
-                            lambda *_a, **_k: _async_value("tok"))
+        monkeypatch.setattr(auth_sso, "create_session", lambda *_a, **_k: _async_value("tok"))
         _arm()
         _token_response(monkeypatch, {"email": "new@x.com"})
         db = _FakeDB([[], []])
@@ -261,12 +281,10 @@ class TestAccountBinding:
 
     @pytest.mark.asyncio
     async def test_existing_user_matched_by_email(self, monkeypatch):
-        monkeypatch.setattr(auth_sso, "create_session",
-                            lambda *_a, **_k: _async_value("tok"))
+        monkeypatch.setattr(auth_sso, "create_session", lambda *_a, **_k: _async_value("tok"))
         _arm()
         _token_response(monkeypatch, {"email": "known@x.com"})
-        user = types.SimpleNamespace(id="u1", username="known", role="admin",
-                                     email="known@x.com")
+        user = types.SimpleNamespace(id="u1", username="known", role="admin", email="known@x.com")
         db = _FakeDB([[user]])
         resp = await _callback(db)
         assert "sso_error" not in resp.headers["location"]
@@ -276,26 +294,27 @@ class TestAccountBinding:
 def _async_value(v):
     async def _c():
         return v
+
     return _c()
 
 
 class TestWiring:
     def test_routes_registered(self):
         paths = {r.path for r in auth_sso.router.routes}
-        assert {"/api/auth/sso/config", "/api/auth/sso/start",
-                "/api/auth/sso/callback"} <= paths
+        assert {"/api/auth/sso/config", "/api/auth/sso/start", "/api/auth/sso/callback"} <= paths
 
     def test_sso_paths_bypass_the_allowed_paths_gate(self):
         from app.middleware.allowed_paths import _is_bypass_path
+
         assert _is_bypass_path("/api/auth/sso/start")
         assert _is_bypass_path("/api/auth/sso/callback")
 
     def test_auto_provision_defaults_off(self):
         from app.config import settings
-        assert settings.sso_auto_provision is False, (
-            "silent account creation must be opt-in"
-        )
+
+        assert settings.sso_auto_provision is False, "silent account creation must be opt-in"
 
     def test_disabled_by_default(self):
         from app.config import settings
+
         assert settings.sso_enabled is False

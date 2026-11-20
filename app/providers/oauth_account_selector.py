@@ -34,11 +34,11 @@ provider has at least one account row, but the legacy fallback is
 kept as belt-and-braces so a stale-cache or migration-skipped provider
 doesn't break dispatch.
 """
+
 from __future__ import annotations
 
 import logging
 import time
-from typing import Optional, Tuple
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,11 +48,13 @@ from app.models.db import Provider, ProviderOAuthAccount
 
 logger = logging.getLogger(__name__)
 
-VALID_STRATEGIES = frozenset({
-    "least_utilized",
-    "round_robin",
-    "least_recently_used",
-})
+VALID_STRATEGIES = frozenset(
+    {
+        "least_utilized",
+        "round_robin",
+        "least_recently_used",
+    }
+)
 
 
 def resolve_strategy(provider: Provider) -> str:
@@ -63,14 +65,18 @@ def resolve_strategy(provider: Provider) -> str:
     if s and s in VALID_STRATEGIES:
         return s
     default = getattr(
-        settings, "oauth_account_default_strategy", "least_utilized",
+        settings,
+        "oauth_account_default_strategy",
+        "least_utilized",
     )
     return default if default in VALID_STRATEGIES else "least_utilized"
 
 
 async def _pick_by_strategy(
-    db: AsyncSession, provider_id: str, strategy: str,
-) -> Optional[ProviderOAuthAccount]:
+    db: AsyncSession,
+    provider_id: str,
+    strategy: str,
+) -> ProviderOAuthAccount | None:
     """Return the account to use, or None if no enabled accounts exist.
     NEVER returns a deleted account; NEVER returns a disabled account."""
     q = select(ProviderOAuthAccount).where(
@@ -98,7 +104,8 @@ async def _pick_by_strategy(
 
 
 async def _touch_last_used(
-    db: AsyncSession, account_id: str,
+    db: AsyncSession,
+    account_id: str,
 ) -> None:
     """Fire-and-forget UPDATE of last_used_at. Swallowed on failure
     (metric-shaped write, dispatch must not fail on a metric write)."""
@@ -113,31 +120,36 @@ async def _touch_last_used(
     except Exception as e:
         logger.debug(
             "oauth_account_selector.touch_last_used_failed account=%s err=%s",
-            account_id, e,
+            account_id,
+            e,
         )
 
 
-_OAUTH_PROVIDER_TYPES = frozenset({
-    "cursor-oauth",
-    # v5.22.30 — BOTH spellings. v3.8.0 renamed codex-oauth ->
-    # ChatGPT-oauth-plan but never updated this set, so every
-    # ChatGPT-oauth-plan provider silently fell outside the per-account OAuth
-    # machinery: the seeder created no ProviderOAuthAccount rows for it and the
-    # selector never rotated it. `codex-oauth` is kept for any legacy row that
-    # predates the rename; `_oauth_accounts_health.py` already listed both,
-    # which is what made the inconsistency visible.
-    #
-    # test_v380_codex_oauth_rename had been reporting this the whole time and
-    # was parked in known_failures.txt, so nobody read it.
-    "codex-oauth",
-    "ChatGPT-oauth-plan",
-    "claude-oauth",
-})
+_OAUTH_PROVIDER_TYPES = frozenset(
+    {
+        "cursor-oauth",
+        # v5.22.30 — BOTH spellings. v3.8.0 renamed codex-oauth ->
+        # ChatGPT-oauth-plan but never updated this set, so every
+        # ChatGPT-oauth-plan provider silently fell outside the per-account OAuth
+        # machinery: the seeder created no ProviderOAuthAccount rows for it and the
+        # selector never rotated it. `codex-oauth` is kept for any legacy row that
+        # predates the rename; `_oauth_accounts_health.py` already listed both,
+        # which is what made the inconsistency visible.
+        #
+        # test_v380_codex_oauth_rename had been reporting this the whole time and
+        # was parked in known_failures.txt, so nobody read it.
+        "codex-oauth",
+        "ChatGPT-oauth-plan",
+        "claude-oauth",
+    }
+)
 
 
 async def apply_fanout_to_kwargs(
-    kwargs: dict, provider: Provider, db: AsyncSession,
-) -> Optional[str]:
+    kwargs: dict,
+    provider: Provider,
+    db: AsyncSession,
+) -> str | None:
     """Mutate ``kwargs['api_key']`` in-place if the provider is an OAuth
     type AND has enabled accounts AND fan-out is enabled. Returns the
     ``account_id`` used (or ``None`` if legacy fallback was taken).
@@ -161,8 +173,9 @@ async def apply_fanout_to_kwargs(
 
 
 async def resolve_access_token(
-    provider: Provider, db: AsyncSession,
-) -> Tuple[str, Optional[str]]:
+    provider: Provider,
+    db: AsyncSession,
+) -> tuple[str, str | None]:
     """Return ``(access_token, account_id)`` for a dispatch call.
 
     - When fan-out is disabled OR no enabled accounts exist → returns

@@ -20,13 +20,13 @@ its own /v1/messages endpoint, mirroring the v3.7.10 AI rate limiter
 pattern. X-Internal-Source header tags the request so its own
 activity log row is filterable.
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
 import random
-from typing import Optional
 
 import httpx
 
@@ -34,21 +34,23 @@ logger = logging.getLogger(__name__)
 
 WARMUP_DELAY_SEC = 120
 _STARTUP_JITTER_MAX_SEC = 60.0
-_TASK: Optional[asyncio.Task] = None
+_TASK: asyncio.Task | None = None
 
 # Standard probe payload. Tool is small + unambiguous so we can
 # verify the model called it correctly via simple JSON inspection.
-_PROBE_TOOLS = [{
-    "name": "get_weather",
-    "description": "Get the current weather for a city.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "city": {"type": "string", "description": "City name"},
+_PROBE_TOOLS = [
+    {
+        "name": "get_weather",
+        "description": "Get the current weather for a city.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "city": {"type": "string", "description": "City name"},
+            },
+            "required": ["city"],
         },
-        "required": ["city"],
-    },
-}]
+    }
+]
 
 _PROBE_USER_MESSAGE = "What's the weather in San Francisco right now?"
 _PROBE_EXPECTED_TOOL = "get_weather"
@@ -58,6 +60,7 @@ _PROBE_EXPECTED_ARG_KEY = "city"
 def _enabled() -> bool:
     try:
         from app.config import settings
+
         return bool(getattr(settings, "ai_tool_prober_enabled", False))
     except Exception:
         return False
@@ -66,6 +69,7 @@ def _enabled() -> bool:
 def _interval_sec() -> int:
     try:
         from app.config import settings
+
         return int(getattr(settings, "ai_tool_prober_interval_sec", 86400))
     except Exception:
         return 86400
@@ -74,6 +78,7 @@ def _interval_sec() -> int:
 def _native_threshold() -> float:
     try:
         from app.config import settings
+
         return float(getattr(settings, "ai_tool_prober_native_threshold", 0.8))
     except Exception:
         return 0.8
@@ -82,6 +87,7 @@ def _native_threshold() -> float:
 def _emulate_threshold() -> float:
     try:
         from app.config import settings
+
         return float(getattr(settings, "ai_tool_prober_emulate_threshold", 0.6))
     except Exception:
         return 0.6
@@ -90,6 +96,7 @@ def _emulate_threshold() -> float:
 def _success_window() -> int:
     try:
         from app.config import settings
+
         return int(getattr(settings, "ai_tool_prober_success_window", 5))
     except Exception:
         return 5
@@ -119,7 +126,9 @@ def evaluate_probe_response(body: dict) -> tuple[bool, bool, bool]:
     b = matching[0]
     args = b.get("input")
     parseable = isinstance(args, dict)
-    correct_args = parseable and _PROBE_EXPECTED_ARG_KEY in args and bool(args[_PROBE_EXPECTED_ARG_KEY])
+    correct_args = (
+        parseable and _PROBE_EXPECTED_ARG_KEY in args and bool(args[_PROBE_EXPECTED_ARG_KEY])
+    )
     return called, parseable, correct_args
 
 
@@ -134,9 +143,9 @@ async def probe_one_model(db, provider, model_id: str) -> dict:
     if not api_key:
         return {"ok": False, "reason": "no_internal_api_key"}
 
-    excerpt: Optional[str] = None
-    error_text: Optional[str] = None
-    response_format: Optional[str] = None
+    excerpt: str | None = None
+    error_text: str | None = None
+    response_format: str | None = None
     called = parseable = correct_args = False
 
     try:
@@ -195,7 +204,7 @@ async def probe_one_model(db, provider, model_id: str) -> dict:
     }
 
 
-async def update_native_tools_from_rolling(db, provider_id: str, model_id: str) -> Optional[bool]:
+async def update_native_tools_from_rolling(db, provider_id: str, model_id: str) -> bool | None:
     """Inspect the last N probes for this (provider, model) and apply
     hysteresis to ModelCapability.native_tools. Returns the new value
     if changed, None if untouched.
@@ -204,17 +213,20 @@ async def update_native_tools_from_rolling(db, provider_id: str, model_id: str) 
     alone isn't enough — model might have called the WRONG tool or
     passed bad args.
     """
-    from sqlalchemy import select, desc, update
-    from app.models.db import ModelToolProbe, ModelCapability
+    from sqlalchemy import desc, select
+
+    from app.models.db import ModelCapability, ModelToolProbe
 
     window = _success_window()
-    rs = (await db.execute(
-        select(ModelToolProbe.correct_args)
-        .where(ModelToolProbe.provider_id == provider_id)
-        .where(ModelToolProbe.model_id == model_id)
-        .order_by(desc(ModelToolProbe.captured_at))
-        .limit(window)
-    )).all()
+    rs = (
+        await db.execute(
+            select(ModelToolProbe.correct_args)
+            .where(ModelToolProbe.provider_id == provider_id)
+            .where(ModelToolProbe.model_id == model_id)
+            .order_by(desc(ModelToolProbe.captured_at))
+            .limit(window)
+        )
+    ).all()
     if len(rs) < window:
         # Not enough samples yet for a stable decision
         return None
@@ -224,7 +236,7 @@ async def update_native_tools_from_rolling(db, provider_id: str, model_id: str) 
     native_thr = _native_threshold()
     emul_thr = _emulate_threshold()
 
-    new_val: Optional[bool] = None
+    new_val: bool | None = None
     if rate >= native_thr:
         new_val = True
     elif rate < emul_thr:
@@ -233,11 +245,17 @@ async def update_native_tools_from_rolling(db, provider_id: str, model_id: str) 
     # v3.8.5 (#265): ALWAYS update tool_call_success_rate so the router
     # can weight candidates regardless of whether native_tools flipped.
     # The bool is hysteresis-gated; the rate is monotonic per probe.
-    cap_rs = (await db.execute(
-        select(ModelCapability)
-        .where(ModelCapability.provider_id == provider_id)
-        .where(ModelCapability.model_id == model_id)
-    )).scalars().all()
+    cap_rs = (
+        (
+            await db.execute(
+                select(ModelCapability)
+                .where(ModelCapability.provider_id == provider_id)
+                .where(ModelCapability.model_id == model_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     bool_changed = False
     for cap in cap_rs:
         cap.tool_call_success_rate = float(rate)
@@ -249,7 +267,10 @@ async def update_native_tools_from_rolling(db, provider_id: str, model_id: str) 
     if bool_changed and new_val is not None:
         logger.info(
             "ai_tool_prober.native_tools_changed provider_id=%s model=%s rate=%.2f new=%s",
-            provider_id, model_id, rate, new_val,
+            provider_id,
+            model_id,
+            rate,
+            new_val,
         )
         return new_val
     return None
@@ -258,16 +279,23 @@ async def update_native_tools_from_rolling(db, provider_id: str, model_id: str) 
 async def _probe_loop_once() -> dict:
     """One sweep: probe every enabled provider's default_model."""
     from sqlalchemy import select
+
     from app.models.database import AsyncSessionLocal
     from app.models.db import Provider
 
     out = {"probed": 0, "skipped": 0, "updates": 0}
     async with AsyncSessionLocal() as db:
-        rs = (await db.execute(
-            select(Provider)
-            .where(Provider.enabled == True)  # noqa: E712
-            .where(Provider.deleted_at.is_(None))
-        )).scalars().all()
+        rs = (
+            (
+                await db.execute(
+                    select(Provider)
+                    .where(Provider.enabled == True)  # noqa: E712
+                    .where(Provider.deleted_at.is_(None))
+                )
+            )
+            .scalars()
+            .all()
+        )
         for p in rs:
             model = p.default_model
             if not model:
@@ -285,7 +313,9 @@ async def _probe_loop_once() -> dict:
             except Exception as e:
                 logger.warning(
                     "ai_tool_prober.probe_crashed provider=%s model=%s err=%s",
-                    p.name, model, e,
+                    p.name,
+                    model,
+                    e,
                 )
                 out["skipped"] += 1
     return out
@@ -293,6 +323,7 @@ async def _probe_loop_once() -> dict:
 
 async def _scan_loop() -> None:
     from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+
     hb = WorkerHeartbeat(name="tool_capability_prober")
     jitter = random.uniform(0.0, _STARTUP_JITTER_MAX_SEC)
     await asyncio.sleep(WARMUP_DELAY_SEC + jitter)
@@ -307,11 +338,13 @@ async def _scan_loop() -> None:
             if any(counts.values()):
                 logger.info(
                     "ai_tool_prober.swept probed=%d skipped=%d native_tools_updates=%d",
-                    counts["probed"], counts["skipped"], counts["updates"],
+                    counts["probed"],
+                    counts["skipped"],
+                    counts["updates"],
                 )
             await hb.tick(
                 status="ok",
-                note=f"probed={counts.get('probed',0)} skipped={counts.get('skipped',0)}",
+                note=f"probed={counts.get('probed', 0)} skipped={counts.get('skipped', 0)}",
             )
         except Exception as e:
             logger.warning("ai_tool_prober.sweep_failed err=%s", e)

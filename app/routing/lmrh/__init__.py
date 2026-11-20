@@ -19,29 +19,60 @@ Public imports remain unchanged:
 
 Nothing outside this package should reach into the submodules directly.
 """
-from app.routing.lmrh.types import (
-    HintDimension, LMRHHint, CapabilityProfile,
-    WEIGHTS, TASK_ALIASES, LATENCY_RANK, COST_RANK,
-    _REFUSAL_RATE_TO_SAFETY_CEIL, _REFUSAL_RATE_TO_SAFETY_FLOOR,
+
+from app.routing.lmrh.headers import (
+    build_capability_header,
+    build_hint_set_header,
 )
 from app.routing.lmrh.parse import (
-    parse_hint, _parse_hint_legacy, _parse_hint_rfc8941, _coerce_sfv_value,
+    _coerce_sfv_value as _coerce_sfv_value,
+)
+from app.routing.lmrh.parse import (
+    _parse_hint_legacy as _parse_hint_legacy,
+)
+from app.routing.lmrh.parse import (
+    _parse_hint_rfc8941 as _parse_hint_rfc8941,
+)
+from app.routing.lmrh.parse import (
+    parse_hint,
 )
 from app.routing.lmrh.score import (
-    score_candidate, rank_candidates, rank_candidates_with_scores,
+    rank_candidates,
+    rank_candidates_with_scores,
+    score_candidate,
 )
-from app.routing.lmrh.headers import (
-    build_hint_set_header, build_capability_header,
+from app.routing.lmrh.types import (
+    _REFUSAL_RATE_TO_SAFETY_CEIL as _REFUSAL_RATE_TO_SAFETY_CEIL,
+)
+from app.routing.lmrh.types import (
+    _REFUSAL_RATE_TO_SAFETY_FLOOR as _REFUSAL_RATE_TO_SAFETY_FLOOR,
+)
+from app.routing.lmrh.types import (
+    COST_RANK,
+    LATENCY_RANK,
+    TASK_ALIASES,
+    WEIGHTS,
+    CapabilityProfile,
+    HintDimension,
+    LMRHHint,
 )
 
 __all__ = [
     # types
-    "HintDimension", "LMRHHint", "CapabilityProfile",
-    "WEIGHTS", "TASK_ALIASES", "LATENCY_RANK", "COST_RANK",
+    "HintDimension",
+    "LMRHHint",
+    "CapabilityProfile",
+    "WEIGHTS",
+    "TASK_ALIASES",
+    "LATENCY_RANK",
+    "COST_RANK",
     # parser
     "parse_hint",
     # scoring
-    "score_candidate", "rank_candidates", "rank_candidates_with_scores",
+    "score_candidate",
+    "rank_candidates",
+    "rank_candidates_with_scores",
     # headers
-    "build_hint_set_header", "build_capability_header",
+    "build_hint_set_header",
+    "build_capability_header",
 ]

@@ -2,8 +2,7 @@
 
 Per-canonical-model GET + PUT for ``aliases`` / ``family`` / ``variant``.
 Designed against the OpenAPI spec at
-``docs/rfc/2026-05-model-identity-put-spec.md`` (locked with the
-coordinator-hub team 2026-05-09).
+``docs/rfc/2026-05-model-identity-put-spec.md``.
 
 Path: ``/api/llm/models/{model_id:path}``. The slash in ``model_id``
 is allowed (canonical names like ``x-ai/grok-3`` carry a vendor
@@ -21,9 +20,8 @@ Concurrency: ETag covers the merged state across all matching rows
 ETag; mismatch → 412 with the fresh ETag in the response so the
 caller can retry.
 """
-from __future__ import annotations
 
-from typing import Optional
+from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from fastapi.responses import JSONResponse
@@ -47,9 +45,10 @@ class ModelIdentityUpdate(BaseModel):
     GET first, so this is safe (the Hub sends back what it loaded
     + the operator's edits).
     """
-    aliases: Optional[list[str]] = None
-    family: Optional[str] = Field(default=None, min_length=1)
-    variant: Optional[str] = None
+
+    aliases: list[str] | None = None
+    family: str | None = Field(default=None, min_length=1)
+    variant: str | None = None
 
 
 def _validate_aliases(aliases: list[str], model_id: str) -> None:
@@ -123,7 +122,7 @@ async def _find_matching_rows(
     db: AsyncSession,
     model_id: str,
     *,
-    provider_id: Optional[str] = None,
+    provider_id: str | None = None,
 ) -> list[ModelCapability]:
     """Return all non-deleted ``ModelCapability`` rows whose
     canonical id OR any alias matches ``model_id`` (case-insensitive).
@@ -185,7 +184,7 @@ def _merged_identity(rows: list[ModelCapability], model_id: str) -> dict:
 async def get_model_identity(
     model_id: str,
     response: Response,
-    provider_id: Optional[str] = Query(default=None),
+    provider_id: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(require_catalog_auth),
 ):
@@ -208,8 +207,8 @@ async def update_model_identity(
     model_id: str,
     body: ModelIdentityUpdate,
     response: Response,
-    if_match: Optional[str] = Header(default=None, alias="If-Match"),
-    provider_id: Optional[str] = Query(default=None),
+    if_match: str | None = Header(default=None, alias="If-Match"),
+    provider_id: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(require_catalog_auth),
 ):
@@ -259,13 +258,14 @@ async def update_model_identity(
         _validate_aliases(body.aliases, model_id)
         own_ids = {r.id for r in rows}
         await _check_alias_collisions(
-            db, body.aliases,
+            db,
+            body.aliases,
             own_model_id=rows[0].model_id,
             own_row_ids=own_ids,
         )
 
     # Apply the update to every matching row
-    family_warning: Optional[str] = None
+    family_warning: str | None = None
     if body.family is not None and body.family not in KNOWN_FAMILIES:
         family_warning = (
             f'family "{body.family}" is not in the known set. Saved anyway — '

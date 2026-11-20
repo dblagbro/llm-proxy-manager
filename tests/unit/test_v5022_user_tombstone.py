@@ -17,6 +17,7 @@ Fix:
   - Cluster sync push includes deleted_at + last_user_edit_at
   - Cluster sync apply respects tombstones + LWW
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -25,12 +26,15 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import (
-    AsyncSession, async_sessionmaker, create_async_engine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
 )
 
 
 async def _fresh_db():
     from app.models.db import Base
+
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -42,10 +46,10 @@ async def _fresh_db():
 
 def test_user_model_has_tombstone_columns():
     from app.models.db import User
+
     cols = {c.name for c in User.__table__.columns}
     assert "deleted_at" in cols, (
-        "User.deleted_at missing — BUG-070 regression. Cluster sync "
-        "will resurrect deleted users."
+        "User.deleted_at missing — BUG-070 regression. Cluster sync will resurrect deleted users."
     )
     assert "last_user_edit_at" in cols, (
         "User.last_user_edit_at missing — LWW gate can't differentiate "
@@ -71,14 +75,12 @@ def test_sync_payload_includes_user_deleted_at():
     # Find the users serializer block
     users_block_start = src.find("users = [")
     assert users_block_start != -1
-    users_block = src[users_block_start:users_block_start + 1500]
+    users_block = src[users_block_start : users_block_start + 1500]
     assert "deleted_at" in users_block, (
-        "manager push payload no longer includes user.deleted_at — "
-        "peers can't learn about deletes."
+        "manager push payload no longer includes user.deleted_at — peers can't learn about deletes."
     )
     assert "last_user_edit_at" in users_block, (
-        "manager push payload no longer includes user.last_user_edit_at "
-        "— LWW gate has no input."
+        "manager push payload no longer includes user.last_user_edit_at — LWW gate has no input."
     )
 
 
@@ -89,14 +91,13 @@ def test_sync_apply_users_uses_lww_not_insert_if_missing():
     # Locate the users-merge section
     users_section_start = src.find('payload.get("users"')
     assert users_section_start != -1
-    users_section = src[users_section_start:users_section_start + 3500]
+    users_section = src[users_section_start : users_section_start + 3500]
     assert "deleted_at" in users_section, (
         "BUG-070 regression: users-merge in sync.py no longer reads "
         "deleted_at from incoming payload. Resurrection bug returns."
     )
     assert "last_user_edit_at" in users_section, (
-        "BUG-070 regression: users-merge no longer reads "
-        "last_user_edit_at. LWW gate gone."
+        "BUG-070 regression: users-merge no longer reads last_user_edit_at. LWW gate gone."
     )
 
 
@@ -106,6 +107,7 @@ def test_sync_apply_users_uses_lww_not_insert_if_missing():
 @pytest.mark.asyncio
 async def test_soft_delete_sets_tombstone_and_filters_from_list(monkeypatch):
     from app.models.db import User
+
     Session = await _fresh_db()
     async with Session() as db:
         u = User(id="u1", username="bob", password_hash="h", role="user")
@@ -118,9 +120,7 @@ async def test_soft_delete_sets_tombstone_and_filters_from_list(monkeypatch):
         await db.commit()
 
         # GET /api/users filter should now hide it
-        alive = (await db.execute(
-            select(User).where(User.deleted_at.is_(None))
-        )).scalars().all()
+        alive = (await db.execute(select(User).where(User.deleted_at.is_(None)))).scalars().all()
     assert alive == [], "tombstoned user should not appear in alive list"
 
 
@@ -132,19 +132,24 @@ async def test_incoming_tombstone_propagates_to_local_alive_row():
     """If a peer has a tombstoned row newer than our alive row, we
     must adopt the tombstone."""
     from app.models.db import User
+
     # We replicate the in-sync logic inline rather than calling
     # apply_sync (which expects HMAC + full payload + DB session).
     Session = await _fresh_db()
     async with Session() as db:
         # Local: alive user with edit-stamp=1000
-        db.add(User(id="u1", username="bob", password_hash="h",
-                    role="user", last_user_edit_at=1000.0))
+        db.add(
+            User(id="u1", username="bob", password_hash="h", role="user", last_user_edit_at=1000.0)
+        )
         await db.commit()
 
         # Simulate the LWW apply (extracted from sync.py for direct test)
         from datetime import datetime as _dt
+
         incoming = {
-            "id": "u1", "username": "bob", "password_hash": "h",
+            "id": "u1",
+            "username": "bob",
+            "password_hash": "h",
             "role": "user",
             "deleted_at": "2026-06-05T22:00:00",
             "last_user_edit_at": 2000.0,
@@ -162,8 +167,7 @@ async def test_incoming_tombstone_propagates_to_local_alive_row():
         rs2 = await db.execute(select(User).where(User.id == "u1"))
         row = rs2.scalar_one()
     assert row.deleted_at is not None, (
-        "Incoming tombstone with newer edit-stamp must override local "
-        "alive state."
+        "Incoming tombstone with newer edit-stamp must override local alive state."
     )
 
 
@@ -171,15 +175,26 @@ async def test_incoming_tombstone_propagates_to_local_alive_row():
 async def test_local_newer_edit_keeps_local_state():
     """If local edit-stamp is NEWER than peer's, local state wins."""
     from app.models.db import User
+
     Session = await _fresh_db()
     async with Session() as db:
-        db.add(User(id="u1", username="bob", password_hash="local",
-                    role="user", last_user_edit_at=3000.0))
+        db.add(
+            User(
+                id="u1",
+                username="bob",
+                password_hash="local",
+                role="user",
+                last_user_edit_at=3000.0,
+            )
+        )
         await db.commit()
         # Peer says: bob was deleted at edit-stamp=1000 (older)
         incoming = {
-            "id": "u1", "username": "bob", "password_hash": "peer",
-            "role": "user", "deleted_at": "2026-06-04T10:00:00",
+            "id": "u1",
+            "username": "bob",
+            "password_hash": "peer",
+            "role": "user",
+            "deleted_at": "2026-06-04T10:00:00",
             "last_user_edit_at": 1000.0,
         }
         rs = await db.execute(select(User).where(User.id == "u1"))
@@ -191,9 +206,7 @@ async def test_local_newer_edit_keeps_local_state():
 
         rs2 = await db.execute(select(User).where(User.id == "u1"))
         row = rs2.scalar_one()
-    assert row.deleted_at is None, (
-        "Local newer edit-stamp should reject older incoming tombstone."
-    )
+    assert row.deleted_at is None, "Local newer edit-stamp should reject older incoming tombstone."
 
 
 # ── Source pin: bulk_delete endpoint exists ─────────────────────────
@@ -204,9 +217,7 @@ def test_bulk_delete_endpoint_present():
     assert '@router.post("/bulk_delete")' in src, (
         "bulk_delete endpoint missing — UX feature regression."
     )
-    assert "live_admins" in src, (
-        "bulk_delete must guard against deleting the last live admin."
-    )
+    assert "live_admins" in src, "bulk_delete must guard against deleting the last live admin."
 
 
 def test_login_filters_tombstoned_users():

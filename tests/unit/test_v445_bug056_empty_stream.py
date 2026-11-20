@@ -22,6 +22,7 @@ pair. If real text or tool content was streamed, the existing in-loop logic
 emits `_start` already, and the end-of-loop emits `_stop`. If neither fired,
 emit a synthetic empty text block.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -29,7 +30,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
 
 # ── Source-level guards (cheap, fast) ─────────────────────────────
 
@@ -39,7 +39,7 @@ def test_bug056_empty_stream_fix_present_in_source():
     the main streaming loop."""
     src = Path("app/api/_messages_streaming.py").read_text()
     idx = src.index("async def _stream_anthropic(")
-    fn = src[idx:idx + 15000]
+    fn = src[idx : idx + 15000]
     # New BUG-056 block emits content_block_start for the empty case
     assert "BUG-056" in fn
     # The conditional checks both text_started and tool_started are False
@@ -56,15 +56,15 @@ def test_bug056_existing_content_path_still_emits_stop():
     preserve, just wrapped differently."""
     src = Path("app/api/_messages_streaming.py").read_text()
     idx = src.index("async def _stream_anthropic(")
-    fn = src[idx:idx + 15000]
+    fn = src[idx : idx + 15000]
     # After the BUG-056 block, the else branch must contain
     # content_block_stop emission (the non-empty case)
     bug056_idx = fn.index("BUG-056")
-    block = fn[bug056_idx:bug056_idx + 1500]
+    block = fn[bug056_idx : bug056_idx + 1500]
     assert "else:" in block
     # The else branch emits ONLY content_block_stop (start was already
     # emitted in-loop on first content)
-    after_else = block[block.index("else:"):block.index("if output_tokens")]
+    after_else = block[block.index("else:") : block.index("if output_tokens")]
     assert '"type":"content_block_stop"' in after_else
 
 
@@ -73,9 +73,12 @@ def test_bug056_existing_content_path_still_emits_stop():
 
 class _MockChunk:
     """Approximate the litellm ModelResponseStream shape."""
+
     def __init__(self, content=None, finish_reason=None):
         delta = SimpleNamespace(
-            content=content, tool_calls=None, role=None,
+            content=content,
+            tool_calls=None,
+            role=None,
         )
         choice = SimpleNamespace(delta=delta, finish_reason=finish_reason)
         self.choices = [choice]
@@ -86,22 +89,27 @@ async def _mock_acompletion_empty_stream(*args, **kwargs):
     """Returns an async iterator with a single chunk that has
     delta.content=None + finish_reason='stop' — the Gemini empty-
     response pattern."""
+
     async def gen():
         yield _MockChunk(content=None, finish_reason="stop")
+
     return gen()
 
 
 async def _mock_acompletion_text_stream(*args, **kwargs):
     """Returns an async iterator with content + final-chunk pattern."""
+
     async def gen():
         yield _MockChunk(content="Hello", finish_reason=None)
         yield _MockChunk(content=None, finish_reason="stop")
+
     return gen()
 
 
 def _collect_events_from_sse(byte_chunks: list[bytes]) -> list[dict]:
     """Parse SSE-formatted chunks into a list of event dicts."""
     import json
+
     events = []
     full = b"".join(byte_chunks).decode("utf-8", errors="ignore")
     for line in full.splitlines():
@@ -125,14 +133,19 @@ async def test_bug056_empty_stream_emits_synthetic_content_block():
     stream including content_block_start + content_block_stop."""
     from app.api import _messages_streaming as ms
 
-    with patch.object(ms, "acompletion_with_retry", _mock_acompletion_empty_stream), \
-         patch.object(ms, "record_outcome", AsyncMock()):
+    with (
+        patch.object(ms, "acompletion_with_retry", _mock_acompletion_empty_stream),
+        patch.object(ms, "record_outcome", AsyncMock()),
+    ):
         chunks = []
         async for ch in ms._stream_anthropic(
             model="gemini/gemini-2.5-flash",
             messages=[{"role": "user", "content": "hi"}],
-            extra={}, provider_id="prov-test",
-            db=None, key_record_id="key-test", t0=0.0,
+            extra={},
+            provider_id="prov-test",
+            db=None,
+            key_record_id="key-test",
+            t0=0.0,
         ):
             chunks.append(ch)
 
@@ -141,20 +154,25 @@ async def test_bug056_empty_stream_emits_synthetic_content_block():
 
     # Required set per Anthropic streaming protocol — every message
     # must have at least one content block framed by start/_stop.
-    for required in ("message_start", "content_block_start",
-                     "content_block_stop", "message_delta", "message_stop"):
-        assert required in types, \
-            f"BUG-056 regression: missing {required!r} in empty-stream " \
-            f"output. Got: {types}"
+    for required in (
+        "message_start",
+        "content_block_start",
+        "content_block_stop",
+        "message_delta",
+        "message_stop",
+    ):
+        assert required in types, (
+            f"BUG-056 regression: missing {required!r} in empty-stream output. Got: {types}"
+        )
 
     # The synthetic content block must be a text block (not tool_use)
     # — empty providers default to empty text.
     starts = [e for e in events if e.get("type") == "content_block_start"]
     assert starts, "expected at least one content_block_start"
-    assert starts[0]["content_block"]["type"] == "text", \
+    assert starts[0]["content_block"]["type"] == "text", (
         "empty-response synthetic block must be a text block"
-    assert starts[0]["content_block"]["text"] == "", \
-        "synthetic text block must have empty text"
+    )
+    assert starts[0]["content_block"]["text"] == "", "synthetic text block must have empty text"
 
 
 @pytest.mark.asyncio
@@ -164,14 +182,19 @@ async def test_bug056_text_stream_still_emits_normally():
     NOT a synthetic empty block."""
     from app.api import _messages_streaming as ms
 
-    with patch.object(ms, "acompletion_with_retry", _mock_acompletion_text_stream), \
-         patch.object(ms, "record_outcome", AsyncMock()):
+    with (
+        patch.object(ms, "acompletion_with_retry", _mock_acompletion_text_stream),
+        patch.object(ms, "record_outcome", AsyncMock()),
+    ):
         chunks = []
         async for ch in ms._stream_anthropic(
             model="openai/gpt-4o",
             messages=[{"role": "user", "content": "hi"}],
-            extra={}, provider_id="prov-test",
-            db=None, key_record_id="key-test", t0=0.0,
+            extra={},
+            provider_id="prov-test",
+            db=None,
+            key_record_id="key-test",
+            t0=0.0,
         ):
             chunks.append(ch)
 
@@ -179,17 +202,23 @@ async def test_bug056_text_stream_still_emits_normally():
     types = [e.get("type") for e in events]
 
     # All 5 required event types present
-    for required in ("message_start", "content_block_start",
-                     "content_block_delta", "content_block_stop",
-                     "message_delta", "message_stop"):
+    for required in (
+        "message_start",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_stop",
+        "message_delta",
+        "message_stop",
+    ):
         assert required in types, f"missing {required!r}. Got: {types}"
 
     # Exactly ONE content_block_start (the real one, in-loop) — NOT
     # the synthetic + real (would mean fix double-emits)
     starts = [e for e in events if e.get("type") == "content_block_start"]
-    assert len(starts) == 1, \
-        f"expected exactly 1 content_block_start (in-loop emission), " \
+    assert len(starts) == 1, (
+        f"expected exactly 1 content_block_start (in-loop emission), "
         f"got {len(starts)}. Fix must not double-emit."
+    )
     # And the content_block_start must NOT be the synthetic empty case
     # — the in-loop emission has text='' but the delta that follows
     # carries the actual text. So the start itself is text='' either
@@ -206,14 +235,19 @@ async def test_bug056_empty_stream_does_not_break_other_envelope():
     bottom — only the content_block layer is changed."""
     from app.api import _messages_streaming as ms
 
-    with patch.object(ms, "acompletion_with_retry", _mock_acompletion_empty_stream), \
-         patch.object(ms, "record_outcome", AsyncMock()):
+    with (
+        patch.object(ms, "acompletion_with_retry", _mock_acompletion_empty_stream),
+        patch.object(ms, "record_outcome", AsyncMock()),
+    ):
         chunks = []
         async for ch in ms._stream_anthropic(
             model="gemini/gemini-2.5-flash",
             messages=[{"role": "user", "content": "hi"}],
-            extra={}, provider_id="prov-test",
-            db=None, key_record_id="key-test", t0=0.0,
+            extra={},
+            provider_id="prov-test",
+            db=None,
+            key_record_id="key-test",
+            t0=0.0,
         ):
             chunks.append(ch)
 
@@ -226,6 +260,9 @@ async def test_bug056_empty_stream_does_not_break_other_envelope():
     # (No content_block_delta in the empty case — that's OK; SDK
     # treats absence-of-delta as empty content.)
     assert types == [
-        "message_start", "content_block_start", "content_block_stop",
-        "message_delta", "message_stop",
+        "message_start",
+        "content_block_start",
+        "content_block_stop",
+        "message_delta",
+        "message_stop",
     ], f"unexpected event order. Got: {types}"

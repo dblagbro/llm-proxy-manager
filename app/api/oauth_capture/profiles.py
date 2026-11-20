@@ -1,18 +1,19 @@
 """Profile CRUD endpoints for the OAuth capture package."""
+
 from __future__ import annotations
 
 import secrets as _secrets
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, delete as sql_delete
+from sqlalchemy import delete as sql_delete
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.auth.admin import require_admin, AdminUser
-from app.models.database import get_db
-from app.models.db import OAuthCaptureLog, OAuthCaptureProfile
 
 from app.api.oauth_capture.presets import PRESETS
 from app.api.oauth_capture.serializers import _serialize_profile
+from app.auth.admin import AdminUser, require_admin
+from app.models.database import get_db
+from app.models.db import OAuthCaptureLog, OAuthCaptureProfile
 
 router = APIRouter(prefix="/api/oauth-capture", tags=["oauth-capture"])
 

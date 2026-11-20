@@ -17,11 +17,10 @@ Owns:
 - ``AiriNotificationPref`` — per-user AIRI-notification subscription
   (v4.0.3).
 """
+
 import secrets
 
-from sqlalchemy import (
-    Column, String, Integer, Boolean, DateTime, Text, JSON, ForeignKey
-)
+from sqlalchemy import JSON, Boolean, Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.sql import func
 
 from app.models.db_base import Base
@@ -30,6 +29,7 @@ from app.models.db_base import Base
 class AiriRuleset(Base):
     """A named snapshot of AIRI rules. Exactly one row is ``is_active``.
     The seeded ``Default`` set mirrors the supervisor's current settings."""
+
     __tablename__ = "airi_ruleset"
 
     id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
@@ -50,15 +50,17 @@ class AiriRule(Base):
     ``monitor`` (a read-only recurring check — later milestone). ``spec`` is
     the kind-specific JSON body.
     """
+
     __tablename__ = "airi_rule"
 
     id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
-    ruleset_id = Column(String, ForeignKey("airi_ruleset.id", ondelete="CASCADE"),
-                        nullable=False, index=True)
+    ruleset_id = Column(
+        String, ForeignKey("airi_ruleset.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     name = Column(String, nullable=False)
-    kind = Column(String, nullable=False)              # threshold|conditional|monitor
+    kind = Column(String, nullable=False)  # threshold|conditional|monitor
     spec = Column(JSON, default=dict)
-    mode = Column(String, default="suggest")           # suggest|auto_apply
+    mode = Column(String, default="suggest")  # suggest|auto_apply
     enabled = Column(Boolean, default=True)
     blast_radius_cap = Column(Integer)
     max_runs_per_window = Column(Integer)
@@ -77,16 +79,17 @@ class AiriProposal(Base):
     """A change AIRI proposed — the unit of the propose -> dry-run -> apply
     flow, and the audit record. ``prior_state`` snapshots what to restore on
     revert. v4.0 milestone 3."""
+
     __tablename__ = "airi_proposal"
 
     id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
-    kind = Column(String, nullable=False)          # provider_change | rule_change
-    target_id = Column(String, nullable=False)     # provider id or rule id
-    target_label = Column(String)                  # provider / rule name for display
-    change = Column(JSON, default=dict)            # {field, from, to, ...}
-    dry_run = Column(JSON, default=dict)           # the impact preview
-    status = Column(String, default="pending")     # pending|applied|rejected|reverted
-    prior_state = Column(JSON)                     # snapshot for revert
+    kind = Column(String, nullable=False)  # provider_change | rule_change
+    target_id = Column(String, nullable=False)  # provider id or rule id
+    target_label = Column(String)  # provider / rule name for display
+    change = Column(JSON, default=dict)  # {field, from, to, ...}
+    dry_run = Column(JSON, default=dict)  # the impact preview
+    status = Column(String, default="pending")  # pending|applied|rejected|reverted
+    prior_state = Column(JSON)  # snapshot for revert
     created_by = Column(String)
     created_via_prompt = Column(Text)
     created_at = Column(DateTime, server_default=func.now())
@@ -98,11 +101,12 @@ class AiriConversation(Base):
     """A persistent AIRI chat thread. History is per-user, but every user can
     SEARCH every conversation (decision #5 — the shared history is the
     cross-operator change-coordination surface). v4.0 milestone 5."""
+
     __tablename__ = "airi_conversation"
 
     id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
-    user_id = Column(String, nullable=False, index=True)   # owning operator
-    title = Column(String)                                 # first user line, truncated
+    user_id = Column(String, nullable=False, index=True)  # owning operator
+    title = Column(String)  # first user line, truncated
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -111,15 +115,17 @@ class AiriMessage(Base):
     """One turn inside an AIRI conversation. ``content`` is searchable across
     all users. ``tool_calls`` / ``trace_id`` are kept for forward-compat with
     a richer transcript; v4.0 stores plain user/assistant text. M5."""
+
     __tablename__ = "airi_message"
 
     id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
-    conversation_id = Column(String, ForeignKey("airi_conversation.id", ondelete="CASCADE"),
-                             nullable=False, index=True)
-    role = Column(String, nullable=False)                  # user|assistant
+    conversation_id = Column(
+        String, ForeignKey("airi_conversation.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    role = Column(String, nullable=False)  # user|assistant
     content = Column(Text)
-    tool_calls = Column(JSON)                              # forward-compat, unused in 4.0
-    trace_id = Column(String)                              # forward-compat, unused in 4.0
+    tool_calls = Column(JSON)  # forward-compat, unused in 4.0
+    trace_id = Column(String)  # forward-compat, unused in 4.0
     created_at = Column(DateTime, server_default=func.now())
 
 
@@ -131,13 +137,14 @@ class AiriNotificationPref(Base):
     operator opts their own address in and tunes which categories and what
     minimum severity reach them. One row per user; absence == no personal
     subscription."""
+
     __tablename__ = "airi_notification_pref"
 
     id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
     user_id = Column(String, nullable=False, unique=True, index=True)  # username
-    email = Column(String)                                 # NULL == no personal email
-    enabled = Column(Boolean, default=True)                # personal subscription on/off
+    email = Column(String)  # NULL == no personal email
+    enabled = Column(Boolean, default=True)  # personal subscription on/off
     categories = Column(JSON, default=lambda: {"monitor": True, "automation": True})
-    min_severity = Column(String, default="warning")       # info|warning|critical
+    min_severity = Column(String, default="warning")  # info|warning|critical
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

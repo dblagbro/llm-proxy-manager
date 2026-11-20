@@ -23,11 +23,10 @@ Named permissions (granular; new permissions are additive-only):
 Custom roles may be loaded from a config file; the in-code defaults are
 the fallback.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
-
 
 # ── Permission catalog ───────────────────────────────────────────────────────
 # Each entry is "namespace.action". These are string literals, not enums, so
@@ -49,19 +48,29 @@ AUDIT_READ = "audit.read"
 AUDIT_EXPORT = "audit.export"
 CIRCUIT_BREAKER_RESET = "circuit_breaker.reset"
 
-ALL_PERMISSIONS = frozenset({
-    PROVIDERS_READ, PROVIDERS_WRITE,
-    KEYS_READ, KEYS_WRITE, KEYS_REVEAL,
-    USERS_READ, USERS_WRITE,
-    SETTINGS_READ, SETTINGS_WRITE,
-    CLUSTER_READ, CLUSTER_WRITE,
-    MONITORING_READ,
-    AUDIT_READ, AUDIT_EXPORT,
-    CIRCUIT_BREAKER_RESET,
-})
+ALL_PERMISSIONS = frozenset(
+    {
+        PROVIDERS_READ,
+        PROVIDERS_WRITE,
+        KEYS_READ,
+        KEYS_WRITE,
+        KEYS_REVEAL,
+        USERS_READ,
+        USERS_WRITE,
+        SETTINGS_READ,
+        SETTINGS_WRITE,
+        CLUSTER_READ,
+        CLUSTER_WRITE,
+        MONITORING_READ,
+        AUDIT_READ,
+        AUDIT_EXPORT,
+        CIRCUIT_BREAKER_RESET,
+    }
+)
 
 
 # ── Role definitions ─────────────────────────────────────────────────────────
+
 
 @dataclass(frozen=True)
 class Role:
@@ -78,37 +87,43 @@ _ADMIN = Role(
 
 _OPERATOR = Role(
     name="operator",
-    permissions=frozenset({
-        PROVIDERS_READ, PROVIDERS_WRITE,
-        KEYS_READ, KEYS_WRITE,  # no KEYS_REVEAL
-        SETTINGS_READ,           # no SETTINGS_WRITE
-        CLUSTER_READ,            # no CLUSTER_WRITE
-        MONITORING_READ,
-        CIRCUIT_BREAKER_RESET,
-    }),
+    permissions=frozenset(
+        {
+            PROVIDERS_READ,
+            PROVIDERS_WRITE,
+            KEYS_READ,
+            KEYS_WRITE,  # no KEYS_REVEAL
+            SETTINGS_READ,  # no SETTINGS_WRITE
+            CLUSTER_READ,  # no CLUSTER_WRITE
+            MONITORING_READ,
+            CIRCUIT_BREAKER_RESET,
+        }
+    ),
     description="Read/write providers and keys; view settings and cluster state.",
 )
 
 _VIEWER = Role(
     name="viewer",
-    permissions=frozenset({
-        PROVIDERS_READ,
-        KEYS_READ,
-        SETTINGS_READ,
-        CLUSTER_READ,
-        MONITORING_READ,
-    }),
+    permissions=frozenset(
+        {
+            PROVIDERS_READ,
+            KEYS_READ,
+            SETTINGS_READ,
+            CLUSTER_READ,
+            MONITORING_READ,
+        }
+    ),
     description="Read-only dashboards and views.",
 )
 
 _ROLES: dict[str, Role] = {
-    "admin":    _ADMIN,
+    "admin": _ADMIN,
     "operator": _OPERATOR,
-    "viewer":   _VIEWER,
+    "viewer": _VIEWER,
 }
 
 
-def get_role(name: Optional[str]) -> Optional[Role]:
+def get_role(name: str | None) -> Role | None:
     if not name:
         return None
     return _ROLES.get(name.lower())
@@ -118,10 +133,10 @@ def list_roles() -> list[Role]:
     return list(_ROLES.values())
 
 
-def permissions_for(role_name: Optional[str]) -> frozenset[str]:
+def permissions_for(role_name: str | None) -> frozenset[str]:
     r = get_role(role_name)
     return r.permissions if r else frozenset()
 
 
-def has_permission(role_name: Optional[str], permission: str) -> bool:
+def has_permission(role_name: str | None, permission: str) -> bool:
     return permission in permissions_for(role_name)

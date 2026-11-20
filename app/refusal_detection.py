@@ -42,20 +42,22 @@ retry, or ignore.
 None of these do per-API-key opt-in for a per-request-tier decision.
 That's the gap we're filling.
 """
+
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, List, Optional
+from typing import Any
 
 
 @dataclass(frozen=True)
 class RefusalMatch:
     """One refusal-pattern hit."""
-    pattern_name: str        # stable id, safe for headers + activity_log
-    category: str            # broad class: "task_substitution" | "capability_deny" | "explicit_refused"
-    matched_snippet: str     # ±40 chars around the hit
-    span: tuple[int, int]    # (start, end) in the scanned text
+
+    pattern_name: str  # stable id, safe for headers + activity_log
+    category: str  # broad class: "task_substitution" | "capability_deny" | "explicit_refused"
+    matched_snippet: str  # ±40 chars around the hit
+    span: tuple[int, int]  # (start, end) in the scanned text
 
 
 def _r(p: str) -> re.Pattern[str]:
@@ -79,7 +81,7 @@ def _r(p: str) -> re.Pattern[str]:
 #
 # explicit_refused = the `REFUSED:` marker the prompt-hardening
 #   injection asks for. Highest confidence.
-REFUSAL_PATTERNS: List[tuple[str, str, re.Pattern[str]]] = [
+REFUSAL_PATTERNS: list[tuple[str, str, re.Pattern[str]]] = [
     # ---- explicit_refused: highest confidence, matched first ----
     (
         "explicit_refused_marker",
@@ -90,28 +92,47 @@ REFUSAL_PATTERNS: List[tuple[str, str, re.Pattern[str]]] = [
     (
         "cant_but_here_is",
         "task_substitution",
-        _r(r"\b(can'?t|cannot|won'?t|unable to|not able to)\s+(?:write|create|generate|produce|reproduce|provide|give you|help with)[^.]{0,60}[,.]\s*(?:but|however|instead)[^.]{0,20}\b(?:here|let me|i can|i'?ll|here'?s)"),
+        _r(
+            r"\b(can'?t|cannot|won'?t|unable to|not able to)\s+(?:write|create"
+            r"|generate|produce|reproduce|provide|give you"
+            r"|help with)[^.]{0,60}[,.]\s*(?:but|however"
+            r"|instead)[^.]{0,20}\b(?:here|let me|i can|i'?ll|here'?s)"
+        ),
     ),
     (
         "not_that_but_similar",
         "task_substitution",
-        _r(r"\b(?:i can'?t|i won'?t|cannot)\s+(?:write|create|generate)\s+(?:that|the|those)\s+(?:specific|particular|exact)[^.]{0,40}\b(?:but|however|instead|here'?s)"),
+        _r(
+            r"\b(?:i can'?t|i won'?t|cannot)\s+(?:write|create"
+            r"|generate)\s+(?:that|the|those)\s+(?:specific|particular"
+            r"|exact)[^.]{0,40}\b(?:but|however|instead|here'?s)"
+        ),
     ),
     (
         "copyright_style_deflect",
         "task_substitution",
-        _r(r"\b(copyrighted|copyright[- ]protected|owned by)[^.]{0,80}\b(?:but|however|instead|let me|here'?s)\s+(?:i can|write|provide|create|give)"),
+        _r(
+            r"\b(copyrighted|copyright[- ]protected"
+            r"|owned by)[^.]{0,80}\b(?:but|however|instead|let me"
+            r"|here'?s)\s+(?:i can|write|provide|create|give)"
+        ),
     ),
     (
         "here_is_original_or_alternative",
         "task_substitution",
-        _r(r"\bhere'?s\s+(?:an?|some)\s+(?:original|alternative|different|similar|inspired[- ]by|in[- ]the[- ]style)"),
+        _r(
+            r"\bhere'?s\s+(?:an?|some)\s+(?:original|alternative|different"
+            r"|similar|inspired[- ]by|in[- ]the[- ]style)"
+        ),
     ),
     # ---- capability_deny: refusal, no offered alternative ----
     (
         "as_an_ai_language_model",
         "capability_deny",
-        _r(r"\bas an ai (?:language )?model\b[^.]{0,60}\b(?:i (?:can'?t|cannot|don'?t have|am not able)|i'?m not able)"),
+        _r(
+            r"\bas an ai (?:language )?model\b[^.]{0,60}\b(?:i (?:can'?t"
+            r"|cannot|don'?t have|am not able)|i'?m not able)"
+        ),
     ),
     (
         "im_not_able_to",
@@ -121,7 +142,10 @@ REFUSAL_PATTERNS: List[tuple[str, str, re.Pattern[str]]] = [
     (
         "outside_my_capabilities",
         "capability_deny",
-        _r(r"\b(?:that'?s|this is)?\s*(?:outside|beyond|not within)\s+(?:my|the ai'?s)\s+capabilities\b"),
+        _r(
+            r"\b(?:that'?s|this is)?\s*(?:outside|beyond|not within)\s+(?:my"
+            r"|the ai'?s)\s+capabilities\b"
+        ),
     ),
 ]
 
@@ -137,7 +161,7 @@ def _window(text: str, span: tuple[int, int], radius: int = 40) -> str:
     return f"{prefix}{text[lo:hi].strip()}{suffix}"
 
 
-def detect_refusal(text: str) -> Optional[RefusalMatch]:
+def detect_refusal(text: str) -> RefusalMatch | None:
     """Scan ``text`` for refusal patterns. Return the FIRST match
     (patterns ordered by confidence). Empty/non-string input returns
     None.
@@ -173,7 +197,7 @@ def extract_text_from_anthropic_response(resp: Any) -> str:
     content = resp.get("content") or []
     if not isinstance(content, list):
         return ""
-    chunks: List[str] = []
+    chunks: list[str] = []
     for block in content:
         if not isinstance(block, dict):
             continue
@@ -189,7 +213,7 @@ def extract_text_from_anthropic_response(resp: Any) -> str:
 # sync with `explicit_refused_marker` above.
 REFUSAL_HARDENING_INSTRUCTION = (
     "If you cannot fulfill the user's request exactly as stated, "
-    "respond with ONLY \"REFUSED: <one-line reason>\" and nothing else. "
+    'respond with ONLY "REFUSED: <one-line reason>" and nothing else. '
     "Do not offer alternatives, substitute the task, "
     "or provide adjacent content. The proxy will retry with a "
     "different upstream model on your behalf."

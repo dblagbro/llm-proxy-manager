@@ -14,16 +14,17 @@ Safety in this milestone:
     threshold rules (this is what wires M2's rules to M3's actions);
   - every applied change is reversible from its ``prior_state`` snapshot.
 """
+
 from __future__ import annotations
 
 import logging
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select, desc, func
+from sqlalchemy import desc, func, select
 
-from app.models.db import Provider, ActivityLog, AiriRule, AiriProposal
 from app.airi import dryrun, rules
+from app.models.db import ActivityLog, AiriProposal, AiriRule, Provider
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +33,11 @@ _TRAFFIC_WINDOW = 500  # recent requests sampled for the traffic-share preview
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
+
 
 async def _resolve_provider(db, ref: str):
     """Resolve a provider by id, then exact name, then name-substring."""
@@ -45,9 +47,7 @@ async def _resolve_provider(db, ref: str):
     p = await db.get(Provider, ref)
     if p is not None:
         return p
-    rows = (await db.execute(
-        select(Provider).where(Provider.deleted_at.is_(None))
-    )).scalars().all()
+    rows = (await db.execute(select(Provider).where(Provider.deleted_at.is_(None)))).scalars().all()
     for p in rows:
         if (p.name or "").lower() == ref.lower():
             return p
@@ -74,20 +74,20 @@ async def _active_caps(db) -> dict:
 
 async def _provider_snapshot_and_traffic(db):
     """(providers, traffic_counts, total) for the dry-run preview."""
-    rows = (await db.execute(
-        select(Provider).where(Provider.deleted_at.is_(None))
-    )).scalars().all()
+    rows = (await db.execute(select(Provider).where(Provider.deleted_at.is_(None)))).scalars().all()
     providers = [
         {"name": p.name, "priority": int(p.priority or 10), "enabled": bool(p.enabled)}
         for p in rows
     ]
     pmap = {p.id: p.name for p in rows}
-    recent = (await db.execute(
-        select(ActivityLog.provider_id)
-        .where(ActivityLog.event_type == "llm_request")
-        .order_by(desc(ActivityLog.created_at))
-        .limit(_TRAFFIC_WINDOW)
-    )).all()
+    recent = (
+        await db.execute(
+            select(ActivityLog.provider_id)
+            .where(ActivityLog.event_type == "llm_request")
+            .order_by(desc(ActivityLog.created_at))
+            .limit(_TRAFFIC_WINDOW)
+        )
+    ).all()
     counts: dict = {}
     for (pid,) in recent:
         name = pmap.get(pid, pid or "?")
@@ -97,9 +97,13 @@ async def _provider_snapshot_and_traffic(db):
 
 def _proposal_dict(p: AiriProposal) -> dict:
     return {
-        "id": p.id, "kind": p.kind, "target": p.target_label,
-        "change": p.change or {}, "dry_run": p.dry_run or {},
-        "status": p.status, "created_by": p.created_by,
+        "id": p.id,
+        "kind": p.kind,
+        "target": p.target_label,
+        "change": p.change or {},
+        "dry_run": p.dry_run or {},
+        "status": p.status,
+        "created_by": p.created_by,
         "created_via_prompt": p.created_via_prompt,
         "created_at": str(p.created_at) if p.created_at else None,
         "decided_at": str(p.decided_at) if p.decided_at else None,
@@ -109,8 +113,10 @@ def _proposal_dict(p: AiriProposal) -> dict:
 
 # ── create proposals ─────────────────────────────────────────────────────────
 
-async def create_provider_change(db, *, provider_ref: str, field: str, value,
-                                  mode: str, created_by: str, prompt: str) -> dict:
+
+async def create_provider_change(
+    db, *, provider_ref: str, field: str, value, mode: str, created_by: str, prompt: str
+) -> dict:
     """Create a provider-change proposal (priority / enabled / auto_skip_hours)."""
     if field not in _PROVIDER_FIELDS:
         return {"error": f"unknown field '{field}' — one of {sorted(_PROVIDER_FIELDS)}"}
@@ -134,8 +140,11 @@ async def create_provider_change(db, *, provider_ref: str, field: str, value,
         from_v, to_v = cur, new
     elif field == "enabled":
         from_v = bool(p.enabled)
-        to_v = value if isinstance(value, bool) else \
-            str(value).strip().lower() in ("true", "1", "yes", "on", "enable", "enabled")
+        to_v = (
+            value
+            if isinstance(value, bool)
+            else str(value).strip().lower() in ("true", "1", "yes", "on", "enable", "enabled")
+        )
     elif field == "auto_skip_hours":
         from_v = 0
         try:
@@ -153,25 +162,37 @@ async def create_provider_change(db, *, provider_ref: str, field: str, value,
 
     providers, counts, total = await _provider_snapshot_and_traffic(db)
     impact = dryrun.provider_change_impact(
-        field=field, target_name=p.name, current_value=from_v, new_value=to_v,
-        providers=providers, traffic_counts=counts, traffic_total=total,
+        field=field,
+        target_name=p.name,
+        current_value=from_v,
+        new_value=to_v,
+        providers=providers,
+        traffic_counts=counts,
+        traffic_total=total,
     )
     change = {"field": field, "from": from_v, "to": to_v, "capped": capped}
     if capped:
         change["cap_note"] = f"capped by the active rule-set (caps={caps})"
 
     prop = AiriProposal(
-        id=secrets.token_hex(8), kind="provider_change", target_id=p.id,
-        target_label=p.name, change=change, dry_run=impact, status="pending",
-        created_by=created_by, created_via_prompt=prompt,
+        id=secrets.token_hex(8),
+        kind="provider_change",
+        target_id=p.id,
+        target_label=p.name,
+        change=change,
+        dry_run=impact,
+        status="pending",
+        created_by=created_by,
+        created_via_prompt=prompt,
     )
     db.add(prop)
     await db.commit()
     return await _finish_create(db, prop, mode, created_by)
 
 
-async def create_rule_change(db, *, rule_id: str, value, mode: str,
-                             created_by: str, prompt: str) -> dict:
+async def create_rule_change(
+    db, *, rule_id: str, value, mode: str, created_by: str, prompt: str
+) -> dict:
     """Create a threshold-rule change proposal."""
     r = await db.get(AiriRule, (rule_id or "").strip())
     if r is None:
@@ -190,14 +211,21 @@ async def create_rule_change(db, *, rule_id: str, value, mode: str,
         return {"error": f"rule '{r.name}' is already {new}"}
 
     impact = dryrun.rule_change_impact(
-        rule_name=r.name, setting=spec.get("setting", "?"),
-        current_value=cur, new_value=new,
+        rule_name=r.name,
+        setting=spec.get("setting", "?"),
+        current_value=cur,
+        new_value=new,
     )
     prop = AiriProposal(
-        id=secrets.token_hex(8), kind="rule_change", target_id=r.id,
-        target_label=r.name, change={"field": "value", "from": cur, "to": new},
-        dry_run=impact, status="pending",
-        created_by=created_by, created_via_prompt=prompt,
+        id=secrets.token_hex(8),
+        kind="rule_change",
+        target_id=r.id,
+        target_label=r.name,
+        change={"field": "value", "from": cur, "to": new},
+        dry_run=impact,
+        status="pending",
+        created_by=created_by,
+        created_via_prompt=prompt,
     )
     db.add(prop)
     await db.commit()
@@ -207,10 +235,21 @@ async def create_rule_change(db, *, rule_id: str, value, mode: str,
 _RULE_TYPES = {"conditional", "monitor"}
 
 
-async def create_add_rule(db, *, rule_type: str, name: str, provider_ref: str,
-                          window_min, op: str, threshold, cadence_min,
-                          action_hours, action_mode: str,
-                          created_by: str, prompt: str) -> dict:
+async def create_add_rule(
+    db,
+    *,
+    rule_type: str,
+    name: str,
+    provider_ref: str,
+    window_min,
+    op: str,
+    threshold,
+    cadence_min,
+    action_hours,
+    action_mode: str,
+    created_by: str,
+    prompt: str,
+) -> dict:
     """Create an add-rule proposal — a new scheduled (conditional) or monitor
     rule for the active rule-set. Adding automation is ALWAYS an explicit
     operator approval; this never auto-applies."""
@@ -231,9 +270,14 @@ async def create_add_rule(db, *, rule_type: str, name: str, provider_ref: str,
     except (TypeError, ValueError):
         return {"error": "window_min, cadence_min and threshold must be numbers"}
 
-    condition = {"metric": "error_rate_pct", "provider_id": p.id,
-                 "provider_name": p.name, "window_min": window_min,
-                 "op": op, "value": threshold}
+    condition = {
+        "metric": "error_rate_pct",
+        "provider_id": p.id,
+        "provider_name": p.name,
+        "window_min": window_min,
+        "op": op,
+        "value": threshold,
+    }
     spec = {"cadence_min": cadence_min, "condition": condition}
     am = action_mode if action_mode in ("suggest", "auto_apply") else "suggest"
     if rule_type == "conditional":
@@ -242,26 +286,31 @@ async def create_add_rule(db, *, rule_type: str, name: str, provider_ref: str,
         except (TypeError, ValueError):
             return {"error": "action_hours must be an integer"}
         spec["action"] = {"type": "auto_skip", "hours": hrs}
-        verb = (f"auto-skip {p.name} for {hrs}h "
-                + ("(auto-apply)" if am == "auto_apply"
-                   else "(proposes a change for you to approve)"))
+        verb = f"auto-skip {p.name} for {hrs}h " + (
+            "(auto-apply)" if am == "auto_apply" else "(proposes a change for you to approve)"
+        )
     else:
         verb = "notify you"
 
     impact = {
         "kind": "add_rule",
-        "summary": (f"New {rule_type} rule '{name}': every {cadence_min} min, "
-                    f"check {p.name}'s error rate over the last {window_min} min; "
-                    f"if it is {op} {threshold}%, {verb}."),
+        "summary": (
+            f"New {rule_type} rule '{name}': every {cadence_min} min, "
+            f"check {p.name}'s error rate over the last {window_min} min; "
+            f"if it is {op} {threshold}%, {verb}."
+        ),
         "warnings": [],
     }
     prop = AiriProposal(
-        id=secrets.token_hex(8), kind="add_rule", target_id="",
+        id=secrets.token_hex(8),
+        kind="add_rule",
+        target_id="",
         target_label=name,
-        change={"rule_type": rule_type, "name": name, "spec": spec,
-                "action_mode": am},
-        dry_run=impact, status="pending",
-        created_by=created_by, created_via_prompt=prompt,
+        change={"rule_type": rule_type, "name": name, "spec": spec, "action_mode": am},
+        dry_run=impact,
+        status="pending",
+        created_by=created_by,
+        created_via_prompt=prompt,
     )
     db.add(prop)
     await db.commit()
@@ -273,8 +322,12 @@ async def _finish_create(db, prop: AiriProposal, mode: str, created_by: str) -> 
     """Shared tail of create_* — return the proposal, auto-applying when the
     operator asked for it (mode == 'apply')."""
     result = {
-        "proposal_id": prop.id, "kind": prop.kind, "target": prop.target_label,
-        "change": prop.change, "dry_run": prop.dry_run, "status": "pending",
+        "proposal_id": prop.id,
+        "kind": prop.kind,
+        "target": prop.target_label,
+        "change": prop.change,
+        "dry_run": prop.dry_run,
+        "status": "pending",
     }
     if mode == "apply":
         # Safety: auto-apply proceeds ONLY on a clean dry-run. A warning
@@ -298,6 +351,7 @@ async def _finish_create(db, prop: AiriProposal, mode: str, created_by: str) -> 
 
 # ── decide proposals ─────────────────────────────────────────────────────────
 
+
 async def apply_proposal(db, proposal_id: str, applied_by: str) -> dict:
     """Apply a pending proposal to live config, snapshotting prior state."""
     prop = await db.get(AiriProposal, proposal_id)
@@ -315,16 +369,22 @@ async def apply_proposal(db, proposal_id: str, applied_by: str) -> dict:
         # provider (that would take the whole proxy offline, including
         # AIRI's own LLM calls). Blocks even an explicit operator approve.
         if field == "enabled" and bool(to) is False and bool(p.enabled):
-            others = (await db.execute(
-                select(func.count()).select_from(Provider).where(
-                    Provider.deleted_at.is_(None),
-                    Provider.enabled == True,  # noqa: E712
-                    Provider.id != p.id,
+            others = (
+                await db.execute(
+                    select(func.count())
+                    .select_from(Provider)
+                    .where(
+                        Provider.deleted_at.is_(None),
+                        Provider.enabled == True,  # noqa: E712
+                        Provider.id != p.id,
+                    )
                 )
-            )).scalar() or 0
+            ).scalar() or 0
             if others == 0:
-                return {"error": "refused — this would disable the last enabled "
-                                  "provider; the proxy must keep at least one."}
+                return {
+                    "error": "refused — this would disable the last enabled "
+                    "provider; the proxy must keep at least one."
+                }
         prop.prior_state = {
             "priority": p.priority,
             "enabled": bool(p.enabled),
@@ -346,16 +406,22 @@ async def apply_proposal(db, proposal_id: str, applied_by: str) -> dict:
         r.spec = spec
     elif prop.kind == "add_rule":
         from app.airi import rules as _rules
+
         active = await _rules.get_active_ruleset(db)
         rs_id = active.get("id")
         if not rs_id:
             return {"error": "no active rule-set to add the rule to"}
         ch = prop.change or {}
         new_rule = AiriRule(
-            id=secrets.token_hex(8), ruleset_id=rs_id, name=ch.get("name"),
-            kind=ch.get("rule_type"), spec=ch.get("spec") or {},
-            mode=ch.get("action_mode", "suggest"), enabled=True,
-            created_by=prop.created_by, created_via_prompt=prop.created_via_prompt,
+            id=secrets.token_hex(8),
+            ruleset_id=rs_id,
+            name=ch.get("name"),
+            kind=ch.get("rule_type"),
+            spec=ch.get("spec") or {},
+            mode=ch.get("action_mode", "suggest"),
+            enabled=True,
+            created_by=prop.created_by,
+            created_via_prompt=prop.created_via_prompt,
         )
         db.add(new_rule)
         await db.flush()
@@ -426,11 +492,16 @@ async def revert_proposal(db, proposal_id: str, decided_by: str) -> dict:
 
 # ── read ─────────────────────────────────────────────────────────────────────
 
+
 async def list_proposals(db, status: str | None = None, limit: int = 25) -> list[dict]:
     q = select(AiriProposal).order_by(desc(AiriProposal.created_at)).limit(limit)
     if status:
-        q = (select(AiriProposal).where(AiriProposal.status == status)
-             .order_by(desc(AiriProposal.created_at)).limit(limit))
+        q = (
+            select(AiriProposal)
+            .where(AiriProposal.status == status)
+            .order_by(desc(AiriProposal.created_at))
+            .limit(limit)
+        )
     rows = (await db.execute(q)).scalars().all()
     return [_proposal_dict(p) for p in rows]
 

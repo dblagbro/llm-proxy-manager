@@ -5,7 +5,8 @@ Split out from ``db.py`` in v4.4.11. Owns:
 - ``CallerMemory`` — durable per-(api_key, conversation, tag) state.
 - ``CallerMemoryMarker`` — existence marker for back-pressure recovery.
 """
-from sqlalchemy import Column, String, Integer, Float, Text, ForeignKey
+
+from sqlalchemy import Column, Float, ForeignKey, Integer, String, Text
 
 from app.models.db_base import Base
 
@@ -24,14 +25,15 @@ class CallerMemory(Base):
     See ``docs/rfc/2026-05-proxy-memory-store.md`` for full design.
     Default OFF (operator opt-in via ``caller_memory_enabled``).
     """
+
     __tablename__ = "caller_memory"
     id = Column(Integer, primary_key=True, autoincrement=True)
     api_key_id = Column(String, ForeignKey("api_keys.id"), nullable=False, index=True)
     conversation_id = Column(String, nullable=True, index=True)
     memory_tag = Column(String, nullable=False, default="default")
     content = Column(Text, nullable=False, default="")
-    content_format = Column(String, default="text")   # "text" | "json" | "anthropic_memory_blocks"
-    updated_at = Column(Float, nullable=False)        # unix ts for LWW
+    content_format = Column(String, default="text")  # "text" | "json" | "anthropic_memory_blocks"
+    updated_at = Column(Float, nullable=False)  # unix ts for LWW
     updated_by_node = Column(String, nullable=True)
     # Optional provenance for back-pressure recovery + flush logic
     source_provider_id = Column(String, nullable=True)
@@ -63,6 +65,7 @@ class CallerMemoryMarker(Base):
     ``GET /threads/{id}/messages``, etc. Reconstructed content
     populates CallerMemory + sets ``recovered_at`` on the marker.
     """
+
     __tablename__ = "caller_memory_marker"
     id = Column(Integer, primary_key=True, autoincrement=True)
     api_key_id = Column(String, ForeignKey("api_keys.id"), nullable=False, index=True)
@@ -70,7 +73,9 @@ class CallerMemoryMarker(Base):
     memory_tag = Column(String, nullable=False, default="default")
     first_seen_at = Column(Float, nullable=False)
     last_known_provider_id = Column(String, nullable=True)
-    last_known_external_ref = Column(String, nullable=True)  # provider's thread_id / conversation handle
+    last_known_external_ref = Column(
+        String, nullable=True
+    )  # provider's thread_id / conversation handle
     # v5.0.0 — compliance source-company tag (decision 18). Mirrors the column
     # on CallerMemory. Markers whose source_company is banned are not
     # surfaced to back-pressure recovery for banned keys.

@@ -3,27 +3,33 @@
 Centralises the record_success/record_failure + estimate_cost + record_request
 pattern that appears in every streaming and non-streaming handler.
 """
+
 import json
 import random
 import re
 import time
-from typing import Any, Optional
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.budget.tracker import record_cost
 from app.config import settings
 from app.models.db import Provider
-from app.routing.circuit_breaker import (
-    record_success, record_failure, is_billing_error,
-    is_auth_error, classify_error, record_auth_failure, clear_auth_failure,
-)
-from app.monitoring.metrics import record_request
-from app.monitoring.pricing import estimate_cost, estimate_cost_split
 from app.monitoring.activity import log_event
-from app.observability.prometheus import observe_request, observe_ttft, observe_cache_tokens
+from app.monitoring.metrics import record_request
+from app.monitoring.pricing import estimate_cost as estimate_cost
+from app.monitoring.pricing import estimate_cost_split
+from app.observability.prometheus import observe_cache_tokens, observe_request, observe_ttft
+from app.routing.circuit_breaker import (
+    classify_error,
+    clear_auth_failure,
+    is_auth_error,
+    is_billing_error,
+    record_auth_failure,
+    record_failure,
+    record_success,
+)
 from app.routing.hedging import record_ttft_sample
-from app.budget.tracker import record_cost
-
 
 # v3.0.50: provider_types whose calls consume a flat-rate subscription
 # quota rather than per-call billing. estimate_cost() returns the
@@ -32,24 +38,26 @@ from app.budget.tracker import record_cost
 # routes that cost the operator $0 in real money). Surface the litellm
 # rate as ``quota_usd`` for visibility but record ``cost_usd=0`` so
 # spending-cap enforcement and per-key totals stay accurate.
-SUBSCRIPTION_TIER_PROVIDER_TYPES = frozenset({
-    "ChatGPT-oauth-plan",      # operator's flat-rate ChatGPT Plus / Codex CLI
-    "claude-oauth",     # Anthropic Pro Max OAuth
-    "anthropic-oauth",  # legacy alias if ever introduced
-    # v3.2.10: grok-web (operator's grok.com Lite/Premium subscription).
-    # Cost-class is subscription — no per-call billing — so traffic to
-    # grok-web should record cost=$0 to total_cost_usd and quota_usd
-    # gets the rated estimate for visibility. Pre-v3.2.10 grok-web was
-    # missing here, but it didn't matter because the dispatcher also
-    # missed record_outcome entirely (separate v3.2.10 fix).
-    "grok-web",
-    # v4.4.31: cursor-oauth (operator's Cursor Pro/Business subscription).
-    # Calls route through the Cursor-To-OpenAI sidecar at
-    # ``llm-proxy2-cursor-bridge``; the upstream cost lives in Cursor's
-    # flat-rate plan, so we record $0 against the api_key total and
-    # surface the rated estimate as ``quota_usd``.
-    "cursor-oauth",
-})
+SUBSCRIPTION_TIER_PROVIDER_TYPES = frozenset(
+    {
+        "ChatGPT-oauth-plan",  # operator's flat-rate ChatGPT Plus / Codex CLI
+        "claude-oauth",  # Anthropic Pro Max OAuth
+        "anthropic-oauth",  # legacy alias if ever introduced
+        # v3.2.10: grok-web (operator's grok.com Lite/Premium subscription).
+        # Cost-class is subscription — no per-call billing — so traffic to
+        # grok-web should record cost=$0 to total_cost_usd and quota_usd
+        # gets the rated estimate for visibility. Pre-v3.2.10 grok-web was
+        # missing here, but it didn't matter because the dispatcher also
+        # missed record_outcome entirely (separate v3.2.10 fix).
+        "grok-web",
+        # v4.4.31: cursor-oauth (operator's Cursor Pro/Business subscription).
+        # Calls route through the Cursor-To-OpenAI sidecar at
+        # ``llm-proxy2-cursor-bridge``; the upstream cost lives in Cursor's
+        # flat-rate plan, so we record $0 against the api_key total and
+        # surface the rated estimate as ``quota_usd``.
+        "cursor-oauth",
+    }
+)
 
 
 def is_subscription_provider(provider) -> bool:
@@ -89,14 +97,16 @@ _SECRET_PATTERNS = [
     (re.compile(r"eyJ[\w-]+\.[\w-]+\.[\w-]+"), "eyJ***REDACTED***"),
     # JSON "key": "value" for any sensitive-looking key (defence-in-depth; the
     # structural pass below is the primary defence for structured bodies)
-    (re.compile(
-        r'"(?i:authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|'
-        r'client[_-]?secret|password|secret|token|cookie)"\s*:\s*"[^"]*"'
-    ), '"***REDACTED***": "***REDACTED***"'),
+    (
+        re.compile(
+            r'"(?i:authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|'
+            r'client[_-]?secret|password|secret|token|cookie)"\s*:\s*"[^"]*"'
+        ),
+        '"***REDACTED***": "***REDACTED***"',
+    ),
     # Raw header form: redact the VALUE, not just the scheme word (the old
     # pattern left `Bearer <token>` intact).
-    (re.compile(r'(?im)^(authorization|x-api-key)\s*:\s*.+$'),
-     r'\1: ***REDACTED***'),
+    (re.compile(r"(?im)^(authorization|x-api-key)\s*:\s*.+$"), r"\1: ***REDACTED***"),
 ]
 
 # Keys whose VALUE is a secret, matched structurally before serialization.
@@ -133,7 +143,7 @@ def _redact_structure(obj: Any, _depth: int = 0) -> Any:
     return obj
 
 
-def _serialize_body(body: Any, max_chars: int) -> Optional[str]:
+def _serialize_body(body: Any, max_chars: int) -> str | None:
     """Compact-JSON serialize + redact + truncate. Returns None on failure."""
     if body is None:
         return None
@@ -150,7 +160,7 @@ def _serialize_body(body: Any, max_chars: int) -> Optional[str]:
     return text
 
 
-def _extract_preview(body: Any, max_chars: int = 240) -> Optional[str]:
+def _extract_preview(body: Any, max_chars: int = 240) -> str | None:
     """Redacting wrapper (v5.22.43). The preview path is default-on
     (``activity_log_capture_previews`` defaults True) and previously stored the
     extracted text verbatim — so a secret a caller pasted into a user message
@@ -159,7 +169,7 @@ def _extract_preview(body: Any, max_chars: int = 240) -> Optional[str]:
     return _redact(raw) if isinstance(raw, str) else raw
 
 
-def _extract_preview_raw(body: Any, max_chars: int = 240) -> Optional[str]:
+def _extract_preview_raw(body: Any, max_chars: int = 240) -> str | None:
     """v3.0.34: extract a short text preview from a request/response body
     BEFORE truncation. Frontend was falling through to raw JSON when the
     serialized body exceeded the truncation cap (50k default) — JSON.parse
@@ -199,7 +209,8 @@ def _extract_preview_raw(body: Any, max_chars: int = 240) -> Optional[str]:
                                 parts.append(f"[tool_result] {tc}")
                             elif isinstance(tc, list):
                                 inner = " ".join(
-                                    b.get("text", "") for b in tc
+                                    b.get("text", "")
+                                    for b in tc
                                     if isinstance(b, dict) and b.get("type") == "text"
                                 )
                                 if inner:
@@ -210,8 +221,9 @@ def _extract_preview_raw(body: Any, max_chars: int = 240) -> Optional[str]:
         # Anthropic-shape response: content[]
         cont = d.get("content")
         if isinstance(cont, list) and cont:
-            txt = " ".join(b.get("text", "") for b in cont
-                           if isinstance(b, dict) and b.get("type") == "text").strip()
+            txt = " ".join(
+                b.get("text", "") for b in cont if isinstance(b, dict) and b.get("type") == "text"
+            ).strip()
             if txt:
                 return txt[:max_chars]
         # OpenAI-shape response: choices[0].message.content
@@ -223,12 +235,13 @@ def _extract_preview_raw(body: Any, max_chars: int = 240) -> Optional[str]:
         # Last-ditch: system prompt snippet (request side).
         sysp = d.get("system")
         if isinstance(sysp, str) and sysp.strip():
-            return f"[system] {sysp[:max_chars - 9]}"
+            return f"[system] {sysp[: max_chars - 9]}"
         if isinstance(sysp, list):
-            txt = " ".join(b.get("text", "") for b in sysp
-                           if isinstance(b, dict) and b.get("type") == "text").strip()
+            txt = " ".join(
+                b.get("text", "") for b in sysp if isinstance(b, dict) and b.get("type") == "text"
+            ).strip()
             if txt:
-                return f"[system] {txt[:max_chars - 9]}"
+                return f"[system] {txt[: max_chars - 9]}"
     except Exception:
         return None
     return None
@@ -249,8 +262,11 @@ def _attach_client_ip(meta: dict) -> None:
     """
     try:
         from app.observability.request_context import (
-            get_client_ip, get_client_ip_inside, get_internal_source,
+            get_client_ip,
+            get_client_ip_inside,
+            get_internal_source,
         )
+
         client_ip = get_client_ip()
         client_ip_inside = get_client_ip_inside()
         if client_ip:
@@ -272,21 +288,21 @@ def _attach_client_ip(meta: dict) -> None:
 def _build_event_meta_base(
     *,
     model: str,
-    provider_name: Optional[str],
-    api_key_prefix: Optional[str],
+    provider_name: str | None,
+    api_key_prefix: str | None,
     key_record_id: str,
     is_subscription: bool,
     is_probe: bool,
-    requested_model: Optional[str],
+    requested_model: str | None,
     had_lmrh_hint: bool,
-    lmrh_hint_raw: Optional[str],
-    lmrh_warnings: Optional[list[str]],
+    lmrh_hint_raw: str | None,
+    lmrh_warnings: list[str] | None,
     # v5.0.0 — compliance enrichment (decision 9): when a substitution
     # fired, stamp the activity_log row so audit grep can find it without
     # JOINing compliance_events. Not a new column — lives in event_meta.
     compliance_substituted: bool = False,
-    blocked_company: Optional[str] = None,
-    served_company: Optional[str] = None,
+    blocked_company: str | None = None,
+    served_company: str | None = None,
 ) -> dict:
     """v3.7.13 R5 — build the branch-agnostic activity-log meta dict.
 
@@ -304,16 +320,16 @@ def _build_event_meta_base(
     # so client-side substitution-detection compares apples to apples.
     served_normalized = model.split("/", 1)[1] if "/" in model else model
     meta: dict = {
-        "model": model,                       # legacy — litellm-prefixed
-        "served_model": served_normalized,    # v3.0.41: bare slug for fair compare
+        "model": model,  # legacy — litellm-prefixed
+        "served_model": served_normalized,  # v3.0.41: bare slug for fair compare
         "provider_name": provider_name,
-        "api_key_prefix": api_key_prefix,     # v3.2.12: caller attribution
-        "api_key_id": key_record_id,          # v3.6.2: full id for cross-table joins
+        "api_key_prefix": api_key_prefix,  # v3.2.12: caller attribution
+        "api_key_id": key_record_id,  # v3.6.2: full id for cross-table joins
         "cost_class": "subscription" if is_subscription else "per_call",
         # v3.9.16 (P3b) — which node served this request. Without this,
         # provider_metrics is cluster-aggregate-only (LWW-replicated)
         # and operators can't tell whether the load is balanced across
-        # www01 / www02 / GCP. Stored in event_meta (not a column) so
+        # multiple gateways. Stored in event_meta (not a column) so
         # we don't need a schema migration; per-node rollups query via
         # `json_extract(event_meta, '$.node_id')`.
         "node_id": getattr(settings, "cluster_node_id", None) or "unknown",
@@ -328,8 +344,10 @@ def _build_event_meta_base(
     # the schema stays lean — absent key implies False.
     try:
         from app.observability.request_context import (
-            get_had_x_conversation_id, get_had_x_memory_tag,
+            get_had_x_conversation_id,
+            get_had_x_memory_tag,
         )
+
         if get_had_x_conversation_id():
             meta["had_x_conversation_id"] = True
         if get_had_x_memory_tag():
@@ -405,7 +423,8 @@ def _extract_tool_call_stats(response_body: Any) -> tuple[int, bool]:
         if anth_calls:
             count = len(anth_calls)
             valid = all(
-                isinstance(b.get("name"), str) and bool(b.get("name"))
+                isinstance(b.get("name"), str)
+                and bool(b.get("name"))
                 and isinstance(b.get("input"), dict)
                 for b in anth_calls
             )
@@ -431,6 +450,7 @@ def _extract_tool_call_stats(response_body: Any) -> tuple[int, bool]:
                 args = fn.get("arguments")
                 if isinstance(args, str):
                     import json as _json
+
                     try:
                         parsed = _json.loads(args) if args else {}
                         if not isinstance(parsed, dict):
@@ -443,9 +463,7 @@ def _extract_tool_call_stats(response_body: Any) -> tuple[int, bool]:
     return 0, True
 
 
-def _maybe_sample_4xx_body(
-    metadata: dict, request_body: Any, error_class: Optional[str]
-) -> dict:
+def _maybe_sample_4xx_body(metadata: dict, request_body: Any, error_class: str | None) -> dict:
     """v3.9.2 (#268) — probabilistic full request_body capture on
     bad_request rejections from upstream.
 
@@ -496,7 +514,7 @@ def _maybe_sample_4xx_body(
 _WARNING_ERROR_CLASSES = frozenset({"rate_limit", "timeout", "network"})
 
 
-def severity_for_error_class(error_class: Optional[str]) -> str:
+def severity_for_error_class(error_class: str | None) -> str:
     """Map an ``error_class`` (see circuit_breaker.classify_error) to an
     activity-log severity. Expected/transient failure modes are
     ``warning``; operator-actionable ones are ``error``."""
@@ -566,18 +584,18 @@ async def record_outcome(
     cache_read: int = 0,
     request_body: Any = None,
     response_body: Any = None,
-    provider_name: Optional[str] = None,
+    provider_name: str | None = None,
     # v3.0.35: new self-serve diagnostic fields per DevinGPT 2026-05-01 ask.
     # All optional + backwards-compat — older callers stay working.
-    requested_model: Optional[str] = None,
+    requested_model: str | None = None,
     had_lmrh_hint: bool = False,
-    lmrh_warnings: Optional[list[str]] = None,
+    lmrh_warnings: list[str] | None = None,
     # v3.0.55: capture the raw LLM-Hint header value so post-hoc cost /
     # routing diagnostics don't have to guess at what the caller sent.
     # 2026-05-04 burn diagnosis hit a wall on this — paperless's hint was
     # silently rerouting them off claude-oauth onto Vertex (economy-tier
     # mismatch) and we couldn't see the hint to confirm.
-    lmrh_hint_raw: Optional[str] = None,
+    lmrh_hint_raw: str | None = None,
     # v3.8.3 (#263): tool-call telemetry. Caller-side annotated:
     # "native"   — request had tools=[] and went through litellm native
     #              tool-protocol bridging (the response.tool_calls path).
@@ -589,14 +607,14 @@ async def record_outcome(
     # The success path computes tool_calls_emitted (count) + validated
     # (all calls have name + dict input) from response_body when this
     # is non-None.
-    tool_call_format: Optional[str] = None,
+    tool_call_format: str | None = None,
     # v5.0.0 — compliance enrichment (decision 9). When a substitution
     # fired for this request, propagate to the activity_log row's
     # event_meta.compliance dict so audit grep can find it without
     # JOINing compliance_events.
     compliance_substituted: bool = False,
-    blocked_company: Optional[str] = None,
-    served_company: Optional[str] = None,
+    blocked_company: str | None = None,
+    served_company: str | None = None,
 ) -> None:
     # v3.0.50: classify provider as subscription vs per-call so paperless's
     # cost ticker (and api_keys.total_cost_usd) doesn't inflate from
@@ -618,20 +636,19 @@ async def record_outcome(
     # key_record_id "probe-keepalive" which has no row in api_keys; surface
     # that as a literal "probe-keepalive" prefix so probe events stay
     # filterable without a special case at every readsite.
-    api_key_prefix: Optional[str] = None
+    api_key_prefix: str | None = None
     if key_record_id == "probe-keepalive":
         api_key_prefix = "probe-keepalive"
     else:
         try:
             from app.models.db import ApiKey
+
             key_obj = await db.get(ApiKey, key_record_id)
-            api_key_prefix = (
-                getattr(key_obj, "key_prefix", None) if key_obj else None
-            )
+            api_key_prefix = getattr(key_obj, "key_prefix", None) if key_obj else None
         except Exception:
             api_key_prefix = None
     if explicit_cost_class in ("subscription", "per_call"):
-        is_subscription = (explicit_cost_class == "subscription")
+        is_subscription = explicit_cost_class == "subscription"
     else:
         is_subscription = provider_type in SUBSCRIPTION_TIER_PROVIDER_TYPES
     is_probe = key_record_id == "probe-keepalive"
@@ -654,15 +671,28 @@ async def record_outcome(
         # accurate breakdown rather than the token-proportional
         # heuristic the v3.3.x fallback applies.
         await record_request(
-            db, provider_id, True, in_tok, out_tok, latency_ms, cost,
-            key_record_id, ttft_ms, is_probe=is_probe,
+            db,
+            provider_id,
+            True,
+            in_tok,
+            out_tok,
+            latency_ms,
+            cost,
+            key_record_id,
+            ttft_ms,
+            is_probe=is_probe,
             cost_split=(cost_in, cost_out),
         )
         await record_cost(db, key_record_id, cost)
         observe_request(
-            provider=provider_id, model=model, endpoint=endpoint,
-            success=True, duration_sec=latency_ms / 1000.0,
-            in_tokens=in_tok, out_tokens=out_tok, cost_usd=cost,
+            provider=provider_id,
+            model=model,
+            endpoint=endpoint,
+            success=True,
+            duration_sec=latency_ms / 1000.0,
+            in_tokens=in_tok,
+            out_tokens=out_tok,
+            cost_usd=cost,
         )
         if ttft_ms > 0:
             observe_ttft(provider_id, model, ttft_ms / 1000.0)
@@ -724,8 +754,13 @@ async def record_outcome(
             meta["tool_call_validated"] = tc_valid
         meta = _attach_bodies(meta, request_body, response_body)
         await _emit_outcome_event(
-            db, is_probe=is_probe, severity="info", msg=msg, meta=meta,
-            provider_id=provider_id, key_record_id=key_record_id,
+            db,
+            is_probe=is_probe,
+            severity="info",
+            msg=msg,
+            meta=meta,
+            provider_id=provider_id,
+            key_record_id=key_record_id,
         )
     else:
         # v2.7.8 BUG-002: classify the error. Auth errors are PERMANENT
@@ -737,6 +772,7 @@ async def record_outcome(
         # isn't broken; the caller is. Audit row still written below
         # so the rate is visible, but the provider's CB stays healthy.
         from app.routing.circuit_breaker import is_caller_side_error
+
         _caller_side = is_caller_side_error(error_str)
         if is_auth_error(error_str):
             # v5.8.3 — keepalive-probe 401s no longer trip the persistent
@@ -760,17 +796,32 @@ async def record_outcome(
         # v3.3.3: same is_probe gate on the failure path so probe-only
         # rate-limit warnings don't drag down user-visible success_rate.
         await record_request(
-            db, provider_id, False, 0, 0, 0, 0, key_record_id,
+            db,
+            provider_id,
+            False,
+            0,
+            0,
+            0,
+            0,
+            key_record_id,
             is_probe=is_probe,
         )
         observe_request(
-            provider=provider_id, model=model, endpoint=endpoint,
-            success=False, duration_sec=0.0,
-            in_tokens=0, out_tokens=0, cost_usd=0.0,
+            provider=provider_id,
+            model=model,
+            endpoint=endpoint,
+            success=False,
+            duration_sec=0.0,
+            in_tokens=0,
+            out_tokens=0,
+            cost_usd=0.0,
         )
         msg_prefix = "[probe] " if is_probe else ""
-        msg = (f"{msg_prefix}{provider_name} · {model} — error"
-               if provider_name else f"{msg_prefix}{model} — error")
+        msg = (
+            f"{msg_prefix}{provider_name} · {model} — error"
+            if provider_name
+            else f"{msg_prefix}{model} — error"
+        )
         # v3.7.13 R5 — same branch-agnostic meta as the success path.
         meta = _build_event_meta_base(
             model=model,
@@ -803,8 +854,11 @@ async def record_outcome(
         # ``error``; expected transient ones (rate-limit, timeout,
         # network) stay ``warning``.
         await _emit_outcome_event(
-            db, is_probe=is_probe,
+            db,
+            is_probe=is_probe,
             severity=severity_for_error_class(meta["error_class"]),
-            msg=msg, meta=meta,
-            provider_id=provider_id, key_record_id=key_record_id,
+            msg=msg,
+            meta=meta,
+            provider_id=provider_id,
+            key_record_id=key_record_id,
         )

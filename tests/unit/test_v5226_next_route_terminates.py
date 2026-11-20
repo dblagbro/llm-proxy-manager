@@ -13,6 +13,7 @@ These tests drive _next_route with a stubbed select_provider and assert it
 returns or raises. Against the pre-fix code they hang rather than fail, so each
 is wrapped in a hard timeout that converts a spin into a failure.
 """
+
 import asyncio
 import sys
 import types
@@ -67,8 +68,13 @@ def _install_select_provider(monkeypatch, responder):
 
 async def _next(tried):
     return await fb._next_route(
-        db=None, hint=None, has_tools=False, has_images=False,
-        key_type="standard", pinned_provider_id=None, model_override=None,
+        db=None,
+        hint=None,
+        has_tools=False,
+        has_images=False,
+        key_type="standard",
+        pinned_provider_id=None,
+        model_override=None,
         tried_ids=set(tried),
     )
 
@@ -80,6 +86,7 @@ async def test_terminates_when_selector_keeps_returning_tried_provider(monkeypat
     Pre-fix this spins forever. Post-fix the full exclusion set is passed, so
     a correct selector raises RuntimeError -> "no untried candidate remains".
     """
+
     def responder(kw, _n):
         excluded = kw.get("exclude_provider_ids") or set()
         # Honest selector: cannot satisfy the exclusion set.
@@ -98,6 +105,7 @@ async def test_terminates_when_selector_keeps_returning_tried_provider(monkeypat
 @pytest.mark.asyncio
 async def test_passes_full_exclusion_set_not_a_single_seed(monkeypatch):
     """Root cause: only ONE tried provider was ever excluded per call."""
+
     def responder(_kw, _n):
         return _Route("C")
 
@@ -132,6 +140,7 @@ async def test_oauth_skips_still_terminate(monkeypatch):
 @pytest.mark.asyncio
 async def test_misbehaving_selector_raises_instead_of_spinning(monkeypatch):
     """Defensive guard: an excluded provider coming back must NOT loop."""
+
     def responder(_kw, _n):
         return _Route("A")  # already excluded, ignores the contract
 
@@ -150,9 +159,14 @@ async def test_pinned_provider_has_no_fallback(monkeypatch):
     with pytest.raises(RuntimeError, match="pinned provider has no fallback"):
         await asyncio.wait_for(
             fb._next_route(
-                db=None, hint=None, has_tools=False, has_images=False,
-                key_type="standard", pinned_provider_id="P1",
-                model_override=None, tried_ids={"A"},
+                db=None,
+                hint=None,
+                has_tools=False,
+                has_images=False,
+                key_type="standard",
+                pinned_provider_id="P1",
+                model_override=None,
+                tried_ids={"A"},
             ),
             timeout=TIMEOUT_S,
         )

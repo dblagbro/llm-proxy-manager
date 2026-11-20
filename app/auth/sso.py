@@ -22,15 +22,14 @@ The sso_* fields on settings that mention SAML (SSO_ENTITY_ID,
 SSO_IDP_METADATA_URL, SSO_ACS_URL) are wired but parsing a SAMLResponse
 requires python3-saml to be installed; otherwise a 501 is returned.
 """
+
 from __future__ import annotations
 
 import base64
 import hashlib
-import secrets
 import logging
+import secrets
 from dataclasses import dataclass
-from typing import Optional
-
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +40,11 @@ logger = logging.getLogger(__name__)
 def generate_pkce_pair() -> tuple[str, str]:
     """Return (code_verifier, code_challenge). S256 method."""
     verifier = secrets.token_urlsafe(48)
-    challenge = base64.urlsafe_b64encode(
-        hashlib.sha256(verifier.encode("ascii")).digest()
-    ).rstrip(b"=").decode("ascii")
+    challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest())
+        .rstrip(b"=")
+        .decode("ascii")
+    )
     return verifier, challenge
 
 
@@ -60,10 +61,10 @@ def generate_nonce() -> str:
 
 @dataclass
 class SSOIdentity:
-    subject: str           # "sub" claim — stable user ID at the IdP
-    email: Optional[str]
-    name: Optional[str]
-    groups: list[str]      # often in "groups" or "roles" claim
+    subject: str  # "sub" claim — stable user ID at the IdP
+    email: str | None
+    name: str | None
+    groups: list[str]  # often in "groups" or "roles" claim
     raw_claims: dict
 
 
@@ -82,6 +83,7 @@ def parse_id_token_claims(id_token: str) -> dict:
     if pad < 4:
         payload_b64 += "=" * pad
     import json
+
     return json.loads(base64.urlsafe_b64decode(payload_b64).decode("utf-8"))
 
 
@@ -103,9 +105,9 @@ def extract_identity(claims: dict) -> SSOIdentity:
 
 
 _DEFAULT_GROUP_MAP = {
-    "llm-proxy-admin":    "admin",
+    "llm-proxy-admin": "admin",
     "llm-proxy-operator": "operator",
-    "llm-proxy-viewer":   "viewer",
+    "llm-proxy-viewer": "viewer",
 }
 
 

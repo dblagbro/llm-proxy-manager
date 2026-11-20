@@ -1,4 +1,5 @@
 """v5.22.58 — spend-limit billing classification + metered-guard log line."""
+
 from __future__ import annotations
 
 import logging
@@ -25,17 +26,23 @@ async def test_guard_rejection_logs_key_and_dropped_count(caplog):
         await conn.run_sync(Base.metadata.create_all)
     Session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with Session() as db:
-        db.add(ApiKey(id="k-guard", name="t", key_hash="h", key_prefix="p",
-                      metered_allowed=False))
-        db.add(Provider(id="p-openai", name="p-openai", provider_type="openai",
-                        enabled=True, priority=1, default_model="m"))
+        db.add(ApiKey(id="k-guard", name="t", key_hash="h", key_prefix="p", metered_allowed=False))
+        db.add(
+            Provider(
+                id="p-openai",
+                name="p-openai",
+                provider_type="openai",
+                enabled=True,
+                priority=1,
+                default_model="m",
+            )
+        )
         await db.commit()
     with caplog.at_level(logging.WARNING, logger="app.routing.router"):
         async with Session() as db:
             with pytest.raises(RuntimeError, match="No unmetered providers"):
                 await select_provider(db, None, api_key_id="k-guard")
-    msgs = [r.getMessage() for r in caplog.records
-            if "metered_guard_rejected" in r.getMessage()]
+    msgs = [r.getMessage() for r in caplog.records if "metered_guard_rejected" in r.getMessage()]
     assert len(msgs) == 1
     assert "api_key_id=k-guard" in msgs[0]
     assert "dropped=1" in msgs[0]

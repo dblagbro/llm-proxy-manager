@@ -20,6 +20,7 @@ Fix (committed 2026-06-03):
 These tests pin that contract so a future refactor of the company map
 can't silently regress this multi-company semantics.
 """
+
 import pytest
 
 from app.compliance import (
@@ -140,7 +141,8 @@ def test_banning_both_anthropic_and_aws_drops_only_bedrock_anthropic():
         default_model="anthropic.claude-3-haiku-v1:0",
     )
     bedrock_titan = _Provider(
-        owner_company="aws", default_model="amazon.titan-text-express-v1",
+        owner_company="aws",
+        default_model="amazon.titan-text-express-v1",
     )
     openai = _Provider(owner_company="openai", default_model="gpt-4o")
 

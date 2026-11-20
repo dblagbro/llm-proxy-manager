@@ -17,13 +17,14 @@ Lifecycle:
     failed, expired, cancelled). Subscribers receive a sentinel and the
     SSE stream returns. Late subscribers re-fetch from DB.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 from collections import deque
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import AsyncIterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -46,13 +47,14 @@ class _RunChannel:
     Not thread-safe — assumes single-threaded asyncio access (FastAPI's
     default).
     """
+
     __slots__ = ("run_id", "_ring", "_subscribers", "_closed", "_lock")
 
     def __init__(self, run_id: str) -> None:
         self.run_id = run_id
         # deque(maxlen) gives O(1) append + automatic eviction
         self._ring: deque[Event] = deque(maxlen=RING_SIZE)
-        self._subscribers: set[asyncio.Queue[Optional[Event]]] = set()
+        self._subscribers: set[asyncio.Queue[Event | None]] = set()
         self._closed = False
         self._lock = asyncio.Lock()
 
@@ -119,7 +121,7 @@ def get_or_create(run_id: str) -> _RunChannel:
     return ch
 
 
-def get(run_id: str) -> Optional[_RunChannel]:
+def get(run_id: str) -> _RunChannel | None:
     """Return the existing channel without creating one."""
     return _CHANNELS.get(run_id)
 
@@ -172,9 +174,8 @@ async def stream_events(
         while True:
             try:
                 ev = await asyncio.wait_for(q.get(), timeout=keepalive_sec)
-            except asyncio.TimeoutError:
-                yield Event(seq=last_event_id, kind="__keepalive__",
-                            payload={}, ts=0.0)
+            except TimeoutError:
+                yield Event(seq=last_event_id, kind="__keepalive__", payload={}, ts=0.0)
                 continue
             if ev is None:
                 # Terminal sentinel

@@ -1,7 +1,7 @@
 """Unit tests for the OAuth passthrough capture endpoint."""
+
 import sys
 import types
-import pytest
 
 _stub = types.ModuleType("litellm")
 _stub.RateLimitError = type("RateLimitError", (Exception,), {})
@@ -9,8 +9,11 @@ sys.modules.setdefault("litellm", _stub)
 if not hasattr(sys.modules["litellm"], "RateLimitError"):
     sys.modules["litellm"].RateLimitError = type("RateLimitError", (Exception,), {})
 
-from app.api.oauth_capture import (
-    _filter_req_headers, _filter_resp_headers, _safe_text, _HOP_BY_HOP,
+from app.api.oauth_capture import (  # noqa: E402
+    _HOP_BY_HOP,
+    _filter_req_headers,
+    _filter_resp_headers,
+    _safe_text,
 )
 
 
@@ -60,7 +63,7 @@ class TestSafeText:
 
     def test_binary_base64_encoded(self):
         """Non-utf8 bytes are represented so the capture log still persists."""
-        raw = bytes([0x80, 0x81, 0xff, 0xfe])  # invalid utf-8
+        raw = bytes([0x80, 0x81, 0xFF, 0xFE])  # invalid utf-8
         out = _safe_text(raw)
         assert out.startswith("[binary:")
         assert out.endswith("]")
@@ -69,9 +72,16 @@ class TestSafeText:
 class TestHopByHopSet:
     def test_includes_expected_headers(self):
         expected = {
-            "connection", "keep-alive", "proxy-authenticate",
-            "proxy-authorization", "te", "trailer", "transfer-encoding",
-            "upgrade", "content-length", "host",
+            "connection",
+            "keep-alive",
+            "proxy-authenticate",
+            "proxy-authorization",
+            "te",
+            "trailer",
+            "transfer-encoding",
+            "upgrade",
+            "content-length",
+            "host",
         }
         assert expected <= _HOP_BY_HOP
 

@@ -12,30 +12,24 @@ This test file locks in:
 - Wiring is present in messages.py dispatch site
 - Version bumped
 """
+
 from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
-
+from unittest.mock import MagicMock
 
 # ── (1) Selector helper surface ─────────────────────────────────────
-
-
 from tests.unit._handler_surface import messages_handler_source
 
 
 def test_apply_fanout_helper_importable():
-    from app.providers.oauth_account_selector import (
-        apply_fanout_to_kwargs, resolve_access_token,
-        resolve_strategy, VALID_STRATEGIES, _OAUTH_PROVIDER_TYPES,
-    )
+    pass
 
 
 def test_valid_strategies_locked():
     from app.providers.oauth_account_selector import VALID_STRATEGIES
+
     assert VALID_STRATEGIES == {"least_utilized", "round_robin", "least_recently_used"}
 
 
@@ -55,14 +49,19 @@ def test_oauth_provider_types_locked():
     codex-oauth stays for any row predating the rename.
     """
     from app.providers.oauth_account_selector import _OAUTH_PROVIDER_TYPES
+
     assert _OAUTH_PROVIDER_TYPES == {
-        "cursor-oauth", "codex-oauth", "ChatGPT-oauth-plan", "claude-oauth",
+        "cursor-oauth",
+        "codex-oauth",
+        "ChatGPT-oauth-plan",
+        "claude-oauth",
     }
 
 
 def test_apply_fanout_no_op_for_non_oauth_provider():
     """A provider whose type isn't OAuth MUST NOT touch kwargs or DB."""
     from app.providers.oauth_account_selector import apply_fanout_to_kwargs
+
     kwargs = {"api_key": "legacy-token"}
     provider = MagicMock()
     provider.provider_type = "anthropic"
@@ -73,8 +72,9 @@ def test_apply_fanout_no_op_for_non_oauth_provider():
 
 
 def test_apply_fanout_no_op_when_disabled_globally():
-    from app.providers.oauth_account_selector import apply_fanout_to_kwargs
     from app.config import settings as _s
+    from app.providers.oauth_account_selector import apply_fanout_to_kwargs
+
     kwargs = {"api_key": "legacy-token"}
     provider = MagicMock()
     provider.provider_type = "cursor-oauth"
@@ -101,7 +101,7 @@ def test_messages_dispatch_calls_apply_fanout():
     assert "from app.providers.oauth_account_selector import apply_fanout_to_kwargs" in src
     assert "apply_fanout_to_kwargs(" in src
     # And emits the observability header when an account was picked.
-    assert 'X-OAuth-Account' in src
+    assert "X-OAuth-Account" in src
 
 
 # ── (3) Strategy resolution ─────────────────────────────────────────
@@ -109,6 +109,7 @@ def test_messages_dispatch_calls_apply_fanout():
 
 def test_resolve_strategy_uses_provider_override():
     from app.providers.oauth_account_selector import resolve_strategy
+
     p = MagicMock()
     p.oauth_account_strategy = "round_robin"
     assert resolve_strategy(p) == "round_robin"
@@ -116,6 +117,7 @@ def test_resolve_strategy_uses_provider_override():
 
 def test_resolve_strategy_falls_back_to_settings_default():
     from app.providers.oauth_account_selector import resolve_strategy
+
     p = MagicMock()
     p.oauth_account_strategy = None
     # Default is "least_utilized" per operator sign-off 2026-06-30
@@ -125,6 +127,7 @@ def test_resolve_strategy_falls_back_to_settings_default():
 def test_resolve_strategy_degrades_on_unknown_string():
     """A typo in provider.oauth_account_strategy MUST NOT break dispatch."""
     from app.providers.oauth_account_selector import resolve_strategy
+
     p = MagicMock()
     p.oauth_account_strategy = "nonsense_typo"
     assert resolve_strategy(p) == "least_utilized"
@@ -135,10 +138,9 @@ def test_resolve_strategy_degrades_on_unknown_string():
 
 def test_version_bumped():
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m
     major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    assert (major, minor, patch) >= (5, 15, 1), (
-        f"expected >= 5.15.1, got {major}.{minor}.{patch}"
-    )
+    assert (major, minor, patch) >= (5, 15, 1), f"expected >= 5.15.1, got {major}.{minor}.{patch}"

@@ -21,6 +21,7 @@ Semantics:
   budget. Token approximation: 1 token ≈ 4 characters of JSON
   (Anthropic claim for JSON schemas; close enough for budget gating).
 """
+
 from __future__ import annotations
 
 import fnmatch
@@ -94,7 +95,8 @@ def filter_tools_for_key(
     ``.name`` attribute). The returned list preserves input order.
     """
     return [
-        t for t in tools
+        t
+        for t in tools
         if is_tool_allowed_for_key(
             getattr(t, "name", "") or "",
             mcp_tools_allow,
@@ -110,10 +112,7 @@ def check_token_budget(
     """Returns ``(ok, total_tokens)``. ``ok`` is False if a budget is
     set and the estimated total exceeds it. ``total_tokens`` is the
     sum across the supplied tool list."""
-    total = sum(
-        estimate_schema_tokens(getattr(t, "inputSchema", None))
-        for t in tools
-    )
+    total = sum(estimate_schema_tokens(getattr(t, "inputSchema", None)) for t in tools)
     if mcp_schema_token_budget is None:
         return True, total
     return total <= int(mcp_schema_token_budget), total

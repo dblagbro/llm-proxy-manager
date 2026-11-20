@@ -12,20 +12,18 @@ The router uses the same ``/api/providers`` prefix as providers.py;
 registered separately in main.py. ``_get_or_404`` is imported from
 providers.py for shared 404 handling.
 """
+
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.admin import AdminUser, require_admin
 from app.models.database import get_db
 from app.models.db import ModelCapability
-from app.auth.admin import require_admin, AdminUser
 from app.routing.capability_inference import infer_capability_profile
 
 router = APIRouter(prefix="/api/providers", tags=["providers"])
-
-
-from typing import Optional
 
 
 class CapabilityUpdate(BaseModel):
@@ -43,8 +41,8 @@ class CapabilityUpdate(BaseModel):
     # Hub capability admin form. Optional + defaulted so older Hub UI
     # clients that don't send them still PUT successfully.
     aliases: list[str] = []
-    model_family: Optional[str] = None
-    model_variant: Optional[str] = None
+    model_family: str | None = None
+    model_variant: str | None = None
 
 
 @router.get("/{provider_id}/node-auth-states")
@@ -73,6 +71,7 @@ async def get_node_auth_states(
         }, ...]
     """
     from app.routing.node_auth_state import read_all_states
+
     rows = await read_all_states(db, provider_id)
     return [
         {
@@ -161,7 +160,6 @@ async def infer_capabilities(
         updated += 1
     await db.commit()
     return {"updated": updated}
-
 
 
 def _serialize_cap(c: ModelCapability) -> dict:

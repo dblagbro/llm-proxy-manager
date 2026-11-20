@@ -13,18 +13,22 @@ Pin checks:
 - fail-OPEN returns the configured default on DB error
 - on/off labels surface in the audit reason text
 """
+
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
 from sqlalchemy.ext.asyncio import (
-    AsyncSession, async_sessionmaker, create_async_engine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
 )
 
 
 async def _fresh_db():
     from app.models.db import Base
+
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -33,6 +37,7 @@ async def _fresh_db():
 
 def _make_setting(*, key="compliance.test_flag", default=False):
     from app.monitoring._bool_system_setting import BoolSystemSetting
+
     return BoolSystemSetting(
         setting_key=key,
         default=default,
@@ -49,6 +54,7 @@ def _make_setting(*, key="compliance.test_flag", default=False):
 
 def test_factory_module_exists():
     from app.monitoring._bool_system_setting import BoolSystemSetting
+
     for attr in ("get", "get_session_less", "set", "invalidate_cache"):
         assert hasattr(BoolSystemSetting, attr), f"missing {attr}"
 
@@ -60,8 +66,9 @@ def test_shims_both_use_the_factory():
     es = Path("app/monitoring/llm_emergency_stop.py").read_text()
     for src, label in ((lc, "logging_controls"), (es, "llm_emergency_stop")):
         assert "BoolSystemSetting(" in src, f"{label} doesn't construct the factory"
-        assert "_setting.get" in src or "_setting.set" in src, \
+        assert "_setting.get" in src or "_setting.set" in src, (
             f"{label} doesn't route through the factory"
+        )
 
 
 # ── Behavioral ──────────────────────────────────────────────────────
@@ -97,8 +104,9 @@ async def test_set_then_get_roundtrip():
 async def test_noop_flip_still_audits():
     """Re-engaging an already-engaged flag MUST still write the audit
     row + mark the result as noop. Preserves the pre-refactor contract."""
+    from sqlalchemy import func, select
+
     from app.models.db import CompliancePolicyChange
-    from sqlalchemy import select, func
 
     s = _make_setting()
     Session = await _fresh_db()
@@ -106,9 +114,9 @@ async def test_noop_flip_still_audits():
         await s.set(db, enabled=True, actor="qa")
         result = await s.set(db, enabled=True, actor="qa")
         assert result["noop"] is True
-        n = (await db.execute(
-            select(func.count()).select_from(CompliancePolicyChange)
-        )).scalar_one()
+        n = (
+            await db.execute(select(func.count()).select_from(CompliancePolicyChange))
+        ).scalar_one()
         assert n == 2
 
 
@@ -117,8 +125,9 @@ async def test_audit_row_carries_on_off_labels():
     """The labels passed to the factory must surface in the audit
     summary so an operator scanning policy_change.reason can see at a
     glance which toggle fired and which direction."""
-    from app.models.db import CompliancePolicyChange
     from sqlalchemy import select
+
+    from app.models.db import CompliancePolicyChange
 
     s = _make_setting()  # ENGAGED/DISENGAGED in the helper
     Session = await _fresh_db()
@@ -157,10 +166,14 @@ async def test_invalidate_cache_picks_up_external_writes():
     Session = await _fresh_db()
     async with Session() as db:
         assert await s.get(db) is False  # prime False
-        db.add(SystemSetting(
-            key=s.setting_key, value="true",
-            value_type="bool", updated_at=0.0,
-        ))
+        db.add(
+            SystemSetting(
+                key=s.setting_key,
+                value="true",
+                value_type="bool",
+                updated_at=0.0,
+            )
+        )
         await db.commit()
         # Cached False is still served
         assert await s.get(db) is False
@@ -173,6 +186,7 @@ async def test_get_session_less_opens_own_session():
     """The session-less variant for background callers
     (acompletion_with_retry path) must work without a db arg."""
     import app.models.database as _dbmod
+
     s = _make_setting(default=False)
     Session = await _fresh_db()
     async with Session() as db:
@@ -192,7 +206,7 @@ async def test_fail_open_returns_default_on_db_error():
     shims rely on this (logging_controls fails OPEN to keep observability
     visible; llm_emergency_stop fails OPEN to never halt traffic on a
     transient DB issue)."""
-    from unittest.mock import patch, AsyncMock
+    from unittest.mock import AsyncMock, patch
 
     s_true = _make_setting(default=True)
     s_false = _make_setting(default=False, key="compliance.other")
@@ -200,5 +214,7 @@ async def test_fail_open_returns_default_on_db_error():
     async with Session() as db:
         with patch.object(s_true, "_read_from_db", new=AsyncMock(side_effect=RuntimeError("boom"))):
             assert await s_true.get(db) is True
-        with patch.object(s_false, "_read_from_db", new=AsyncMock(side_effect=RuntimeError("boom"))):
+        with patch.object(
+            s_false, "_read_from_db", new=AsyncMock(side_effect=RuntimeError("boom"))
+        ):
             assert await s_false.get(db) is False

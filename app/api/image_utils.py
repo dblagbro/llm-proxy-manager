@@ -13,7 +13,9 @@ def _has_blocks_of_type(messages: list[dict], block_types: tuple[str, ...]) -> b
 
 
 def _strip_blocks_of_type(
-    messages: list[dict], block_type: str, placeholder: dict,
+    messages: list[dict],
+    block_type: str,
+    placeholder: dict,
 ) -> list[dict]:
     """Replace every block whose `type` == block_type with `placeholder`,
     preserving every other block unchanged. Non-list content is passed
@@ -64,7 +66,9 @@ def strip_images_anthropic(messages: list[dict]) -> list[dict]:
             if block.get("type") == "image":
                 src = block.get("source", {})
                 media = src.get("media_type", "image")
-                new_blocks.append({"type": "text", "text": f"[Image: {media} — not supported by this provider]"})
+                new_blocks.append(
+                    {"type": "text", "text": f"[Image: {media} — not supported by this provider]"}
+                )
             else:
                 new_blocks.append(block)
         out.append({**msg, "content": new_blocks})
@@ -81,6 +85,7 @@ def has_images_openai(messages: list[dict]) -> bool:
 def strip_images_openai(messages: list[dict]) -> list[dict]:
     """Replace OpenAI-format image_url content items with a text placeholder."""
     return _strip_blocks_of_type(
-        messages, "image_url",
+        messages,
+        "image_url",
         {"type": "text", "text": "[Image — not supported by this provider]"},
     )

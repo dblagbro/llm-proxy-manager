@@ -7,10 +7,10 @@ usage_rotator, prune, ai_rate_limiter, cluster_heartbeat,
 cluster_peer_refresh. Source-grep pins lock the wiring; runtime
 verification done live on tmrwww01 after deploy.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-
 
 WIRED_WORKERS = [
     ("app/monitoring/cursor_billing_worker.py", "cursor_billing"),
@@ -43,7 +43,7 @@ def test_all_workers_construct_heartbeat_with_their_name():
     for f, name in WIRED_WORKERS:
         src = Path(f).read_text()
         assert f'WorkerHeartbeat(name="{name}")' in src, (
-            f"{f} must construct WorkerHeartbeat(name=\"{name}\")"
+            f'{f} must construct WorkerHeartbeat(name="{name}")'
         )
 
 
@@ -52,9 +52,7 @@ def test_all_workers_call_tick_in_their_loop():
     files_to_check = {f for f, _ in WIRED_WORKERS}
     for f in files_to_check:
         src = Path(f).read_text()
-        assert "await hb.tick(" in src, (
-            f"{f} must call ``await hb.tick(...)`` at least once"
-        )
+        assert "await hb.tick(" in src, f"{f} must call ``await hb.tick(...)`` at least once"
 
 
 def test_full_worker_roster_is_16_strong():

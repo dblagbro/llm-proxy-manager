@@ -18,6 +18,7 @@ This test pins the include order: providers_stats_router MUST register
 its literal routes BEFORE providers_router's `/{provider_id}` so the
 literals win the prefix race.
 """
+
 from __future__ import annotations
 
 # v5.22.38 — route introspection goes through tests/unit/_route_introspection.py.
@@ -44,6 +45,7 @@ def _route_index(app, path: str) -> int:
 
 def test_rolling_stats_registered_before_provider_id_catchall():
     from app.main import app
+
     # Both routes belong to the /api/providers prefix.
     literal_stats = _route_index(app, "/api/providers/rolling-stats")
     literal_stats_by_node = _route_index(app, "/api/providers/rolling-stats-by-node")

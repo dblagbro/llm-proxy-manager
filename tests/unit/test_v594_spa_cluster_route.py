@@ -6,6 +6,7 @@ prefixes are also legit SPA routes; the bare `/cluster` (and
 `/metrics`) requests returned JSON 404 instead of the SPA shell on
 hard-refresh.
 """
+
 from __future__ import annotations
 
 # v5.22.38 — these assert the SPA catch-all serves index.html, which app/main.py
@@ -33,6 +34,7 @@ frontend_dist_required = _pytest.mark.skipif(
 
 def _client():
     from app.main import app
+
     return TestClient(app)
 
 
@@ -40,9 +42,7 @@ def _client():
 def test_bare_cluster_serves_spa_shell_not_json_404():
     c = _client()
     r = c.get("/cluster")
-    assert r.status_code == 200, (
-        f"GET /cluster should serve SPA shell (200), got {r.status_code}"
-    )
+    assert r.status_code == 200, f"GET /cluster should serve SPA shell (200), got {r.status_code}"
     assert "text/html" in r.headers.get("content-type", "").lower(), (
         "GET /cluster should be HTML (SPA shell), not JSON 404"
     )

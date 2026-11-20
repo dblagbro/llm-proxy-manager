@@ -23,6 +23,7 @@ class of breakage a dependency bump delivers silently.
 flattening and the non-flattening versions. Prefer it over touching
 ``app.routes`` directly in a test.
 """
+
 from __future__ import annotations
 
 

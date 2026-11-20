@@ -1,12 +1,15 @@
 """
 Integration-test conftest — fixtures that manipulate live proxy state.
 """
+
 import time
 
 import pytest
 import requests
 
-from tests.conftest import BASE_URL, ADMIN_USER, ADMIN_PASS
+from tests.conftest import ADMIN_PASS as ADMIN_PASS
+from tests.conftest import ADMIN_USER as ADMIN_USER
+from tests.conftest import BASE_URL
 
 
 class _RedactedHeaders(dict):
@@ -59,6 +62,7 @@ def collect_sse(resp: requests.Response) -> list[dict]:
     channel; we track the most recent ``event:`` and skip its data.
     """
     import json
+
     events = []
     current_event_channel = None  # None = default Anthropic stream
     for line in resp.iter_lines():

@@ -7,19 +7,20 @@ Three changes verified:
 2. record_outcome skips CB increment when caller-side fires.
 3. Auto-probe scheduled when CB transitions OPEN → HALF_OPEN.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
-
 
 # ── Classifier ───────────────────────────────────────────────────────
 
 
 def test_caller_side_classifier_catches_orphan_tool_call():
     from app.routing.circuit_breaker import is_caller_side_error
+
     assert is_caller_side_error(
         "litellm.APIConnectionError: Missing corresponding tool call for tool response message"
     )
@@ -27,11 +28,13 @@ def test_caller_side_classifier_catches_orphan_tool_call():
 
 def test_caller_side_classifier_catches_cursor_bridge_string_expected():
     from app.routing.circuit_breaker import is_caller_side_error
+
     assert is_caller_side_error("Error: request.messages.content: string expected")
 
 
 def test_caller_side_classifier_catches_openai_invalid_user_message():
     from app.routing.circuit_breaker import is_caller_side_error
+
     assert is_caller_side_error("Invalid user message at index 3")
 
 
@@ -39,6 +42,7 @@ def test_caller_side_classifier_misses_real_upstream_errors():
     """Connection refused, 500 ISE, gateway timeout etc. are real
     upstream failures — must NOT match the caller-side classifier."""
     from app.routing.circuit_breaker import is_caller_side_error
+
     assert not is_caller_side_error("OpenAIException - Connection error")
     assert not is_caller_side_error("HTTP 500 Internal Server Error")
     assert not is_caller_side_error("upstream returned 504 gateway timeout")
@@ -50,6 +54,7 @@ def test_caller_side_classifier_misses_auth_errors():
     """Auth errors route through is_auth_error path; must NOT also
     match caller-side."""
     from app.routing.circuit_breaker import is_caller_side_error
+
     assert not is_caller_side_error("authentication_error: invalid token")
     assert not is_caller_side_error("401 Unauthorized")
 
@@ -68,9 +73,7 @@ def test_record_outcome_skips_cb_on_caller_side():
     skip_idx = src.find("elif _caller_side:")
     fail_idx = src.find("await record_failure(provider_id, billing_error=is_billing_error")
     assert skip_idx != -1 and fail_idx != -1
-    assert skip_idx < fail_idx, (
-        "caller-side skip must come before the record_failure fallback"
-    )
+    assert skip_idx < fail_idx, "caller-side skip must come before the record_failure fallback"
 
 
 # ── Auto-probe scheduling ────────────────────────────────────────────
@@ -78,6 +81,7 @@ def test_record_outcome_skips_cb_on_caller_side():
 
 def test_schedule_auto_probe_helper_exists():
     from app.routing.circuit_breaker import _schedule_auto_probe
+
     assert callable(_schedule_auto_probe)
 
 
@@ -87,8 +91,9 @@ async def test_get_state_schedules_auto_probe_on_hold_down_expiry():
     HALF_OPEN, an auto-probe must be scheduled. Locks the wiring in
     the state-machine transition site."""
     import time
-    from app.routing import circuit_breaker as cb
+
     from app.config import settings
+    from app.routing import circuit_breaker as cb
 
     pid = "test-auto-probe-pid"
     # Force the state into OPEN with an expired hold-down so the
@@ -110,6 +115,7 @@ async def test_get_state_does_not_schedule_probe_when_holding_down():
     schedule a probe (the existing keepalive worker handles that case
     separately)."""
     import time
+
     from app.routing import circuit_breaker as cb
 
     pid = "test-still-holding-pid"
@@ -133,4 +139,5 @@ def test_circuit_breaker_success_needed_is_at_least_two():
     successes in HALF_OPEN to close — prevents flapping where one
     lucky success closes the CB only to fail the next call."""
     from app.config import settings
+
     assert settings.circuit_breaker_success_needed >= 2

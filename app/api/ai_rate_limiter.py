@@ -7,9 +7,11 @@ Three lifecycle actions on each ApiKeyAiReview row:
 
 Plus a list endpoint per api_key.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from datetime import timezone as timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import desc, select
@@ -77,7 +79,7 @@ async def dismiss_review(
     review = await _load_review(db, api_key_id, review_id)
     if review.dismissed_at:
         return {"ok": True, "already_dismissed": True, "review": _serialize_review(review)}
-    review.dismissed_at = datetime.now(timezone.utc)
+    review.dismissed_at = datetime.now(UTC)
     await db.commit()
     return {"ok": True, "review": _serialize_review(review)}
 
@@ -100,15 +102,18 @@ async def apply_review(
         return {"ok": True, "already_applied": True, "review": _serialize_review(review)}
     if review.suggested_action == "none":
         raise HTTPException(
-            400, "review has no actionable suggestion (verdict was normal/watch)",
+            400,
+            "review has no actionable suggestion (verdict was normal/watch)",
         )
     rs = await db.execute(select(ApiKey).where(ApiKey.id == api_key_id))
     api_key = rs.scalar_one_or_none()
     if api_key is None:
         raise HTTPException(404, "API key not found")
     from app.config import settings
+
     floor = int(getattr(settings, "ai_rate_limiter_throttle_floor_rpm", 5))
     from app.monitoring.ai_rate_limiter import _apply_suggestion
+
     await _apply_suggestion(db, api_key, review, floor)
     await db.commit()
     return {"ok": True, "review": _serialize_review(review)}
@@ -142,17 +147,18 @@ async def revert_review(
         # (DELETE WHERE ... is a no-op if the row was already removed
         # via the admin endpoint).
         from sqlalchemy import delete as _delete
+
         from app.models.db import BlockedIp
+
         if review.suggested_block_ip:
-            await db.execute(
-                _delete(BlockedIp).where(BlockedIp.ip == review.suggested_block_ip)
-            )
+            await db.execute(_delete(BlockedIp).where(BlockedIp.ip == review.suggested_block_ip))
             try:
                 from app.middleware.ip_block import _clear_cache_for_tests
+
                 _clear_cache_for_tests()
             except Exception:
                 pass
-    review.reverted_at = datetime.now(timezone.utc)
+    review.reverted_at = datetime.now(UTC)
     await db.commit()
     return {"ok": True, "review": _serialize_review(review)}
 

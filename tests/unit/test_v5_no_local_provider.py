@@ -14,6 +14,7 @@ The shape is:
   BEFORE the generic NoSubstitute one and emit a
   ``compliance_no_local_provider`` audit event.
 """
+
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
@@ -32,6 +33,7 @@ async def _isolate_provider_table():
     seed rows that neighboring tests' fixtures depend on."""
     from app.models.database import AsyncSessionLocal
     from app.models.db import Provider
+
     async with AsyncSessionLocal() as db:
         before_ids = {p.id for p in (await db.execute(select(Provider))).scalars().all()}
     yield
@@ -69,6 +71,7 @@ async def test_select_provider_with_503_raises_on_coordinator_local_without_self
     DB, requesting ``coordinator-local`` raises
     ``ComplianceNoLocalProviderError`` BEFORE select_provider runs."""
     from unittest.mock import MagicMock
+
     from app.api._request_pipeline import select_provider_with_503
     from app.models.database import AsyncSessionLocal
     from app.models.db import Provider
@@ -93,9 +96,13 @@ async def test_select_provider_with_503_raises_on_coordinator_local_without_self
     async with AsyncSessionLocal() as db:
         with pytest.raises(ComplianceNoLocalProviderError):
             await select_provider_with_503(
-                db, hint=None,
-                has_tools=False, has_images=False,
-                key_record=key_record, parsed_slug=parsed_slug, alias=None,
+                db,
+                hint=None,
+                has_tools=False,
+                has_images=False,
+                key_record=key_record,
+                parsed_slug=parsed_slug,
+                alias=None,
             )
 
 
@@ -105,17 +112,23 @@ async def test_select_provider_with_503_passes_through_when_self_hosted_exists()
     enforcement does NOT raise — it falls through to select_provider
     (which then runs the LMRH ranker with the self_hosted_only hint)."""
     from unittest.mock import MagicMock
+
     from app.api._request_pipeline import select_provider_with_503
     from app.models.database import AsyncSessionLocal
     from app.models.db import Provider
 
     # Add a self-hosted provider; the autouse fixture will remove it.
     async with AsyncSessionLocal() as db:
-        db.add(Provider(
-            id="nolocal_test_ollama1", name="Local Ollama (test)",
-            provider_type="ollama", enabled=True,
-            priority=10, default_model="llama3-70b-instruct",
-        ))
+        db.add(
+            Provider(
+                id="nolocal_test_ollama1",
+                name="Local Ollama (test)",
+                provider_type="ollama",
+                enabled=True,
+                priority=10,
+                default_model="llama3-70b-instruct",
+            )
+        )
         await db.commit()
 
     parsed_slug = MagicMock()
@@ -131,14 +144,17 @@ async def test_select_provider_with_503_passes_through_when_self_hosted_exists()
         # downstream behavior, but the new local check is satisfied.
         try:
             await select_provider_with_503(
-                db, hint=None,
-                has_tools=False, has_images=False,
-                key_record=key_record, parsed_slug=parsed_slug, alias=None,
+                db,
+                hint=None,
+                has_tools=False,
+                has_images=False,
+                key_record=key_record,
+                parsed_slug=parsed_slug,
+                alias=None,
             )
         except ComplianceNoLocalProviderError:
             pytest.fail(
-                "select_provider_with_503 should NOT raise when a self-hosted "
-                "provider exists"
+                "select_provider_with_503 should NOT raise when a self-hosted provider exists"
             )
         except Exception:
             # Downstream failure path is fine — just not the local-provider one.
@@ -150,6 +166,7 @@ async def test_select_provider_with_503_passes_through_when_owner_company_local(
     """Operator-tagged self-hosted via owner_company='internal' (decision
     29 correction 2026-06-03) — should also satisfy the filter."""
     from unittest.mock import MagicMock
+
     from app.api._request_pipeline import select_provider_with_503
     from app.models.database import AsyncSessionLocal
     from app.models.db import Provider
@@ -157,12 +174,17 @@ async def test_select_provider_with_503_passes_through_when_owner_company_local(
     # Add a provider tagged via owner_company='internal' (decision 29
     # correction). autouse fixture cleans up on yield.
     async with AsyncSessionLocal() as db:
-        db.add(Provider(
-            id="nolocal_test_internal1", name="Internal vLLM (test)",
-            provider_type="compatible", enabled=True,
-            owner_company="internal",
-            priority=10, default_model="custom-llm",
-        ))
+        db.add(
+            Provider(
+                id="nolocal_test_internal1",
+                name="Internal vLLM (test)",
+                provider_type="compatible",
+                enabled=True,
+                owner_company="internal",
+                priority=10,
+                default_model="custom-llm",
+            )
+        )
         await db.commit()
 
     parsed_slug = MagicMock()
@@ -175,13 +197,15 @@ async def test_select_provider_with_503_passes_through_when_owner_company_local(
     async with AsyncSessionLocal() as db:
         try:
             await select_provider_with_503(
-                db, hint=None,
-                has_tools=False, has_images=False,
-                key_record=key_record, parsed_slug=parsed_slug, alias=None,
+                db,
+                hint=None,
+                has_tools=False,
+                has_images=False,
+                key_record=key_record,
+                parsed_slug=parsed_slug,
+                alias=None,
             )
         except ComplianceNoLocalProviderError:
-            pytest.fail(
-                "owner_company='internal' should satisfy is_self_hosted_provider"
-            )
+            pytest.fail("owner_company='internal' should satisfy is_self_hosted_provider")
         except Exception:
             pass

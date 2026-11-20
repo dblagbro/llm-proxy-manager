@@ -13,6 +13,7 @@ complexity.
 Re-exported from ``app.providers.grok_web`` for back-compat — existing
 test imports (``from app.providers.grok_web import _bridge_chat``) keep
 working unchanged."""
+
 from __future__ import annotations
 
 import httpx
@@ -39,9 +40,12 @@ async def _bridge_chat(
     # import system handles fine when the inner import happens at call
     # time rather than module-eval time.
     from app.providers.grok_web import (
-        GrokWebError, GrokWebAuthError,
-        _map_upstream_status, _pick_conversation_id,
+        GrokWebAuthError,
+        GrokWebError,
+        _map_upstream_status,
+        _pick_conversation_id,
     )
+
     bridge_url = provider_extra_config["bridge_url"].rstrip("/")
     conv_id = _pick_conversation_id(provider_extra_config)
     statsig_id = provider_extra_config.get("x_statsig_id") or None

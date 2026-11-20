@@ -11,11 +11,11 @@ Admin (v5.8.1):
     package the operator can hand to a developer team integrating a
     new project.
 """
+
 from __future__ import annotations
 
 import logging
 import secrets
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import login_throttle
 from app.auth.admin import AdminUser, require_admin
+from app.integration.self_update import router as self_update_router
 from app.models.database import get_db
 from app.observability.request_context import extract_client_ip_from_request
 from app.utils.disconnect_watchdog import watch_for_disconnect
@@ -33,7 +34,7 @@ router = APIRouter(tags=["integration"])
 
 # v5.20.2 — self-update endpoint mounts here so it shares the tag
 # group in /docs and the router prefix.
-from app.integration.self_update import router as self_update_router
+
 router.include_router(self_update_router)
 
 
@@ -41,17 +42,14 @@ router.include_router(self_update_router)
 async def announce():
     """Public capability document. No auth. Safe to expose."""
     from app.integration.announce import build_announce_payload
+
     return await build_announce_payload()
 
 
 class IntegrationChatRequest(BaseModel):
     passphrase: str = Field(..., description="Shared secret for integration access")
-    conversation_id: Optional[str] = Field(
-        None, description="Session id; pass null on first turn"
-    )
-    project_name: str = Field(
-        "unnamed", description="Name of the integrating project"
-    )
+    conversation_id: str | None = Field(None, description="Session id; pass null on first turn")
+    project_name: str = Field("unnamed", description="Name of the integrating project")
     message: str = Field(..., description="Your message to the management AI")
 
 
@@ -128,6 +126,7 @@ async def rotate_passphrase(
     re-rotation is the only way to recover a lost passphrase."""
     new_pass = "integ-" + secrets.token_urlsafe(24)
     from app import config_runtime
+
     await config_runtime.persist(db, {"integration_passphrase": new_pass})
     logger.info("integration.passphrase_rotated by %s", _user.username)
     return {"passphrase": new_pass, "rotated_by": _user.username}
@@ -148,6 +147,7 @@ async def dev_handoff(
     UI button doesn't persist this anywhere; it's display-and-forget.
     """
     from app.config import settings
+
     # v5.8.3 — when the request comes through nginx with a sub-path
     # rewrite (e.g. /llm-proxy/ → /), FastAPI's request.base_url
     # reflects only the rewritten side. The X-Forwarded-Prefix
@@ -160,7 +160,9 @@ async def dev_handoff(
     prefix = (request.headers.get("x-forwarded-prefix") or "").rstrip("/")
     announce_url = f"{base}{prefix}/announce"
     chat_url = f"{base}{prefix}/api/integration/chat"
-    passphrase = settings.integration_passphrase or "(NOT SET — set via Settings → AI Integration first)"
+    passphrase = (
+        settings.integration_passphrase or "(NOT SET — set via Settings → AI Integration first)"
+    )
 
     markdown = _build_dev_handoff_markdown(
         announce_url=announce_url,
@@ -255,7 +257,8 @@ Or with curl:
 ```bash
 curl -s -X POST {chat_url} \\
   -H "Content-Type: application/json" \\
-  -d '{{"passphrase": "{passphrase}", "project_name": "your-project", "message": "...front-loaded requirements..."}}'
+  -d '{{"passphrase": "{passphrase}", "project_name": "your-project", \
+"message": "...front-loaded requirements..."}}'
 ```
 
 ## Step 3 — use the key

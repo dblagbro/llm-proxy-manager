@@ -16,13 +16,13 @@ supervisor reviews are infrequent (30 min × N providers) and
 self-amplification risk is negligible compared to the v3.7.10 AI
 rate limiter (5 min × all keys).
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
 import random
-from typing import Optional
 
 import httpx
 
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 WARMUP_DELAY_SEC = 90
 _STARTUP_JITTER_MAX_SEC = 60.0
-_TASK: Optional[asyncio.Task] = None
+_TASK: asyncio.Task | None = None
 
 VALID_VERDICTS = ("normal", "watch", "deprioritize", "disable", "investigate")
 
@@ -38,6 +38,7 @@ VALID_VERDICTS = ("normal", "watch", "deprioritize", "disable", "investigate")
 def _interval_sec() -> int:
     try:
         from app.config import settings
+
         return int(getattr(settings, "ai_provider_supervisor_interval_sec", 1800))
     except Exception:
         return 1800
@@ -46,6 +47,7 @@ def _interval_sec() -> int:
 def _enabled() -> bool:
     try:
         from app.config import settings
+
         return bool(getattr(settings, "ai_provider_supervisor_enabled", False))
     except Exception:
         return False
@@ -54,6 +56,7 @@ def _enabled() -> bool:
 def _auto_apply() -> bool:
     try:
         from app.config import settings
+
         return bool(getattr(settings, "ai_provider_supervisor_auto_apply", False))
     except Exception:
         return False
@@ -94,7 +97,7 @@ If verdict is "disable", suggested_auto_skip_hours must be set.
 """
 
 
-def parse_llm_response(text: str) -> Optional[dict]:
+def parse_llm_response(text: str) -> dict | None:
     """Parse the LLM's JSON output. Returns dict or None on failure."""
     if not text:
         return None
@@ -120,7 +123,7 @@ def parse_llm_response(text: str) -> Optional[dict]:
     }
 
 
-async def classify_with_llm(provider_name: str, provider_type: str, stats: dict) -> Optional[dict]:
+async def classify_with_llm(provider_name: str, provider_type: str, stats: dict) -> dict | None:
     """Call the proxy's own /v1/messages to classify. Returns parsed
     response dict or None on failure."""
     try:
@@ -167,7 +170,8 @@ async def classify_with_llm(provider_name: str, provider_type: str, stats: dict)
         if resp.status_code != 200:
             logger.warning(
                 "ai_provider_supervisor.llm_http_error status=%d body=%s",
-                resp.status_code, resp.text[:200],
+                resp.status_code,
+                resp.text[:200],
             )
             return None
         body = resp.json()
@@ -181,7 +185,7 @@ async def classify_with_llm(provider_name: str, provider_type: str, stats: dict)
         return None
 
 
-async def review_one_provider(db, provider) -> Optional[dict]:
+async def review_one_provider(db, provider) -> dict | None:
     """Run one full review for one provider. Returns the new review row
     dict (for caller logging) or None if skipped.
 
@@ -203,7 +207,8 @@ async def review_one_provider(db, provider) -> Optional[dict]:
     short_min = int(getattr(settings, "ai_provider_supervisor_short_window_min", 30))
     long_days = int(getattr(settings, "ai_provider_supervisor_trend_window_days", 1))
     stats = await compute_provider_stats(
-        db, provider.id,
+        db,
+        provider.id,
         short_window_min=short_min,
         long_window_days=long_days,
     )
@@ -218,7 +223,7 @@ async def review_one_provider(db, provider) -> Optional[dict]:
     # v3.10.13 ARCH-A — release the pooled DB connection BEFORE the LLM
     # classification call. classify_with_llm is a network call (httpx);
     # holding the session's connection across it pinned a pool slot for
-    # the whole multi-provider scan — the www01-only leak the pool
+    # the whole multi-provider scan — the node-specific leak the pool
     # tracer caught (a connection checked out 60+ minutes). commit()
     # ends the read transaction and returns the connection to the pool;
     # the review write below checks out a fresh one. expire_on_commit
@@ -247,7 +252,9 @@ async def review_one_provider(db, provider) -> Optional[dict]:
     await db.commit()
     logger.info(
         "ai_provider_supervisor.reviewed provider=%s verdict=%s applied=%s",
-        provider.name, verdict_data["verdict"], review.applied_at is not None,
+        provider.name,
+        verdict_data["verdict"],
+        review.applied_at is not None,
     )
     return {
         "provider_id": provider.id,
@@ -266,6 +273,7 @@ async def _apply_suggestion(db, provider, review, verdict_data: dict) -> None:
     a freshly-set lock.
     """
     from datetime import datetime, timedelta
+
     from app.config import settings
 
     if getattr(provider, "manual_override_until", None) is not None:
@@ -298,16 +306,15 @@ async def _apply_suggestion(db, provider, review, verdict_data: dict) -> None:
 
 async def _scan_all_once() -> dict:
     """One sweep across all enabled providers. Returns counts dict."""
+    from sqlalchemy import select
+
     from app.models.database import AsyncSessionLocal
     from app.models.db import Provider
-    from sqlalchemy import select
 
     out = {"reviewed": 0, "skipped_locked": 0, "skipped_no_traffic": 0, "skipped_no_llm": 0}
     async with AsyncSessionLocal() as db:
         result = await db.execute(
-            select(Provider)
-            .where(Provider.deleted_at.is_(None))
-            .where(Provider.enabled == True)  # noqa: E712
+            select(Provider).where(Provider.deleted_at.is_(None)).where(Provider.enabled == True)  # noqa: E712
         )
         providers = result.scalars().all()
         for p in providers:
@@ -324,7 +331,8 @@ async def _scan_all_once() -> dict:
             except Exception as e:
                 logger.warning(
                     "ai_provider_supervisor.review_crashed provider=%s err=%s",
-                    p.name, e,
+                    p.name,
+                    e,
                 )
     return out
 
@@ -332,6 +340,7 @@ async def _scan_all_once() -> dict:
 async def _scan_loop() -> None:
     """Periodic loop. No-op when ``ai_provider_supervisor_enabled=False``."""
     from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+
     hb = WorkerHeartbeat(name="ai_provider_supervisor")
     jitter = random.uniform(0.0, _STARTUP_JITTER_MAX_SEC)
     await asyncio.sleep(WARMUP_DELAY_SEC + jitter)
@@ -347,12 +356,16 @@ async def _scan_loop() -> None:
                 logger.info(
                     "ai_provider_supervisor.swept reviewed=%d skipped_locked=%d "
                     "skipped_no_traffic=%d",
-                    counts["reviewed"], counts["skipped_locked"],
+                    counts["reviewed"],
+                    counts["skipped_locked"],
                     counts["skipped_no_traffic"],
                 )
             await hb.tick(
                 status="ok",
-                note=f"reviewed={counts['reviewed']} skipped_locked={counts['skipped_locked']} skipped_no_traffic={counts['skipped_no_traffic']}",
+                note=(
+                    f"reviewed={counts['reviewed']} skipped_locked={counts['skipped_locked']} "
+                    f"skipped_no_traffic={counts['skipped_no_traffic']}"
+                ),
             )
         except Exception as e:
             logger.warning("ai_provider_supervisor.sweep_failed err=%s", e)

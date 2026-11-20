@@ -19,12 +19,12 @@ prometheus itself) all default to ``Accept: */*`` or an explicit
 ``text/plain;version=0.0.4`` — none send ``text/html``. Browsers
 typing the URL always include ``text/html`` first.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
-
 
 # ── Source guard ────────────────────────────────────────────────────
 
@@ -34,10 +34,10 @@ def test_metrics_route_sniffs_accept_header():
     a future edit that reverts to always returning Prometheus."""
     src = Path("app/main.py").read_text()
     # Find the handler block
-    assert "@app.get(\"/metrics\", include_in_schema=False)" in src
+    assert '@app.get("/metrics", include_in_schema=False)' in src
     # Branch must reference Accept + text/html
-    idx = src.index("@app.get(\"/metrics\", include_in_schema=False)")
-    block = src[idx:idx + 1800]
+    idx = src.index('@app.get("/metrics", include_in_schema=False)')
+    block = src[idx : idx + 1800]
     assert "accept" in block.lower(), (
         "metrics handler no longer reads the Accept header — browsers "
         "hitting /llm-proxy2/metrics will get Prometheus text again."
@@ -47,8 +47,7 @@ def test_metrics_route_sniffs_accept_header():
         "to decide between SPA and Prometheus."
     )
     assert "metrics_response" in block, (
-        "Prometheus fallback path lost — non-browser callers would no "
-        "longer get the scrape output."
+        "Prometheus fallback path lost — non-browser callers would no longer get the scrape output."
     )
 
 
@@ -60,21 +59,22 @@ async def test_metrics_browser_accept_serves_spa(tmp_path, monkeypatch):
     """Browser-style Accept header → SPA index.html (200 + text/html)."""
     from fastapi import Request
     from fastapi.responses import FileResponse
+
     from app import main as appmain
 
     # Pretend the SPA bundle exists at the expected path so the
     # handler can serve it.
     fake_static = tmp_path / "frontend" / "dist"
     fake_static.mkdir(parents=True)
-    (fake_static / "index.html").write_text(
-        "<!doctype html><html><body>SPA</body></html>"
-    )
+    (fake_static / "index.html").write_text("<!doctype html><html><body>SPA</body></html>")
     monkeypatch.setattr(appmain, "_static_dir", str(fake_static))
 
-    req = Request(scope={
-        "type": "http",
-        "headers": [(b"accept", b"text/html,application/xhtml+xml,*/*;q=0.8")],
-    })
+    req = Request(
+        scope={
+            "type": "http",
+            "headers": [(b"accept", b"text/html,application/xhtml+xml,*/*;q=0.8")],
+        }
+    )
     resp = await appmain.metrics(req)
     assert isinstance(resp, FileResponse), (
         f"Browser Accept did not get SPA shell — got {type(resp).__name__}; "
@@ -88,6 +88,7 @@ async def test_metrics_prometheus_accept_serves_text():
     text/plain response. Regression guards against breaking external
     scrapers that depend on the well-known /metrics endpoint."""
     from fastapi import Request
+
     from app import main as appmain
 
     # Default Prometheus client sends Accept: */* OR an explicit
@@ -96,10 +97,12 @@ async def test_metrics_prometheus_accept_serves_text():
         b"*/*",
         b"text/plain;version=0.0.4;charset=utf-8,application/openmetrics-text;version=1.0.0;charset=utf-8",
     ):
-        req = Request(scope={
-            "type": "http",
-            "headers": [(b"accept", accept_value)],
-        })
+        req = Request(
+            scope={
+                "type": "http",
+                "headers": [(b"accept", accept_value)],
+            }
+        )
         resp = await appmain.metrics(req)
         # Prometheus response has content-type text/plain*
         ctype = resp.headers.get("content-type", "")
@@ -115,6 +118,7 @@ async def test_metrics_no_accept_header_defaults_to_prometheus():
     httpie / wget) falls through to the Prometheus path. Important so
     a misconfigured scraper still gets data rather than HTML."""
     from fastapi import Request
+
     from app import main as appmain
 
     req = Request(scope={"type": "http", "headers": []})

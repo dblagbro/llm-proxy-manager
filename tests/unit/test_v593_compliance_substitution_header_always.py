@@ -6,6 +6,7 @@ absence of `X-Compliance-Substitution` as the signal to open a
 2xx response. v5.9.3 makes the proxy always emit one of three values so
 the hub can drop the heuristic in favor of a strict assertion.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -71,7 +72,7 @@ def test_disposition_handles_str_serialized_lists():
     assert _key_has_compliance_policy(key_string_form) is True
 
     key_string_empty = SimpleNamespace(
-        blocked_companies='[]',
+        blocked_companies="[]",
         allowed_companies=None,
         blocked_models=None,
         allowed_models=None,
@@ -85,11 +86,10 @@ def test_emit_helper_returns_disposition_on_non_substituted_route():
     must return the disposition header in its first tuple slot even
     when route.compliance_substituted is False."""
     import inspect
+
     from app.api import _compliance_handler
 
-    src = inspect.getsource(
-        _compliance_handler.emit_substitution_disclosure_for_route
-    )
+    src = inspect.getsource(_compliance_handler.emit_substitution_disclosure_for_route)
     # Both no-substitution exit branches must call the disposition
     # helper. Counts the symbol appearances; the function has at most
     # 2 early-return-without-substitution paths.

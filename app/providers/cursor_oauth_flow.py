@@ -35,6 +35,7 @@ Compatibility:
 - New ``poll_for_token(state)`` is the polished-path entrypoint the
   /cursor-oauth/poll API surfaces.
 """
+
 from __future__ import annotations
 
 import base64
@@ -44,10 +45,8 @@ import secrets
 import time
 import uuid as _uuid
 from dataclasses import dataclass
-from typing import Optional
 
 import httpx
-
 
 # IDE-style login URL. ``supportsSelectedTeamLogin`` lets users choose a
 # team after authenticating; harmless if they have only a personal account.
@@ -94,14 +93,14 @@ class _PendingFlow:
     # PKCE pair + uuid, present for polished poll-based flows. None
     # entries are legacy (paste-cookie-only) flows — left here as a
     # safety net but not used by the live UI from v4.4.33 onward.
-    uuid: Optional[str] = None
-    verifier: Optional[str] = None
+    uuid: str | None = None
+    verifier: str | None = None
 
 
 _PENDING: dict[str, _PendingFlow] = {}
 
 
-def _sweep_pending(now: Optional[float] = None) -> None:
+def _sweep_pending(now: float | None = None) -> None:
     cutoff = (now if now is not None else time.time()) - _STATE_TTL_SEC
     for state, flow in list(_PENDING.items()):
         if flow.created_at < cutoff:
@@ -133,7 +132,7 @@ class AuthorizeStart:
     authorize_url: str
 
 
-def start_authorize(scope: Optional[str] = None) -> AuthorizeStart:
+def start_authorize(scope: str | None = None) -> AuthorizeStart:
     """Generate a fresh PKCE pair + uuid, store them under a new state,
     return the IDE-style login URL.
 
@@ -164,10 +163,11 @@ class ExchangeResult:
     refresh token or an explicit expires_at via either the poll or
     the cookie path — the JWT carries its own exp claim with a
     multi-week lifetime."""
+
     access_token: str
-    refresh_token: Optional[str]
-    expires_at: Optional[float]
-    id_token: Optional[str]
+    refresh_token: str | None
+    expires_at: float | None
+    id_token: str | None
     raw: dict
 
 
@@ -225,13 +225,10 @@ async def poll_for_token(
             "via the legacy exchange path instead"
         )
 
-    poll_url = (
-        f"{CURSOR_AUTH_POLL_URL}"
-        f"?uuid={flow.uuid}&verifier={flow.verifier}"
-    )
+    poll_url = f"{CURSOR_AUTH_POLL_URL}?uuid={flow.uuid}&verifier={flow.verifier}"
     headers = {"User-Agent": _CURSOR_POLL_UA, "Accept": "*/*"}
 
-    last_status: Optional[int] = None
+    last_status: int | None = None
     last_body_preview: str = ""
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -271,6 +268,7 @@ async def poll_for_token(
                         # to capture for OAuth2 refresh-flow rotation
                         # (lower-cost alternative to noVNC backlog).
                         import logging as _log
+
                         _log.getLogger("app.providers.cursor_oauth_flow").info(
                             "cursor_oauth_poll_response_keys: %s",
                             sorted(data.keys()) if isinstance(data, dict) else type(data).__name__,
@@ -325,13 +323,14 @@ async def _async_sleep(sec: float) -> None:
     """Indirection so tests can monkeypatch the sleep without patching
     the stdlib for the whole interpreter."""
     import asyncio
+
     await asyncio.sleep(sec)
 
 
 # ── Fallback path: operator pastes the cookie (v4.4.31 shape) ──────────
 
 
-def extract_code_from_callback(raw: str) -> tuple[str, Optional[str]]:
+def extract_code_from_callback(raw: str) -> tuple[str, str | None]:
     """Accept a pasted WorkosCursorSessionToken cookie value. The v4.4.33
     polished UI doesn't surface this path by default — the poll endpoint
     handles things end-to-end — but the shape is preserved so the
@@ -343,7 +342,7 @@ def extract_code_from_callback(raw: str) -> tuple[str, Optional[str]]:
 
     for prefix in ("WorkosCursorSessionToken=", "Cookie: WorkosCursorSessionToken=", "Cookie:"):
         if raw.startswith(prefix):
-            raw = raw[len(prefix):].strip()
+            raw = raw[len(prefix) :].strip()
             break
     if ";" in raw:
         raw = raw.split(";", 1)[0].strip()
@@ -365,7 +364,7 @@ async def exchange_code(
     state: str,
     code: str,
     *,
-    expected_state: Optional[str] = None,
+    expected_state: str | None = None,
 ) -> ExchangeResult:
     """Fallback: pasted-cookie exchange via the sidecar's
     /cursor/loginDeepControl. v4.4.31 path, kept for operators who
@@ -400,9 +399,7 @@ async def exchange_code(
     try:
         data = resp.json()
     except Exception:
-        raise OAuthFlowError(
-            f"cursor-bridge returned non-JSON: {resp.text[:300]}"
-        ) from None
+        raise OAuthFlowError(f"cursor-bridge returned non-JSON: {resp.text[:300]}") from None
 
     access = data.get("accessToken")
     if not isinstance(access, str) or not access:

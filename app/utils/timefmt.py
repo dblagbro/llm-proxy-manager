@@ -12,11 +12,11 @@ Use ``utc_iso(dt)`` for any datetime that ships to the browser.
 Cluster-sync paths can keep using bare ``isoformat()`` because peer code
 parses both forms via ``v.replace("Z", "+00:00")``.
 """
+
 from datetime import datetime
-from typing import Optional
 
 
-def utc_iso(dt: Optional[datetime]) -> Optional[str]:
+def utc_iso(dt: datetime | None) -> str | None:
     """Return ISO 8601 with explicit UTC marker (``Z``) so JS treats it as UTC.
     None passes through unchanged.
 

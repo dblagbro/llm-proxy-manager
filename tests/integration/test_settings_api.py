@@ -1,15 +1,23 @@
 """Settings API tests — read, write, validation."""
-import pytest
 
 from tests.conftest import BASE_URL
 
 EXPECTED_KEYS = {
-    "cot_enabled", "cot_max_iterations", "cot_quality_threshold",
-    "cot_min_tokens_skip", "cot_critique_max_tokens",
-    "cot_verify_enabled", "cot_verify_auto_detect", "cot_verify_max_tokens",
-    "circuit_breaker_threshold", "circuit_breaker_timeout_sec",
-    "circuit_breaker_success_needed", "circuit_breaker_halfopen_sec",
-    "hold_down_sec", "native_thinking_budget_tokens", "native_reasoning_effort",
+    "cot_enabled",
+    "cot_max_iterations",
+    "cot_quality_threshold",
+    "cot_min_tokens_skip",
+    "cot_critique_max_tokens",
+    "cot_verify_enabled",
+    "cot_verify_auto_detect",
+    "cot_verify_max_tokens",
+    "circuit_breaker_threshold",
+    "circuit_breaker_timeout_sec",
+    "circuit_breaker_success_needed",
+    "circuit_breaker_halfopen_sec",
+    "hold_down_sec",
+    "native_thinking_budget_tokens",
+    "native_reasoning_effort",
     "smtp_enabled",
 }
 
@@ -28,8 +36,13 @@ class TestSettingsRead:
 
     def test_numeric_settings_are_numbers(self, admin_session):
         data = admin_session.get(f"{BASE_URL}/api/settings").json()
-        for key in ("cot_max_iterations", "circuit_breaker_threshold", "hold_down_sec",
-                    "native_thinking_budget_tokens", "smtp_port"):
+        for key in (
+            "cot_max_iterations",
+            "circuit_breaker_threshold",
+            "hold_down_sec",
+            "native_thinking_budget_tokens",
+            "smtp_port",
+        ):
             assert isinstance(data[key], (int, float)), f"{key} is not numeric"
 
 

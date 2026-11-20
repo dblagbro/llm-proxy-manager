@@ -1,9 +1,11 @@
 """Unit tests for the claude-oauth credential parser + header builder."""
+
 from __future__ import annotations
 
 import sys
 import time
 import types
+
 import pytest
 
 # Stub heavy deps before app imports
@@ -13,16 +15,15 @@ sys.modules.setdefault("litellm", _stub)
 if not hasattr(sys.modules["litellm"], "RateLimitError"):
     sys.modules["litellm"].RateLimitError = type("RateLimitError", (Exception,), {})
 
-from app.providers.claude_oauth import (
-    parse_credentials,
-    build_headers,
-    is_token_expired,
-    CredentialParseError,
+from app.providers.claude_oauth import (  # noqa: E402
     OAUTH_BETA_FLAGS,
     PLATFORM_BASE_URL,
     TOKEN_PREFIX,
+    CredentialParseError,
+    build_headers,
+    is_token_expired,
+    parse_credentials,
 )
-
 
 # Synthetic OAuth token shape for the parser tests — not a live credential.
 SAMPLE_TOKEN = "sk-ant-oat01-abcDEF0123456789_-GhIjklMNopqrsTUVwxyz"  # pragma: allowlist secret
@@ -220,13 +221,26 @@ def _stub_modules_for_streaming_import():
     import types as _t
 
     class _Noop:
-        def __init__(self, *a, **kw): pass
-        def __call__(self, *a, **kw): return self
-        def labels(self, *a, **kw): return self
-        def inc(self, *a, **kw): pass
-        def observe(self, *a, **kw): pass
-        def set(self, *a, **kw): pass
-        def info(self, *a, **kw): pass
+        def __init__(self, *a, **kw):
+            pass
+
+        def __call__(self, *a, **kw):
+            return self
+
+        def labels(self, *a, **kw):
+            return self
+
+        def inc(self, *a, **kw):
+            pass
+
+        def observe(self, *a, **kw):
+            pass
+
+        def set(self, *a, **kw):
+            pass
+
+        def info(self, *a, **kw):
+            pass
 
     if "prometheus_client" not in sys.modules:
         m = _t.ModuleType("prometheus_client")
@@ -248,12 +262,14 @@ class TestInjectClaudeCodeSystem:
 
     def test_marker_has_cache_control(self):
         from app.api._messages_streaming import _inject_claude_code_system
+
         out = _inject_claude_code_system({"messages": []})
         marker = out["system"][0]
         assert marker["cache_control"] == {"type": "ephemeral"}
 
     def test_string_system_preserved_as_second_block(self):
         from app.api._messages_streaming import _inject_claude_code_system
+
         out = _inject_claude_code_system({"system": "user-system", "messages": []})
         assert len(out["system"]) == 2
         assert out["system"][0]["text"].startswith("You are Claude Code")
@@ -261,9 +277,16 @@ class TestInjectClaudeCodeSystem:
 
     def test_already_marked_passes_through(self):
         from app.api._messages_streaming import _inject_claude_code_system
-        body = {"system": [{"type": "text",
-                              "text": "You are Claude Code, Anthropic's official CLI for Claude. extra"}],
-                 "messages": []}
+
+        body = {
+            "system": [
+                {
+                    "type": "text",
+                    "text": "You are Claude Code, Anthropic's official CLI for Claude. extra",
+                }
+            ],
+            "messages": [],
+        }
         out = _inject_claude_code_system(body)
         # No prepended marker block
         assert len(out["system"]) == 1

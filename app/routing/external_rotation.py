@@ -36,11 +36,12 @@ still deferred — same pattern, no concrete trigger yet.
 Operator-set ``Provider.priority`` and ``Provider.enabled`` are
 preserved unchanged — auto-rotation is additive.
 """
+
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
-from typing import Optional
+import time as _time
+from datetime import UTC, datetime
 
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -58,6 +59,7 @@ _DEFAULT_HYSTERESIS_PCT = 5.0
 def _capacity_threshold() -> float:
     try:
         from app.config import settings
+
         v = getattr(settings, "external_rotation_capacity_pct", None)
         if v is not None:
             return float(v)
@@ -69,6 +71,7 @@ def _capacity_threshold() -> float:
 def _hysteresis_pct() -> float:
     try:
         from app.config import settings
+
         v = getattr(settings, "external_rotation_hysteresis_pct", None)
         if v is not None:
             return float(v)
@@ -77,7 +80,7 @@ def _hysteresis_pct() -> float:
     return _DEFAULT_HYSTERESIS_PCT
 
 
-async def _latest_snapshot(db: AsyncSession, provider_id: str) -> Optional[ExternalUsageSnapshot]:
+async def _latest_snapshot(db: AsyncSession, provider_id: str) -> ExternalUsageSnapshot | None:
     rs = await db.execute(
         select(ExternalUsageSnapshot)
         .where(ExternalUsageSnapshot.provider_id == provider_id)
@@ -91,7 +94,7 @@ async def evaluate_rules_for_provider(
     db: AsyncSession,
     provider: Provider,
     *,
-    snapshot: Optional[ExternalUsageSnapshot] = None,
+    snapshot: ExternalUsageSnapshot | None = None,
 ) -> dict:
     """Apply auto-rotation rules to a single provider.
 
@@ -138,8 +141,8 @@ async def evaluate_rules_for_provider(
     prior_skip = provider.auto_skip_until
     prior_reason = provider.auto_skip_reason
     decision: str
-    new_skip_until: Optional[datetime] = prior_skip
-    new_reason: Optional[str] = prior_reason
+    new_skip_until: datetime | None = prior_skip
+    new_reason: str | None = prior_reason
 
     session_exhausted = util_session is not None and util_session >= 100.0
     weekly_exhausted = util_weekly is not None and util_weekly >= threshold
@@ -191,7 +194,7 @@ async def evaluate_rules_for_provider(
         "provider_id": provider.id,
         "provider_name": provider.name,
         "seven_day_utilization": util_weekly,
-        "five_hour_utilization": util_session,    # v5.0.15
+        "five_hour_utilization": util_session,  # v5.0.15
         "threshold_pct": threshold,
         "decision": decision,
         "auto_skip_until": _iso(new_skip_until),
@@ -235,17 +238,17 @@ def is_currently_at_capacity(provider: Provider) -> bool:
     skip = provider.auto_skip_until
     if skip is None:
         return False
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     # Tolerate naive datetimes from SQLite (no tz), assume UTC.
     if skip.tzinfo is None:
-        skip = skip.replace(tzinfo=timezone.utc)
+        skip = skip.replace(tzinfo=UTC)
     return skip > now
 
 
 # v3.7.4 — utilization-weighted preference for claude-oauth providers.
 # In-process cache keyed by node. Refreshes when the underlying
 # snapshot data changes (we don't watch for that — just a 30s TTL).
-import time as _time
+
 _util_cache: dict[str, tuple[float, dict[str, float]]] = {}
 _UTIL_CACHE_TTL_SEC = 30.0
 
@@ -280,7 +283,7 @@ async def get_utilization_map(db: AsyncSession) -> dict[str, float]:
     return util_map
 
 
-def _utilization_bucket(util: Optional[float], bucket_size_pct: float = 25.0) -> int:
+def _utilization_bucket(util: float | None, bucket_size_pct: float = 25.0) -> int:
     """Convert a utilization percent into a coarse bucket index.
 
     Returns a non-negative integer; smaller = more headroom = preferred.
@@ -358,12 +361,16 @@ def reorder_claude_oauth_by_utilization(
     new public name is ``reorder_subscription_by_utilization``.
     """
     out = reorder_subscription_by_utilization(
-        providers, util_map,
-        provider_type="claude-oauth", bucket_size_pct=bucket_size_pct,
+        providers,
+        util_map,
+        provider_type="claude-oauth",
+        bucket_size_pct=bucket_size_pct,
     )
     out = reorder_subscription_by_utilization(
-        out, util_map,
-        provider_type="cursor-oauth", bucket_size_pct=bucket_size_pct,
+        out,
+        util_map,
+        provider_type="cursor-oauth",
+        bucket_size_pct=bucket_size_pct,
     )
     return out
 
@@ -371,6 +378,7 @@ def reorder_claude_oauth_by_utilization(
 def _bucket_size_setting() -> float:
     try:
         from app.config import settings
+
         v = getattr(settings, "external_rotation_util_bucket_pct", None)
         if v is not None:
             return float(v)
@@ -379,7 +387,7 @@ def _bucket_size_setting() -> float:
     return 25.0
 
 
-def _iso(dt: Optional[datetime]) -> Optional[str]:
+def _iso(dt: datetime | None) -> str | None:
     if dt is None:
         return None
     return dt.isoformat()

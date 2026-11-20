@@ -8,11 +8,12 @@ rows so a stale write to ANY of them triggers 412.
 
 See ``docs/rfc/2026-05-model-identity-put-spec.md`` §6.
 """
+
 from __future__ import annotations
 
 import hashlib
 import json
-from typing import Iterable
+from collections.abc import Iterable
 
 from app.models.db import ModelCapability
 

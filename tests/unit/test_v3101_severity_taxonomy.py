@@ -8,12 +8,12 @@ from the classified ``error_class``: expected/transient failure modes
 ones (auth / billing / bad_request / upstream_5xx / unknown) emit
 ``error``.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
 
 from app.monitoring.helpers import severity_for_error_class
-
 
 # ── the mapping ────────────────────────────────────────────────────
 
@@ -44,9 +44,16 @@ def test_every_classify_error_output_is_mapped():
     output set — every value it can return must map to a valid
     severity."""
     from app.routing import circuit_breaker  # noqa: F401
+
     classes = (
-        "auth", "billing", "rate_limit", "timeout",
-        "network", "upstream_5xx", "bad_request", "unknown",
+        "auth",
+        "billing",
+        "rate_limit",
+        "timeout",
+        "network",
+        "upstream_5xx",
+        "bad_request",
+        "unknown",
     )
     for c in classes:
         assert severity_for_error_class(c) in ("warning", "error")
@@ -62,7 +69,7 @@ def test_record_outcome_failure_path_uses_taxonomy():
     # The old hardcoded failure severity must be gone.
     assert 'severity="warning", msg=msg' not in src
     # The failure emit now uses the taxonomy helper.
-    assert "severity=severity_for_error_class(meta[\"error_class\"])" in src
+    assert 'severity=severity_for_error_class(meta["error_class"])' in src
 
 
 def test_success_path_still_info():

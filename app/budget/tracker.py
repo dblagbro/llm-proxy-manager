@@ -7,10 +7,10 @@ Two call sites:
 - `record_cost(db, key_id, cost_usd)` — called from record_outcome after
   a successful request; increments the per-hour/per-day counters.
 """
+
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from fastapi import HTTPException
 from sqlalchemy import update
@@ -24,21 +24,22 @@ logger = logging.getLogger(__name__)
 @dataclass
 class BudgetStatus:
     """Snapshot after pre-request reset; used to emit X-Budget-* headers."""
+
     day_cost: float
-    day_hard_cap: Optional[float]
-    day_soft_cap: Optional[float]
+    day_hard_cap: float | None
+    day_soft_cap: float | None
     hour_cost: float
-    hour_cap: Optional[float]
+    hour_cap: float | None
     soft_warning: bool  # True if day cost >= soft cap
 
     @property
-    def day_remaining(self) -> Optional[float]:
+    def day_remaining(self) -> float | None:
         if self.day_hard_cap is None:
             return None
         return max(0.0, self.day_hard_cap - self.day_cost)
 
     @property
-    def hour_remaining(self) -> Optional[float]:
+    def hour_remaining(self) -> float | None:
         if self.hour_cap is None:
             return None
         return max(0.0, self.hour_cap - self.hour_cost)
@@ -58,7 +59,7 @@ async def check_budget_pre_request(db: AsyncSession, key: ApiKey) -> BudgetStatu
     Raises HTTPException(402) on daily hard cap breach.
     Raises HTTPException(429) on hourly burst cap breach.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     current_hour = _floor_hour(now)
     current_day = _floor_day(now)
 
@@ -66,9 +67,9 @@ async def check_budget_pre_request(db: AsyncSession, key: ApiKey) -> BudgetStatu
     hour_ts = key.hour_bucket_ts
     day_ts = key.day_bucket_ts
     if hour_ts is not None and hour_ts.tzinfo is None:
-        hour_ts = hour_ts.replace(tzinfo=timezone.utc)
+        hour_ts = hour_ts.replace(tzinfo=UTC)
     if day_ts is not None and day_ts.tzinfo is None:
-        day_ts = day_ts.replace(tzinfo=timezone.utc)
+        day_ts = day_ts.replace(tzinfo=UTC)
 
     hour_cost = float(key.hour_cost_usd or 0.0)
     day_cost = float(key.day_cost_usd or 0.0)
@@ -102,9 +103,7 @@ async def check_budget_pre_request(db: AsyncSession, key: ApiKey) -> BudgetStatu
             f"Daily budget exceeded: ${key.daily_hard_cap_usd:.2f}",
         )
 
-    soft_warning = (
-        key.daily_soft_cap_usd is not None and day_cost >= key.daily_soft_cap_usd
-    )
+    soft_warning = key.daily_soft_cap_usd is not None and day_cost >= key.daily_soft_cap_usd
 
     return BudgetStatus(
         day_cost=day_cost,
@@ -142,7 +141,5 @@ def warnings_for(status: BudgetStatus) -> dict[str, str]:
     if status.hour_remaining is not None:
         headers["X-Budget-Hourly-Remaining"] = f"{status.hour_remaining:.4f}"
     if status.soft_warning and status.day_soft_cap is not None:
-        headers["X-Budget-Warning"] = (
-            f"daily soft cap ${status.day_soft_cap:.2f} reached"
-        )
+        headers["X-Budget-Warning"] = f"daily soft cap ${status.day_soft_cap:.2f} reached"
     return headers

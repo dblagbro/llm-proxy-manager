@@ -131,7 +131,7 @@ class TestWiredIntoBothFallbackSites:
         for call_at in sites:
             # Look both ways: at the family-intersection site the flag is set
             # on the line AFTER the call, at the capability site it is before.
-            window = src[max(0, call_at - 1200):call_at + 400]
+            window = src[max(0, call_at - 1200) : call_at + 400]
             assert "cross_family" in window, (
                 "filter applied outside a cross-family branch — this would "
                 "break normal same-family routing to OAuth providers"

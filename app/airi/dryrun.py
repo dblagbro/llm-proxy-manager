@@ -9,6 +9,7 @@ These functions are pure — they take already-gathered data, not DB
 sessions — so the proposal service stays the single place that touches
 the DB, and the previews are trivially unit-testable.
 """
+
 from __future__ import annotations
 
 
@@ -88,8 +89,7 @@ def provider_change_impact(
     }
 
 
-def rule_change_impact(*, rule_name: str, setting: str,
-                       current_value, new_value) -> dict:
+def rule_change_impact(*, rule_name: str, setting: str, current_value, new_value) -> dict:
     """Impact preview for a threshold-rule change. Threshold rules are caps
     /tunables — there is no past traffic to re-simulate, so the preview is a
     plain-language description of what the change widens or tightens."""

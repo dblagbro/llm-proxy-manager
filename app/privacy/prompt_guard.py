@@ -15,16 +15,17 @@ Example PROMPT_GUARD_DENYLIST="ignore previous instructions,system prompt,reveal
 Returns a tuple (ok, matched_pattern). A denylisted request is rejected
 with HTTP 400 in the endpoint handler that invokes check_messages().
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 
 def _load_denylist() -> list[str]:
     from app.config import settings
+
     raw = getattr(settings, "prompt_guard_denylist", None) or ""
     if not raw:
         return []
@@ -33,10 +34,11 @@ def _load_denylist() -> list[str]:
 
 def is_enabled() -> bool:
     from app.config import settings
+
     return bool(getattr(settings, "prompt_guard_enabled", False))
 
 
-def check_text(text: str, denylist: Optional[list[str]] = None) -> Optional[str]:
+def check_text(text: str, denylist: list[str] | None = None) -> str | None:
     """Return the matching denylist entry, or None if clean."""
     if not text:
         return None
@@ -51,8 +53,9 @@ def check_text(text: str, denylist: Optional[list[str]] = None) -> Optional[str]
 
 
 def check_messages(
-    messages: list[dict], denylist: Optional[list[str]] = None,
-) -> Optional[str]:
+    messages: list[dict],
+    denylist: list[str] | None = None,
+) -> str | None:
     """Return the first matching denylist entry across all messages, or None."""
     if not messages:
         return None

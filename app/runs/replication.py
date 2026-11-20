@@ -18,14 +18,14 @@ Push body shape (extension to existing /cluster/sync payload):
 
 Last-write-wins by ``updated_at`` on the receiving peer.
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
 import time
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 import httpx
 
@@ -36,7 +36,7 @@ from app.models.db import Run
 logger = logging.getLogger(__name__)
 
 
-DEBOUNCE_SEC = 0.25                # 250ms
+DEBOUNCE_SEC = 0.25  # 250ms
 TERMINAL_PEER_ACK_TIMEOUT_SEC = 2.0
 TERMINAL_KINDS = {"completed", "failed", "expired", "cancelled"}
 
@@ -83,10 +83,10 @@ def _serialise_run(r: Run) -> dict:
 class _PendingPush:
     run_snapshot: dict
     fire_at: float
-    task: Optional[asyncio.Task] = None
+    task: asyncio.Task | None = None
 
 
-_pending: dict[str, _PendingPush] = {}      # run_id → pending push
+_pending: dict[str, _PendingPush] = {}  # run_id → pending push
 _lock = asyncio.Lock()
 
 
@@ -151,6 +151,7 @@ async def _push_to_peers(
     """Push a runs payload to every peer. Returns ``{peer_id: ok_bool}``."""
     try:
         from app.cluster.manager import peers as _peer_registry
+
         peers = list(_peer_registry.values())
     except Exception:
         return {}
@@ -160,9 +161,7 @@ async def _push_to_peers(
     # v5.22.16 — signing fails closed on an unset CLUSTER_SYNC_SECRET;
     # skip the fan-out with one clear line instead of raising per peer.
     if not cluster_auth_configured():
-        logger.error(
-            "runs_replication.skipped reason=no_secret — CLUSTER_SYNC_SECRET is unset"
-        )
+        logger.error("runs_replication.skipped reason=no_secret — CLUSTER_SYNC_SECRET is unset")
         return {}
 
     payload = {
@@ -186,7 +185,7 @@ async def _push_to_peers(
         try:
             async with httpx.AsyncClient(timeout=timeout, verify=False) as client:
                 r = await client.post(url, content=body, headers=headers)
-                results[peer.id] = (200 <= r.status_code < 300)
+                results[peer.id] = 200 <= r.status_code < 300
         except Exception as e:
             results[peer.id] = False
             logger.info("runs.replication.push_fail peer=%s err=%s", peer.id, e)
@@ -201,19 +200,22 @@ async def _push_terminal(snapshot: dict) -> None:
     results = await _push_to_peers([snapshot], wait_for_ack=True)
     failed = [pid for pid, ok in results.items() if not ok]
     if failed:
-        logger.info("runs.replication.terminal_peer_ack_miss run=%s peers=%s",
-                    snapshot.get("id"), failed)
+        logger.info(
+            "runs.replication.terminal_peer_ack_miss run=%s peers=%s", snapshot.get("id"), failed
+        )
         asyncio.create_task(_retry_terminal_push(snapshot, failed))
 
 
 async def _retry_terminal_push(
-    snapshot: dict, target_peer_ids: list[str],
+    snapshot: dict,
+    target_peer_ids: list[str],
 ) -> None:
     """3-attempt retry chain for peers that missed a terminal-state push."""
     for delay in (5.0, 15.0, 45.0):
         await asyncio.sleep(delay)
         try:
             from app.cluster.manager import peers as _peer_registry
+
             peers = [_peer_registry.get(pid) for pid in target_peer_ids]
             peers = [p for p in peers if p is not None]
         except Exception:
@@ -222,16 +224,18 @@ async def _retry_terminal_push(
             return
         if not cluster_auth_configured():
             logger.error(
-                "runs_replication.retry_skipped reason=no_secret — "
-                "CLUSTER_SYNC_SECRET is unset"
+                "runs_replication.retry_skipped reason=no_secret — CLUSTER_SYNC_SECRET is unset"
             )
             return
         # Targeted retry: build a one-shot peer list
-        body = json.dumps({
-            "source_node": settings.cluster_node_id,
-            "timestamp": time.time(),
-            "runs": [snapshot],
-        }, sort_keys=True).encode()
+        body = json.dumps(
+            {
+                "source_node": settings.cluster_node_id,
+                "timestamp": time.time(),
+                "runs": [snapshot],
+            },
+            sort_keys=True,
+        ).encode()
         sig = sign_payload(body)
         headers = {
             "X-Cluster-Node": settings.cluster_node_id or "",
@@ -244,7 +248,8 @@ async def _retry_terminal_push(
                 async with httpx.AsyncClient(timeout=5.0, verify=False) as client:
                     r = await client.post(
                         f"{peer.url.rstrip('/')}/cluster/sync",
-                        content=body, headers=headers,
+                        content=body,
+                        headers=headers,
                     )
                     if not (200 <= r.status_code < 300):
                         still_failing.append(peer.id)
@@ -256,5 +261,8 @@ async def _retry_terminal_push(
     # All 3 attempts exhausted — log loud, give up. Next periodic
     # /cluster/sync push (driven by app/cluster/manager.py) will reconcile
     # eventually; we just don't have the same-second guarantee.
-    logger.warning("runs.replication.terminal_push_exhausted run=%s peers=%s",
-                   snapshot.get("id"), target_peer_ids)
+    logger.warning(
+        "runs.replication.terminal_push_exhausted run=%s peers=%s",
+        snapshot.get("id"),
+        target_peer_ids,
+    )

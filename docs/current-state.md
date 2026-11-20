@@ -1,7 +1,12 @@
-# ✅ Live now — 2026-11-18 (v5.22.67, both nodes)
+# ✅ Live now — 2026-11-20 (v5.22.68, both nodes)
 
-- **v5.22.68:** (PR, not deployed) grok bridge sign-in resets the breaker on all nodes and clears
-  the keepalive chronic gate; attention row says "click Connect Grok".
+- **v5.22.69:** UID/GID 640:640 candidate under preparation; not deployed.
+  See `docs/service-uid-migration.md` for the general migration procedure;
+  environment-specific rehearsal and backup evidence is maintained privately.
+- **v5.22.68:** both gateways and their mounted storage now use 640:640 via
+  a Compose runtime override. Both passed their node-specific health checks. Grok bridge sign-in resets the
+  breaker and clears the keepalive chronic gate; the attention row says
+  "click Connect Grok".
 - **v5.22.67:** breaker resets (passing Test, Needs-attention re-test, admin reset) now
   reach every node via HMAC `POST /cluster/circuit-breaker-reset` (`app/cluster/breaker_reset.py`).
 - **v5.22.66:** frontend-only "Duplicate" on provider cards (pre-filled Add form,
@@ -124,7 +129,7 @@ Older banners (2026-11-11 and earlier) moved to `docs/recovery/2026-history.md`.
 > `CHANGELOG.md` and `docs/recovery/`. Dated log material from before 2026-11-13 (older
 > banners, the August to October state sections, incident and backlog notes) was moved
 > verbatim to [`recovery/2026-history.md`](recovery/2026-history.md) on 2026-11-18.
-> Last updated: 2026-11-18.
+> Last updated: 2026-11-19.
 
 ## Stage & objective
 **Production, stable maintenance.** The node-degradation causes are fixed and have stayed
@@ -133,8 +138,8 @@ fixed: the DB connection-hold leak (v5.22.4), the aiosqlite thread leak (v5.22.5
 
 ## Branch / version
 - **Repo: https://github.com/dblagbro/llm-proxy-manager**, default branch **`main`**.
-- **v5.22.64 is live on tmrwww01 and tmrwww02** (2-node cluster; tmrwww01 primary, tmrwww02
-  backup). It matches the `app/__version__.py` pin on `main`.
+- **v5.22.68 is live on the gateway cluster.** It matches the
+  `app/__version__.py` pin on `main`.
 - Canonical deploy stack: `/home/dblagbro/docker/` (not the repo).
 - `c1conversations-avaya-01-s23` is dropped and off limits; GCP is out of scope. Neither is
   part of this cluster.
@@ -154,7 +159,7 @@ on tmrwww01 and copied over with `docker save | docker load`, then the container
 there.
 
 ## What works
-- Both nodes serve v5.22.64 (see the banners at the top for what was verified per release;
+- Both nodes serve v5.22.68 (see the banners at the top for what was verified per release;
   the v5.22.63 recreate was checked at `/health` 200, `healthy`, 7/7 providers).
 - CI is green and blocking: full unit suite, hermeticity guard, secret scan, ephemeral
   integration suite, Playwright UI suite. See `docs/testing.md`.

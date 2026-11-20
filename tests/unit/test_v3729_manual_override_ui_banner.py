@@ -12,10 +12,10 @@ escape hatch shipped in v3.7.28 (Phase 1):
 Source-level checks since the components live in TS and there's no
 live React harness here.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-
 
 # ── Banner component ──────────────────────────────────────────────
 
@@ -108,7 +108,7 @@ def test_providers_page_badge_has_tooltip():
     so the operator doesn't have to remember."""
     src = Path("frontend/src/pages/ProvidersPage.tsx").read_text()
     idx = src.index("p.manual_override_active")
-    section = src[idx:idx + 1200]
+    section = src[idx : idx + 1200]
     assert "title=" in section
     assert "Manual override" in section
 
@@ -119,12 +119,13 @@ def test_providers_page_badge_has_tooltip():
 def test_dashboard_provider_status_row_renders_lock_badge():
     src = Path("frontend/src/pages/DashboardPage.tsx").read_text()
     idx = src.index("function ProviderStatusRow")
-    body = src[idx:idx + 2500]
+    body = src[idx : idx + 2500]
     assert "provider.manual_override_active" in body
     assert "🔒" in body
 
 
 def test_version_bumped():
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     assert parts >= (3, 7, 29)

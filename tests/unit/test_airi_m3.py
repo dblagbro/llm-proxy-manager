@@ -1,4 +1,5 @@
 """AIRI v4.0 milestone 3 — propose / dry-run / apply / revert."""
+
 from __future__ import annotations
 
 import pytest
@@ -9,8 +10,8 @@ import app.airi.agent as agent
 from app.airi import dryrun, proposals, rules
 from app.models.db import Provider
 
-
 # ── dry-run engine (pure) ────────────────────────────────────────────────────
+
 
 def test_dryrun_priority_change_reorders_ranking():
     provs = [
@@ -18,8 +19,13 @@ def test_dryrun_priority_change_reorders_ranking():
         {"name": "B", "priority": 10, "enabled": True},
     ]
     impact = dryrun.provider_change_impact(
-        field="priority", target_name="B", current_value=10, new_value=1,
-        providers=provs, traffic_counts={"B": 50}, traffic_total=100,
+        field="priority",
+        target_name="B",
+        current_value=10,
+        new_value=1,
+        providers=provs,
+        traffic_counts={"B": 50},
+        traffic_total=100,
     )
     assert impact["ranking_before"] == ["A", "B"]
     assert impact["ranking_after"] == ["B", "A"]
@@ -33,8 +39,13 @@ def test_dryrun_disable_high_traffic_provider_warns():
         {"name": "B", "priority": 10, "enabled": True},
     ]
     impact = dryrun.provider_change_impact(
-        field="enabled", target_name="A", current_value=True, new_value=False,
-        providers=provs, traffic_counts={"A": 40}, traffic_total=100,
+        field="enabled",
+        target_name="A",
+        current_value=True,
+        new_value=False,
+        providers=provs,
+        traffic_counts={"A": 40},
+        traffic_total=100,
     )
     assert impact["ranking_after"] == ["B"]
     assert any("recent traffic" in w for w in impact["warnings"])
@@ -42,28 +53,46 @@ def test_dryrun_disable_high_traffic_provider_warns():
 
 def test_dryrun_disable_last_provider_warns():
     impact = dryrun.provider_change_impact(
-        field="enabled", target_name="A", current_value=True, new_value=False,
+        field="enabled",
+        target_name="A",
+        current_value=True,
+        new_value=False,
         providers=[{"name": "A", "priority": 5, "enabled": True}],
-        traffic_counts={}, traffic_total=0,
+        traffic_counts={},
+        traffic_total=0,
     )
     assert any("NO enabled providers" in w for w in impact["warnings"])
 
 
 def test_dryrun_rule_change_direction():
-    assert dryrun.rule_change_impact(
-        rule_name="r", setting="max_priority_delta", current_value=2, new_value=4,
-    )["direction"] == "widens"
-    assert dryrun.rule_change_impact(
-        rule_name="r", setting="max_priority_delta", current_value=4, new_value=1,
-    )["direction"] == "tightens"
+    assert (
+        dryrun.rule_change_impact(
+            rule_name="r",
+            setting="max_priority_delta",
+            current_value=2,
+            new_value=4,
+        )["direction"]
+        == "widens"
+    )
+    assert (
+        dryrun.rule_change_impact(
+            rule_name="r",
+            setting="max_priority_delta",
+            current_value=4,
+            new_value=1,
+        )["direction"]
+        == "tightens"
+    )
 
 
 # ── proposal flow (DB) ───────────────────────────────────────────────────────
 
+
 @pytest_asyncio.fixture
 async def db_ready():
-    from app.models.database import engine, AsyncSessionLocal
-    from app.models.db import Base, AiriRuleset, AiriRule, AiriProposal
+    from app.models.database import AsyncSessionLocal, engine
+    from app.models.db import AiriProposal, AiriRule, AiriRuleset, Base
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     async with AsyncSessionLocal() as c:
@@ -73,19 +102,15 @@ async def db_ready():
         await c.execute(delete(Provider).where(Provider.name.like("airi-m3-%")))
         await c.commit()
     async with AsyncSessionLocal() as c:
-        c.add(Provider(name="airi-m3-alpha", provider_type="openai",
-                       priority=5, enabled=True))
-        c.add(Provider(name="airi-m3-beta", provider_type="openai",
-                       priority=10, enabled=True))
+        c.add(Provider(name="airi-m3-alpha", provider_type="openai", priority=5, enabled=True))
+        c.add(Provider(name="airi-m3-beta", provider_type="openai", priority=10, enabled=True))
         await c.commit()
     yield AsyncSessionLocal
 
 
 async def _provider(SessionLocal, name) -> Provider:
     async with SessionLocal() as db:
-        return (await db.execute(
-            select(Provider).where(Provider.name == name)
-        )).scalar_one()
+        return (await db.execute(select(Provider).where(Provider.name == name))).scalar_one()
 
 
 @pytest.mark.asyncio
@@ -93,8 +118,13 @@ async def test_create_provider_change_caps_priority(db_ready):
     # alpha priority 5; ask for 0 (delta 5) — Default cap is 2 -> capped to 3.
     async with db_ready() as db:
         res = await proposals.create_provider_change(
-            db, provider_ref="airi-m3-alpha", field="priority", value=0,
-            mode="suggest", created_by="t", prompt="p",
+            db,
+            provider_ref="airi-m3-alpha",
+            field="priority",
+            value=0,
+            mode="suggest",
+            created_by="t",
+            prompt="p",
         )
     assert res["status"] == "pending"
     assert res["change"]["to"] == 3
@@ -105,8 +135,13 @@ async def test_create_provider_change_caps_priority(db_ready):
 async def test_apply_and_revert_provider_change(db_ready):
     async with db_ready() as db:
         res = await proposals.create_provider_change(
-            db, provider_ref="airi-m3-alpha", field="priority", value=6,
-            mode="suggest", created_by="t", prompt="p",
+            db,
+            provider_ref="airi-m3-alpha",
+            field="priority",
+            value=6,
+            mode="suggest",
+            created_by="t",
+            prompt="p",
         )
     pid = res["proposal_id"]
     async with db_ready() as db:
@@ -123,8 +158,13 @@ async def test_apply_and_revert_provider_change(db_ready):
 async def test_mode_apply_applies_immediately(db_ready):
     async with db_ready() as db:
         res = await proposals.create_provider_change(
-            db, provider_ref="airi-m3-beta", field="enabled", value=False,
-            mode="apply", created_by="t", prompt="p",
+            db,
+            provider_ref="airi-m3-beta",
+            field="enabled",
+            value=False,
+            mode="apply",
+            created_by="t",
+            prompt="p",
         )
     assert res["status"] == "applied"
     assert (await _provider(db_ready, "airi-m3-beta")).enabled is False
@@ -134,23 +174,47 @@ async def test_mode_apply_applies_immediately(db_ready):
 async def test_create_provider_change_rejects_bad_input(db_ready):
     async with db_ready() as db:
         assert "error" in await proposals.create_provider_change(
-            db, provider_ref="airi-m3-alpha", field="bogus", value=1,
-            mode="suggest", created_by="t", prompt="p")
+            db,
+            provider_ref="airi-m3-alpha",
+            field="bogus",
+            value=1,
+            mode="suggest",
+            created_by="t",
+            prompt="p",
+        )
         assert "error" in await proposals.create_provider_change(
-            db, provider_ref="no-such-provider", field="priority", value=1,
-            mode="suggest", created_by="t", prompt="p")
+            db,
+            provider_ref="no-such-provider",
+            field="priority",
+            value=1,
+            mode="suggest",
+            created_by="t",
+            prompt="p",
+        )
         # no-op change (alpha priority is already 5)
         assert "error" in await proposals.create_provider_change(
-            db, provider_ref="airi-m3-alpha", field="priority", value=5,
-            mode="suggest", created_by="t", prompt="p")
+            db,
+            provider_ref="airi-m3-alpha",
+            field="priority",
+            value=5,
+            mode="suggest",
+            created_by="t",
+            prompt="p",
+        )
 
 
 @pytest.mark.asyncio
 async def test_apply_is_one_shot(db_ready):
     async with db_ready() as db:
         res = await proposals.create_provider_change(
-            db, provider_ref="airi-m3-alpha", field="priority", value=6,
-            mode="suggest", created_by="t", prompt="p")
+            db,
+            provider_ref="airi-m3-alpha",
+            field="priority",
+            value=6,
+            mode="suggest",
+            created_by="t",
+            prompt="p",
+        )
         pid = res["proposal_id"]
         await proposals.apply_proposal(db, pid, applied_by="t")
         again = await proposals.apply_proposal(db, pid, applied_by="t")
@@ -161,13 +225,12 @@ async def test_apply_is_one_shot(db_ready):
 async def test_rule_change_proposal_apply_revert(db_ready):
     async with db_ready() as db:
         active = await rules.get_active_ruleset(db)
-        rule = next(r for r in active["rules"]
-                    if r["spec"]["setting"] == "max_priority_delta")
+        rule = next(r for r in active["rules"] if r["spec"]["setting"] == "max_priority_delta")
         rid = rule["id"]
         orig = rule["spec"]["value"]
         res = await proposals.create_rule_change(
-            db, rule_id=rid, value=orig + 1, mode="apply",
-            created_by="t", prompt="p")
+            db, rule_id=rid, value=orig + 1, mode="apply", created_by="t", prompt="p"
+        )
     assert res["status"] == "applied"
     async with db_ready() as db:
         active = await rules.get_active_ruleset(db)
@@ -184,8 +247,14 @@ async def test_rule_change_proposal_apply_revert(db_ready):
 async def test_list_proposals_is_audit_trail(db_ready):
     async with db_ready() as db:
         await proposals.create_provider_change(
-            db, provider_ref="airi-m3-alpha", field="priority", value=6,
-            mode="suggest", created_by="alice", prompt="raise alpha")
+            db,
+            provider_ref="airi-m3-alpha",
+            field="priority",
+            value=6,
+            mode="suggest",
+            created_by="alice",
+            prompt="raise alpha",
+        )
     async with db_ready() as db:
         rows = await proposals.list_proposals(db)
     assert len(rows) == 1
@@ -195,6 +264,7 @@ async def test_list_proposals_is_audit_trail(db_ready):
 
 
 # ── agent integration ────────────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_agent_emits_proposal_event(db_ready, monkeypatch):
@@ -209,17 +279,32 @@ async def test_agent_emits_proposal_event(db_ready, monkeypatch):
     async def fake_llm(api_key, model, messages, *, llm_hint=None):
         calls.append(messages)
         if len(calls) == 1:
-            return {"content": [{
-                "type": "tool_use", "id": "t1", "name": "propose_provider_change",
-                "input": {"provider": "airi-m3-alpha", "field": "priority",
-                          "value": 6, "mode": "suggest"},
-            }], "stop_reason": "tool_use"}
-        return {"content": [{"type": "text", "text": "I proposed it."}],
-                "stop_reason": "end_turn"}
+            return {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "t1",
+                        "name": "propose_provider_change",
+                        "input": {
+                            "provider": "airi-m3-alpha",
+                            "field": "priority",
+                            "value": 6,
+                            "mode": "suggest",
+                        },
+                    }
+                ],
+                "stop_reason": "tool_use",
+            }
+        return {"content": [{"type": "text", "text": "I proposed it."}], "stop_reason": "end_turn"}
+
     monkeypatch.setattr(agent, "_call_llm", fake_llm)
 
-    events = [e async for e in agent.run_airi_turn(
-        [{"role": "user", "content": "raise airi-m3-alpha priority"}], actor="tester")]
+    events = [
+        e
+        async for e in agent.run_airi_turn(
+            [{"role": "user", "content": "raise airi-m3-alpha priority"}], actor="tester"
+        )
+    ]
     kinds = [e[0] for e in events]
     assert "proposal" in kinds, "agent must emit a proposal event"
     prop = next(d for k, d in events if k == "proposal")
@@ -229,11 +314,13 @@ async def test_agent_emits_proposal_event(db_ready, monkeypatch):
 
 # ── M3 safety guards (found by the adversarial smoke) ────────────────────────
 
+
 @pytest_asyncio.fixture
 async def solo_provider():
     """A DB with exactly ONE enabled provider — for last-provider guards."""
-    from app.models.database import engine, AsyncSessionLocal
-    from app.models.db import Base, AiriRuleset, AiriRule, AiriProposal
+    from app.models.database import AsyncSessionLocal, engine
+    from app.models.db import AiriProposal, AiriRule, AiriRuleset, Base
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     async with AsyncSessionLocal() as c:
@@ -243,8 +330,7 @@ async def solo_provider():
         await c.execute(delete(Provider))
         await c.commit()
     async with AsyncSessionLocal() as c:
-        c.add(Provider(name="airi-m3-solo", provider_type="openai",
-                       priority=5, enabled=True))
+        c.add(Provider(name="airi-m3-solo", provider_type="openai", priority=5, enabled=True))
         await c.commit()
     yield AsyncSessionLocal
 
@@ -255,8 +341,14 @@ async def test_apply_withheld_when_dry_run_warns(solo_provider):
     auto-apply; it stays pending for explicit operator approval."""
     async with solo_provider() as db:
         res = await proposals.create_provider_change(
-            db, provider_ref="airi-m3-solo", field="enabled", value=False,
-            mode="apply", created_by="t", prompt="disable it")
+            db,
+            provider_ref="airi-m3-solo",
+            field="enabled",
+            value=False,
+            mode="apply",
+            created_by="t",
+            prompt="disable it",
+        )
     assert res["status"] == "pending", "a warned change must not auto-apply"
     assert "apply_withheld" in res
     assert (await _provider(solo_provider, "airi-m3-solo")).enabled is True
@@ -268,8 +360,14 @@ async def test_cannot_disable_last_provider(solo_provider):
     even via an explicit approve."""
     async with solo_provider() as db:
         res = await proposals.create_provider_change(
-            db, provider_ref="airi-m3-solo", field="enabled", value=False,
-            mode="suggest", created_by="t", prompt="p")
+            db,
+            provider_ref="airi-m3-solo",
+            field="enabled",
+            value=False,
+            mode="suggest",
+            created_by="t",
+            prompt="p",
+        )
         out = await proposals.apply_proposal(db, res["proposal_id"], applied_by="t")
     assert "error" in out and "last enabled provider" in out["error"]
     assert (await _provider(solo_provider, "airi-m3-solo")).enabled is True
@@ -285,19 +383,43 @@ async def test_agent_per_turn_apply_cap(db_ready, monkeypatch):
     async def fake_llm(api_key, model, messages, *, llm_hint=None):
         calls.append(messages)
         if len(calls) == 1:
-            return {"content": [
-                {"type": "tool_use", "id": "a", "name": "propose_provider_change",
-                 "input": {"provider": "airi-m3-alpha", "field": "priority",
-                           "value": 6, "mode": "apply"}},
-                {"type": "tool_use", "id": "b", "name": "propose_provider_change",
-                 "input": {"provider": "airi-m3-beta", "field": "priority",
-                           "value": 11, "mode": "apply"}},
-            ], "stop_reason": "tool_use"}
+            return {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "a",
+                        "name": "propose_provider_change",
+                        "input": {
+                            "provider": "airi-m3-alpha",
+                            "field": "priority",
+                            "value": 6,
+                            "mode": "apply",
+                        },
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "b",
+                        "name": "propose_provider_change",
+                        "input": {
+                            "provider": "airi-m3-beta",
+                            "field": "priority",
+                            "value": 11,
+                            "mode": "apply",
+                        },
+                    },
+                ],
+                "stop_reason": "tool_use",
+            }
         return {"content": [{"type": "text", "text": "done"}], "stop_reason": "end_turn"}
+
     monkeypatch.setattr(agent, "_call_llm", fake_llm)
 
-    events = [e async for e in agent.run_airi_turn(
-        [{"role": "user", "content": "raise both and apply"}], actor="t")]
+    events = [
+        e
+        async for e in agent.run_airi_turn(
+            [{"role": "user", "content": "raise both and apply"}], actor="t"
+        )
+    ]
     statuses = sorted(d["status"] for k, d in events if k == "proposal")
     assert statuses == ["applied", "pending"], (
         f"expected exactly one auto-applied + one pending; got {statuses}"

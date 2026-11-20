@@ -16,10 +16,11 @@ Guarded invariants:
 4. ``main.py`` includes the new router.
 5. Neither file exceeds 800 LOC (soft ceiling after the split).
 """
+
 from __future__ import annotations
 
-from pathlib import Path
 import importlib
+from pathlib import Path
 
 
 def test_both_files_load_cleanly():
@@ -30,6 +31,7 @@ def test_both_files_load_cleanly():
 def test_stats_endpoints_register_on_stats_router():
     """The 4 read-side endpoints are owned by the new sibling router."""
     from app.api.providers_stats import router as stats_router
+
     paths = {r.path for r in stats_router.routes}
     for expected in (
         "/api/providers",
@@ -38,14 +40,14 @@ def test_stats_endpoints_register_on_stats_router():
         "/api/providers/{provider_id}/usage",
     ):
         assert expected in paths, (
-            f"stats endpoint {expected} missing from providers_stats_router. "
-            f"Got: {sorted(paths)}"
+            f"stats endpoint {expected} missing from providers_stats_router. Got: {sorted(paths)}"
         )
 
 
 def test_mutation_endpoints_stay_on_providers_router():
     """POST/PUT/DELETE + non-stats GETs stay in providers.py."""
     from app.api.providers import router as providers_router
+
     paths_methods = {(r.path, tuple(sorted(r.methods or set()))) for r in providers_router.routes}
     paths = {p for (p, _) in paths_methods}
     # Mutation paths still in providers.py
@@ -64,9 +66,7 @@ def test_mutation_endpoints_stay_on_providers_router():
     # providers.py — both map to the same path with different methods.
     # FastAPI handles that, so we don't need to assert non-overlap by path.
     # But the stats-specific paths must not appear on providers_router.
-    assert not moved, (
-        f"stats endpoints leaked into providers.py router: {moved}"
-    )
+    assert not moved, f"stats endpoints leaked into providers.py router: {moved}"
 
 
 def test_main_includes_providers_stats_router():
@@ -87,9 +87,7 @@ def test_neither_file_exceeds_800_loc():
         loc = sum(1 for _ in Path(fn).read_text().splitlines())
         if loc > 800:
             too_big.append((fn, loc))
-    assert not too_big, (
-        f"providers split files exceed 800 LOC: {too_big}. Time to split further."
-    )
+    assert not too_big, f"providers split files exceed 800 LOC: {too_big}. Time to split further."
 
 
 def test_stats_file_uses_lazy_serialize_import():
@@ -103,5 +101,5 @@ def test_stats_file_uses_lazy_serialize_import():
     src = Path("app/api/providers_stats.py").read_text()
     # The lazy import lives inside list_providers
     idx = src.index("async def list_providers(")
-    body = src[idx:idx + 3000]
+    body = src[idx : idx + 3000]
     assert "from app.api.providers import _serialize" in body

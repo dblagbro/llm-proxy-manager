@@ -8,6 +8,7 @@ Pytest imports conftest.py at collection time, before any test module
 is imported — so ``app.config.settings`` constructs against this env
 var when first referenced.
 """
+
 import os
 import tempfile
 

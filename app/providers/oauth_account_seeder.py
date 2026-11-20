@@ -22,10 +22,11 @@ Rules:
 - Label defaults to the Provider's ``name`` — the operator can rename
   later via PATCH.
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Iterable
+from collections.abc import Iterable as Iterable
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,22 +35,24 @@ from app.models.db import Provider, ProviderOAuthAccount
 
 logger = logging.getLogger(__name__)
 
-_OAUTH_PROVIDER_TYPES = frozenset({
-    "cursor-oauth",
-    # v5.22.30 — BOTH spellings. v3.8.0 renamed codex-oauth ->
-    # ChatGPT-oauth-plan but never updated this set, so every
-    # ChatGPT-oauth-plan provider silently fell outside the per-account OAuth
-    # machinery: the seeder created no ProviderOAuthAccount rows for it and the
-    # selector never rotated it. `codex-oauth` is kept for any legacy row that
-    # predates the rename; `_oauth_accounts_health.py` already listed both,
-    # which is what made the inconsistency visible.
-    #
-    # test_v380_codex_oauth_rename had been reporting this the whole time and
-    # was parked in known_failures.txt, so nobody read it.
-    "codex-oauth",
-    "ChatGPT-oauth-plan",
-    "claude-oauth",
-})
+_OAUTH_PROVIDER_TYPES = frozenset(
+    {
+        "cursor-oauth",
+        # v5.22.30 — BOTH spellings. v3.8.0 renamed codex-oauth ->
+        # ChatGPT-oauth-plan but never updated this set, so every
+        # ChatGPT-oauth-plan provider silently fell outside the per-account OAuth
+        # machinery: the seeder created no ProviderOAuthAccount rows for it and the
+        # selector never rotated it. `codex-oauth` is kept for any legacy row that
+        # predates the rename; `_oauth_accounts_health.py` already listed both,
+        # which is what made the inconsistency visible.
+        #
+        # test_v380_codex_oauth_rename had been reporting this the whole time and
+        # was parked in known_failures.txt, so nobody read it.
+        "codex-oauth",
+        "ChatGPT-oauth-plan",
+        "claude-oauth",
+    }
+)
 
 
 async def seed_missing_accounts(session: AsyncSession) -> dict:
@@ -101,8 +104,11 @@ async def seed_missing_accounts(session: AsyncSession) -> dict:
     if counts["seeded"] > 0:
         await session.commit()
         logger.info(
-            "oauth_account_seeder: seeded=%d scanned=%d skipped_no_token=%d skipped_already_seeded=%d",
-            counts["seeded"], counts["scanned"],
-            counts["skipped_no_token"], counts["skipped_already_seeded"],
+            "oauth_account_seeder: seeded=%d scanned=%d skipped_no_token=%d "
+            "skipped_already_seeded=%d",
+            counts["seeded"],
+            counts["scanned"],
+            counts["skipped_no_token"],
+            counts["skipped_already_seeded"],
         )
     return counts

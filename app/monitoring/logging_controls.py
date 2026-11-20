@@ -21,9 +21,8 @@ able to halt activity-log capture without redeploying.
 Audit rows themselves NEVER purgeable. The ``compliance_policy_changes``
 table is the operator's proof of who flipped logging and when.
 """
-from __future__ import annotations
 
-from typing import Optional
+from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -60,7 +59,7 @@ async def set_logging_enabled(
     db: AsyncSession,
     enabled: bool,
     actor: str,
-    reason: Optional[str] = None,
+    reason: str | None = None,
 ) -> dict:
     """Flip the persistent setting + write an audit row + invalidate
     the cache. Returns a small status dict."""

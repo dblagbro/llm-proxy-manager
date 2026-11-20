@@ -20,17 +20,18 @@ Constraints discovered against a live Plus account on 2026-04-30:
     (response.created / response.output_text.delta / response.completed
     etc.), not raw Chat Completions deltas.
 """
+
 from __future__ import annotations
 
 import json
 import time
-from typing import Any, AsyncIterator, Optional
-
+from collections.abc import AsyncIterator
+from typing import Any
 
 # ── Request: Chat Completions → Responses API ───────────────────────────────
 
 
-def chat_completions_to_responses(body: dict, *, access_programs: Optional[dict] = None) -> dict:
+def chat_completions_to_responses(body: dict, *, access_programs: dict | None = None) -> dict:
     """Translate a Chat Completions request body to the Responses API shape.
 
     Maps:
@@ -73,24 +74,30 @@ def chat_completions_to_responses(body: dict, *, access_programs: Optional[dict]
         if not text:
             continue
         if role == "user":
-            input_items.append({
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": text}],
-            })
+            input_items.append(
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": text}],
+                }
+            )
         elif role == "assistant":
-            input_items.append({
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": text}],
-            })
+            input_items.append(
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": text}],
+                }
+            )
         elif role == "tool":
             # Approximate tool results as user input until full tool support lands.
-            input_items.append({
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": f"[tool_result] {text}"}],
-            })
+            input_items.append(
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": f"[tool_result] {text}"}],
+                }
+            )
 
     out: dict[str, Any] = {
         "model": body.get("model"),
@@ -158,7 +165,10 @@ def _now() -> int:
 
 
 async def responses_sse_to_chat_completions_sse(
-    upstream_lines: AsyncIterator[str], *, model: str, completion_id: Optional[str] = None,
+    upstream_lines: AsyncIterator[str],
+    *,
+    model: str,
+    completion_id: str | None = None,
 ) -> AsyncIterator[bytes]:
     """Translate the Codex Responses-API SSE stream into Chat Completions SSE.
 
@@ -202,22 +212,29 @@ async def responses_sse_to_chat_completions_sse(
             if not delta:
                 continue
             chunk = {
-                "id": cid, "object": "chat.completion.chunk", "created": created,
+                "id": cid,
+                "object": "chat.completion.chunk",
+                "created": created,
                 "model": model,
-                "choices": [{
-                    "index": 0,
-                    "delta": (
-                        {"role": "assistant", "content": delta}
-                        if not sent_first else {"content": delta}
-                    ),
-                    "finish_reason": None,
-                }],
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": (
+                            {"role": "assistant", "content": delta}
+                            if not sent_first
+                            else {"content": delta}
+                        ),
+                        "finish_reason": None,
+                    }
+                ],
             }
             sent_first = True
             yield f"data: {json.dumps(chunk)}\n\n".encode()
         elif kind == "response.completed":
             finish = {
-                "id": cid, "object": "chat.completion.chunk", "created": created,
+                "id": cid,
+                "object": "chat.completion.chunk",
+                "created": created,
                 "model": model,
                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
             }
@@ -235,13 +252,17 @@ async def responses_sse_to_chat_completions_sse(
         elif kind in ("response.error", "error"):
             err = evt.get("error") or evt
             err_chunk = {
-                "id": cid, "object": "chat.completion.chunk", "created": created,
+                "id": cid,
+                "object": "chat.completion.chunk",
+                "created": created,
                 "model": model,
-                "choices": [{
-                    "index": 0,
-                    "delta": {},
-                    "finish_reason": "error",
-                }],
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "error",
+                    }
+                ],
                 "error": {
                     "message": err.get("message") or str(err)[:300],
                     "type": err.get("type") or "upstream_error",
@@ -254,7 +275,10 @@ async def responses_sse_to_chat_completions_sse(
 
 
 async def collect_responses_stream_into_completion(
-    upstream_lines: AsyncIterator[str], *, model: str, completion_id: Optional[str] = None,
+    upstream_lines: AsyncIterator[str],
+    *,
+    model: str,
+    completion_id: str | None = None,
 ) -> dict:
     """Aggregate a Codex Responses-API SSE stream into a single Chat
     Completions response object — for callers that asked ``stream: false``.
@@ -267,7 +291,7 @@ async def collect_responses_stream_into_completion(
     text_parts: list[str] = []
     finish_reason = "stop"
     usage = None
-    err: Optional[dict] = None
+    err: dict | None = None
 
     async for line in upstream_lines:
         if not line or line.startswith(":") or line.startswith("event:"):
@@ -302,11 +326,13 @@ async def collect_responses_stream_into_completion(
         "object": "chat.completion",
         "created": _now(),
         "model": model,
-        "choices": [{
-            "index": 0,
-            "message": {"role": "assistant", "content": "".join(text_parts)},
-            "finish_reason": finish_reason,
-        }],
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "".join(text_parts)},
+                "finish_reason": finish_reason,
+            }
+        ],
     }
     if usage:
         out["usage"] = usage

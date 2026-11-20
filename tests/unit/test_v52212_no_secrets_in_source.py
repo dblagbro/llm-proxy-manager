@@ -21,6 +21,7 @@ Two real exposures were found and fixed:
 
 Rotating the values is the operator's job; this file stops them coming back.
 """
+
 import re
 from pathlib import Path
 
@@ -52,12 +53,15 @@ def _skip_unless_git_checkout():
     try:
         out = subprocess.run(
             ["git", "rev-parse", "--is-inside-work-tree"],
-            capture_output=True, text=True, check=False,
+            capture_output=True,
+            text=True,
+            check=False,
         )
     except FileNotFoundError:
         _pytest.skip("git is not available in this environment")
     if out.returncode != 0 or out.stdout.strip() != "true":
         _pytest.skip("not a git checkout — this assertion needs the real index")
+
 
 def _source_files():
     for root in _SEARCH_ROOTS:
@@ -83,24 +87,29 @@ class TestNoLeakedCredentialsAnywhere:
             except Exception:
                 continue
         # the v4.4.29 guard legitimately names it to assert its absence
-        offenders = [o for o in offenders
-                     if not o.endswith("test_v4429_cache_marker_overcap_log.py")]
+        offenders = [
+            o for o in offenders if not o.endswith("test_v4429_cache_marker_overcap_log.py")
+        ]
         assert not offenders, f"leaked admin password present in: {offenders}"
 
     def test_bridge_token_absent_from_all_source(self):
         offenders = [
-            str(p) for p in _source_files()
+            str(p)
+            for p in _source_files()
             if p.name != Path(__file__).name
             and _LEAKED_BRIDGE_TOKEN in p.read_text(encoding="utf-8", errors="ignore")
         ]
         assert not offenders, f"leaked bridge token present in: {offenders}"
 
 
-@pytest.mark.parametrize("path", [
-    "tests/conftest.py",
-    "tests/integration/test_playwright_ui.py",
-    "tests/integration/test_manual_override_flow.py",
-])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "tests/conftest.py",
+        "tests/integration/test_playwright_ui.py",
+        "tests/integration/test_manual_override_flow.py",
+    ],
+)
 class TestCredentialsComeFromTheEnvironment:
     def test_reads_password_from_env(self, path):
         src = Path(path).read_text(encoding="utf-8")
@@ -117,9 +126,9 @@ class TestCredentialsComeFromTheEnvironment:
 
 class TestBridgeTokenIsOperatorSupplied:
     def test_default_is_blank(self):
-        src = Path(
-            "frontend/src/components/providers/GrokWebProviderFields.tsx"
-        ).read_text(encoding="utf-8")
+        src = Path("frontend/src/components/providers/GrokWebProviderFields.tsx").read_text(
+            encoding="utf-8"
+        )
         m = re.search(r"const DEFAULT_BRIDGE_TOKEN\s*=\s*'([^']*)'", src)
         assert m, "DEFAULT_BRIDGE_TOKEN declaration not found"
         assert m.group(1) == "", (
@@ -132,6 +141,7 @@ class TestCompiledArtifactsNotTracked:
     def test_no_pycache_in_git(self):
         _skip_unless_git_checkout()
         import subprocess
+
         tracked = subprocess.run(
             ["git", "ls-files"], capture_output=True, text=True
         ).stdout.splitlines()

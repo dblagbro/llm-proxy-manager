@@ -7,57 +7,74 @@ Pipeline: Plan → Initial Draft → [Critique → Refine] × N → [Verify] →
 All intermediate passes are emitted as Anthropic-format thinking blocks so
 the caller sees the same structure as Claude's native extended thinking.
 """
+
 import asyncio
 import logging
-import re
-from typing import AsyncIterator
+import re as re
+from collections.abc import AsyncIterator
 
-import litellm
+import litellm as litellm
 
 from app.config import settings
-from app.routing.retry import acompletion_with_retry
-from app.cot.session import get_session_analyses, save_session_analysis
-# v5.22.20 — CoT usage accounting. Lives in app/cot/usage.py because it has
-# no litellm dependency, so it stays importable in test sessions that stub
-# litellm in sys.modules.
-from app.cot.usage import accumulate_usage as _accumulate_usage
-
-from app.cot.sse import (
-    sse_thinking_start, sse_thinking_delta, sse_thinking_stop,
-    sse_text_start, sse_text_delta, sse_text_stop,
-    sse_message_delta, sse_done,
+from app.cot import critique as _critique
+from app.cot.branches import (
+    run_code_branch as _run_code_branch,
 )
-
-# Critique parsing + verify heuristic extracted to a sibling module.
-# Aliased to their previous private names so internal call sites don't change.
-from app.cot.critique import (
-    parse_score as _parse_score,
-    parse_gaps as _parse_gaps,
-    parse_critique as _parse_critique,
-    should_verify as _should_verify,
-    INFRA_TOOLS as _INFRA_TOOLS,
-    SHELL_CODE_BLOCK as _SHELL_CODE_BLOCK,
+from app.cot.branches import (
+    run_math_branch as _run_math_branch,
 )
 
 # Task-adaptive branches extracted to a sibling module.
 from app.cot.branches import (
     run_summarize_branch as _run_summarize_branch,
-    run_math_branch as _run_math_branch,
-    run_code_branch as _run_code_branch,
+)
+from app.cot.critique import (
+    parse_critique as _parse_critique,
 )
 
+# Critique parsing + verify heuristic extracted to a sibling module.
+# Aliased to their previous private names so internal call sites don't change.
 # Prompts extracted to a sibling module (2026-04-24). Re-imported here so
 # any caller reaching into `pipeline.PLAN_SYSTEM_*` / `CRITIQUE_SYSTEM` /
 # `REFINE_SYSTEM` / `RECONCILE_SYSTEM` / `VERIFY_SYSTEM` keeps working.
 from app.cot.prompts import (
-    PLAN_SYSTEM_VERBOSE, PLAN_SYSTEM_COMPACT,
-    CRITIQUE_SYSTEM, REFINE_SYSTEM, RECONCILE_SYSTEM, VERIFY_SYSTEM,
+    CRITIQUE_SYSTEM,
+    PLAN_SYSTEM_COMPACT,
+    PLAN_SYSTEM_VERBOSE,
+    RECONCILE_SYSTEM,
+    REFINE_SYSTEM,
 )
+from app.cot.prompts import (
+    VERIFY_SYSTEM as VERIFY_SYSTEM,
+)
+from app.cot.session import get_session_analyses, save_session_analysis
+from app.cot.sse import (
+    sse_done,
+    sse_message_delta,
+    sse_text_delta,
+    sse_text_start,
+    sse_text_stop,
+    sse_thinking_delta,
+    sse_thinking_start,
+    sse_thinking_stop,
+)
+
+# v5.22.20 — CoT usage accounting. Lives in app/cot/usage.py because it has
+# no litellm dependency, so it stays importable in test sessions that stub
+# litellm in sys.modules.
+from app.cot.usage import accumulate_usage as _accumulate_usage
 
 # Verification helpers extracted to a sibling module (2026-04-24). Same
 # re-export pattern preserves the old private names used internally.
 from app.cot.verify import resolve_verify as _resolve_verify
 from app.cot.verify import run_verify_pass as _run_verify_pass_impl
+from app.routing.retry import acompletion_with_retry
+
+_INFRA_TOOLS = _critique.INFRA_TOOLS
+_SHELL_CODE_BLOCK = _critique.SHELL_CODE_BLOCK
+_parse_gaps = _critique.parse_gaps
+_parse_score = _critique.parse_score
+_should_verify = _critique.should_verify
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +115,7 @@ def parse_cot_request_headers(
 
 # ── Core helpers ──────────────────────────────────────────────────────────────
 
+
 async def _call(model: str, messages: list[dict], system: str, max_tokens: int, **kwargs) -> str:
     """Non-streaming litellm call, returns text.
 
@@ -134,6 +152,7 @@ def _last_user_text(messages: list[dict]) -> str:
 
 
 # ── Pipeline ──────────────────────────────────────────────────────────────────
+
 
 async def run_cot_pipeline(
     model: str,
@@ -173,7 +192,9 @@ async def run_cot_pipeline(
     """
     block_index = 0
     # Strip keys that are passed explicitly to _call to avoid duplicate-arg errors
-    cot_kwargs = {k: v for k, v in extra_kwargs.items() if k not in ("max_tokens", "system", "stream")}
+    cot_kwargs = {
+        k: v for k, v in extra_kwargs.items() if k not in ("max_tokens", "system", "stream")
+    }
 
     # ── Wave 2 #11 — task-adaptive branches ──────────────────────────────────
     if task_branch:
@@ -185,15 +206,11 @@ async def run_cot_pipeline(
                 yield chunk
             return
         if task_branch == "math":
-            async for chunk in _run_math_branch(
-                model, messages, user_text_early, extra_kwargs
-            ):
+            async for chunk in _run_math_branch(model, messages, user_text_early, extra_kwargs):
                 yield chunk
             return
         if task_branch == "code":
-            async for chunk in _run_code_branch(
-                model, messages, user_text_early, extra_kwargs
-            ):
+            async for chunk in _run_code_branch(model, messages, user_text_early, extra_kwargs):
                 yield chunk
             return
         # unknown branch name — fall through to default pipeline
@@ -208,7 +225,9 @@ async def run_cot_pipeline(
     # Wave 2 #12 — Chain-of-Draft compression: terse prompt + smaller budget
     plan_compact = getattr(settings, "cot_plan_compact", True)
     plan_system = PLAN_SYSTEM_COMPACT if plan_compact else PLAN_SYSTEM_VERBOSE
-    plan_budget = min(settings.cot_plan_max_tokens, 120) if plan_compact else settings.cot_plan_max_tokens
+    plan_budget = (
+        min(settings.cot_plan_max_tokens, 120) if plan_compact else settings.cot_plan_max_tokens
+    )
     plan_text = await _call(
         model,
         [{"role": "user", "content": user_text + plan_context}],
@@ -234,7 +253,9 @@ async def run_cot_pipeline(
     if samples > 1:
         # Self-Consistency: N parallel drafts at T=0.7, reconcile to consensus
         import asyncio as _asyncio
+
         sc_kwargs = {**draft_kwargs, "temperature": 0.7}
+
         async def _one_draft():
             resp = await acompletion_with_retry(
                 model=model,
@@ -243,6 +264,7 @@ async def run_cot_pipeline(
                 **sc_kwargs,
             )
             return resp.choices[0].message.content or ""
+
         drafts = await _asyncio.gather(*[_one_draft() for _ in range(samples)])
 
         yield sse_thinking_start(block_index)
@@ -296,8 +318,13 @@ async def run_cot_pipeline(
     # api_key / api_base for its provider.
     critique_model_effective = critique_model or model
     critique_call_kwargs = (
-        {k: v for k, v in (critique_kwargs or {}).items() if k not in ("max_tokens", "system", "stream")}
-        if critique_model else cot_kwargs
+        {
+            k: v
+            for k, v in (critique_kwargs or {}).items()
+            if k not in ("max_tokens", "system", "stream")
+        }
+        if critique_model
+        else cot_kwargs
     )
 
     iterations_used = 0
@@ -349,10 +376,14 @@ async def run_cot_pipeline(
         critique_for_refine = critique_rendered
         refined = await acompletion_with_retry(
             model=model,
-            messages=[{"role": "system", "content": REFINE_SYSTEM}] + [
+            messages=[{"role": "system", "content": REFINE_SYSTEM}]
+            + [
                 {"role": "user", "content": user_text},
                 {"role": "assistant", "content": current_answer},
-                {"role": "user", "content": f"Critique:\n{critique_for_refine}\n\nPlease improve your answer."},
+                {
+                    "role": "user",
+                    "content": f"Critique:\n{critique_for_refine}\n\nPlease improve your answer.",
+                },
             ],
             stream=False,
             **draft_kwargs,
@@ -360,12 +391,15 @@ async def run_cot_pipeline(
         current_answer = refined.choices[0].message.content or current_answer
 
         yield sse_thinking_start(block_index)
-        yield sse_thinking_delta(block_index, f"## Refinement (iter {iteration})\n[Refined answer produced]")
+        yield sse_thinking_delta(
+            block_index, f"## Refinement (iter {iteration})\n[Refined answer produced]"
+        )
         yield sse_thinking_stop(block_index)
         block_index += 1
 
     try:
         from app.observability.prometheus import observe_cot_iterations
+
         observe_cot_iterations(model, iterations_used)
     except Exception:
         pass
@@ -377,9 +411,12 @@ async def run_cot_pipeline(
 
         # Always parse into structured steps so agent frameworks can act on them
         from app.cot.verify_exec import (
-            parse_verify_block, execute_step, render_executed_block,
+            execute_step,
             has_failures,
+            parse_verify_block,
+            render_executed_block,
         )
+
         verify_steps = parse_verify_block(verify_text)
 
         # Optionally execute the network-safe subset (HTTP/DNS/TCP via stdlib)
@@ -404,10 +441,9 @@ async def run_cot_pipeline(
 
             # Emit structured SSE event for agent frameworks
             import json as _json
+
             steps_json = _json.dumps([s.to_dict() for s in verify_steps])
-            yield (
-                f'event: verify_steps\ndata: {steps_json}\n\n'.encode()
-            )
+            yield (f"event: verify_steps\ndata: {steps_json}\n\n".encode())
 
             # Reflexion: if any executed step failed, run ONE revision pass
             # with the actual failures surfaced back to the model.
@@ -423,14 +459,21 @@ async def run_cot_pipeline(
                         {"role": "system", "content": REFINE_SYSTEM},
                         {"role": "user", "content": user_text},
                         {"role": "assistant", "content": current_answer},
-                        {"role": "user", "content": (
-                            "The following verification steps FAILED when executed. "
-                            "Update your answer to be consistent with these actual outputs, "
-                            "or explain why the expectation was wrong.\n\n" + failure_detail
-                        )},
+                        {
+                            "role": "user",
+                            "content": (
+                                "The following verification steps FAILED when executed. "
+                                "Update your answer to be consistent with these actual outputs, "
+                                "or explain why the expectation was wrong.\n\n" + failure_detail
+                            ),
+                        },
                     ],
                     stream=False,
-                    **{k: v for k, v in extra_kwargs.items() if k not in ("max_tokens", "system", "stream")},
+                    **{
+                        k: v
+                        for k, v in extra_kwargs.items()
+                        if k not in ("max_tokens", "system", "stream")
+                    },
                 )
                 current_answer = reflexion.choices[0].message.content or current_answer
                 yield sse_thinking_start(block_index)
@@ -449,10 +492,9 @@ async def run_cot_pipeline(
             # Still emit structured steps so clients can consume them
             if verify_steps:
                 import json as _json
+
                 steps_json = _json.dumps([s.to_dict() for s in verify_steps])
-                yield (
-                    f'event: verify_steps\ndata: {steps_json}\n\n'.encode()
-                )
+                yield (f"event: verify_steps\ndata: {steps_json}\n\n".encode())
 
         logger.debug("cot_verify_pass_complete", tokens=len(verify_text.split()))
 
@@ -460,7 +502,7 @@ async def run_cot_pipeline(
     yield sse_text_start(block_index)
     chunk_size = 50
     for i in range(0, len(current_answer), chunk_size):
-        yield sse_text_delta(block_index, current_answer[i:i + chunk_size])
+        yield sse_text_delta(block_index, current_answer[i : i + chunk_size])
         await asyncio.sleep(0)  # yield control to event loop
     yield sse_text_stop(block_index)
 
@@ -470,14 +512,19 @@ async def run_cot_pipeline(
     yield sse_done()
 
 
-
-
 async def _run_verify_pass(
-    model: str, user_text: str, answer: str, extra_kwargs: dict,
+    model: str,
+    user_text: str,
+    answer: str,
+    extra_kwargs: dict,
 ) -> str:
     """Back-compat shim: forwards to app.cot.verify.run_verify_pass but passes
     pipeline.py's `_call` as the injected litellm entry point so there's still
     a single place where CoT litellm invocations originate."""
     return await _run_verify_pass_impl(
-        model, user_text, answer, extra_kwargs, call_fn=_call,
+        model,
+        user_text,
+        answer,
+        extra_kwargs,
+        call_fn=_call,
     )

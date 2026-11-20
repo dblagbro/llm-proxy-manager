@@ -10,21 +10,22 @@ on inspection. v5.4.0 adds:
   the Prometheus increment (best-effort, errors swallowed).
 - ``POST /api/admin/ai-supervisor/retry-tap-self-test`` admin endpoint.
 """
+
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
 
 import pytest
 
 
 def test_tap_module_exposes_self_test_helpers():
     from app.observability.openai_retry_tap import (
+        install_openai_retry_tap,
         is_installed,
         self_test,
-        install_openai_retry_tap,
     )
+
     assert callable(is_installed)
     assert callable(self_test)
     assert callable(install_openai_retry_tap)
@@ -33,11 +34,13 @@ def test_tap_module_exposes_self_test_helpers():
 def test_is_installed_false_before_install():
     """Without calling install, is_installed must return False so the
     self-test can identify a fresh boot with the wiring missing."""
-    from app.observability.openai_retry_tap import is_installed, _OpenAIRetryTap
+    from app.observability.openai_retry_tap import _OpenAIRetryTap, is_installed
+
     target = logging.getLogger("openai._base_client")
     # Clean any leftover handlers from earlier tests in this run
     target.handlers = [h for h in target.handlers if not isinstance(h, _OpenAIRetryTap)]
     import app.observability.openai_retry_tap as tap_mod
+
     tap_mod._installed = False
     assert is_installed() is False
 
@@ -47,6 +50,7 @@ def test_install_makes_is_installed_true():
         install_openai_retry_tap,
         is_installed,
     )
+
     install_openai_retry_tap()
     assert is_installed() is True
 
@@ -56,6 +60,7 @@ def test_self_test_reports_installed_state():
         install_openai_retry_tap,
         self_test,
     )
+
     install_openai_retry_tap()
     result = self_test()
     assert result["installed"] is True
@@ -67,8 +72,9 @@ def test_self_test_reports_installed_state():
 def test_self_test_reports_uninstalled_state(monkeypatch):
     """If install_openai_retry_tap hasn't been called, the self-test
     must surface a helpful error rather than silently passing."""
-    from app.observability.openai_retry_tap import self_test, _OpenAIRetryTap
     import app.observability.openai_retry_tap as tap_mod
+    from app.observability.openai_retry_tap import _OpenAIRetryTap, self_test
+
     # Hard reset to fake an uninstalled state
     tap_mod._installed = False
     target = logging.getLogger("openai._base_client")
@@ -90,6 +96,7 @@ def test_tap_writes_activity_log_row_in_source():
 
 def test_retry_tap_self_test_endpoint_exists_in_router():
     from app.api.admin_ai_supervisor import router
+
     routes = [r for r in router.routes if hasattr(r, "path")]
     assert any("retry-tap-self-test" in r.path for r in routes), (
         f"expected /retry-tap-self-test endpoint; got {[r.path for r in routes]}"
@@ -102,6 +109,7 @@ async def test_retry_tap_self_test_endpoint_returns_dict():
     its dict verbatim."""
     from app.api.admin_ai_supervisor import retry_tap_self_test
     from app.observability.openai_retry_tap import install_openai_retry_tap
+
     install_openai_retry_tap()
     result = await retry_tap_self_test(_db=None, _admin=None)
     assert isinstance(result, dict)

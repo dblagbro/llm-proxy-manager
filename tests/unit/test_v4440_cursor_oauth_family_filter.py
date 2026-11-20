@@ -17,8 +17,8 @@ Regression that introduced the bug: v4.4.31 (cursor-oauth provider type
 added) updated PROVIDER_TYPE_TO_LITELLM + PROVIDER_DEFAULT_MODELS but
 forgot the family filter.
 """
-from app.routing.litellm_binding import _model_family_provider_types
 
+from app.routing.litellm_binding import _model_family_provider_types
 
 # ── claude-* family must include cursor-oauth ──────────────────────
 

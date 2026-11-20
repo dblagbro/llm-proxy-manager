@@ -1,8 +1,10 @@
 """Unit tests for sliding-window rate limiter in app.auth.keys."""
+
 import collections
 import time
-import pytest
 from unittest.mock import patch
+
+import pytest
 from fastapi import HTTPException
 
 import app.auth.keys as keys_module
@@ -23,6 +25,7 @@ def _patch_nodes(n: int):
 
 
 # ── basic behaviour ───────────────────────────────────────────────────────────
+
 
 def test_first_request_allowed():
     with _patch_nodes(1):
@@ -61,6 +64,7 @@ def test_429_message_mentions_rate_limit():
 
 # ── window expiry ─────────────────────────────────────────────────────────────
 
+
 def test_expired_requests_not_counted():
     # Pre-fill window with old timestamps (>60s ago)
     old = time.monotonic() - 61.0
@@ -83,6 +87,7 @@ def test_mixed_fresh_and_expired_counts_only_fresh():
 
 
 # ── cluster-aware division ────────────────────────────────────────────────────
+
 
 def test_limit_divided_by_node_count():
     # 2 nodes, limit=4 → per-node limit = 2
@@ -110,6 +115,7 @@ def test_many_nodes_enforces_minimum_per_node_limit_of_1():
 
 
 # ── key isolation ─────────────────────────────────────────────────────────────
+
 
 def test_different_keys_tracked_independently():
     with _patch_nodes(1):

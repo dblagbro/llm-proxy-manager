@@ -7,7 +7,9 @@ sides now emit at WARNING so a happy-path traversal survives default
 INFO-level log filters. Catches one-sided drops where the proxy POST
 succeeded but never reached the hub (network black-hole).
 """
+
 from __future__ import annotations
+
 from pathlib import Path
 
 
@@ -35,10 +37,9 @@ def test_dropped_path_still_emits_warning():
 
 def test_version_bumped():
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m
     major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    assert (major, minor, patch) >= (5, 19, 3), (
-        f"expected >= 5.19.3, got {major}.{minor}.{patch}"
-    )
+    assert (major, minor, patch) >= (5, 19, 3), f"expected >= 5.19.3, got {major}.{minor}.{patch}"

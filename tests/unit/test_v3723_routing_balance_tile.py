@@ -6,6 +6,7 @@ metrics endpoint and providers list already cover the data; the only
 new code is the visualization, which we verify by inspecting the
 DashboardPage source for the expected behavior.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -35,7 +36,7 @@ def test_tile_computes_share_from_requests():
     # Anchor on the section's leading comment so the slice covers both
     # the data-shaping block and the JSX body.
     idx = src.index("Routing balance tile for claude-oauth")
-    section = src[idx:idx + 6000]
+    section = src[idx : idx + 6000]
     assert "totalReqs" in section
     assert "requests / totalReqs" in section
 
@@ -46,7 +47,7 @@ def test_tile_surfaces_weekly_utilization():
     # Anchor on the section's leading comment so the slice covers both
     # the data-shaping block and the JSX body.
     idx = src.index("Routing balance tile for claude-oauth")
-    section = src[idx:idx + 6000]
+    section = src[idx : idx + 6000]
     assert "usage_weekly_pct" in section
     assert "util" in section
 
@@ -58,7 +59,7 @@ def test_tile_marks_auto_skipped_providers():
     # Anchor on the section's leading comment so the slice covers both
     # the data-shaping block and the JSX body.
     idx = src.index("Routing balance tile for claude-oauth")
-    section = src[idx:idx + 6000]
+    section = src[idx : idx + 6000]
     assert "auto_skip_until" in section
     assert "auto-skip" in section
 
@@ -70,7 +71,7 @@ def test_tile_handles_zero_traffic_gracefully():
     # Anchor on the section's leading comment so the slice covers both
     # the data-shaping block and the JSX body.
     idx = src.index("Routing balance tile for claude-oauth")
-    section = src[idx:idx + 6000]
+    section = src[idx : idx + 6000]
     # totalReqs > 0 short-circuits the percent calculation
     assert "totalReqs > 0" in section
     # Empty-state copy is present
@@ -84,12 +85,13 @@ def test_tile_explains_v3720_bucket_filter():
     # Anchor on the section's leading comment so the slice covers both
     # the data-shaping block and the JSX body.
     idx = src.index("Routing balance tile for claude-oauth")
-    section = src[idx:idx + 6000]
+    section = src[idx : idx + 6000]
     assert "v3.7.20" in section
     assert "bucket filter" in section
 
 
 def test_version_bumped():
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     assert parts >= (3, 7, 23)

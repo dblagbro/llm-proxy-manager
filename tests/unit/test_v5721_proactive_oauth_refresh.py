@@ -16,10 +16,10 @@ Also drops the sweep interval from 6h → 1h and the initial delay
 from 2h → 5min so the very next sweep after deploy fixes the
 immediate badge.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-
 
 # ── structural pins ────────────────────────────────────────────────────
 
@@ -27,6 +27,7 @@ from pathlib import Path
 def test_refresh_lead_threshold_set():
     """The new threshold constant exists with a 24h default."""
     from app.monitoring import cursor_oauth_expiry_monitor as m
+
     assert getattr(m, "_DEFAULT_REFRESH_LEAD_DAYS", None) == 1.0
 
 
@@ -34,6 +35,7 @@ def test_proactive_refresh_types_includes_claude():
     """claude-oauth is in the proactive-refresh list — that's the
     type the 2026-06-18 ship targets."""
     from app.monitoring import cursor_oauth_expiry_monitor as m
+
     types = getattr(m, "_PROACTIVE_REFRESH_TYPES", ())
     assert "claude-oauth" in types
     # codex too, since it has the same refresh_and_persist helper
@@ -44,6 +46,7 @@ def test_proactive_refresh_types_excludes_cursor():
     """cursor-oauth is intentionally NOT in the list — its refresh
     flow is gated on empirical confirmation per the noVNC backlog."""
     from app.monitoring import cursor_oauth_expiry_monitor as m
+
     types = getattr(m, "_PROACTIVE_REFRESH_TYPES", ())
     assert "cursor-oauth" not in types, (
         "v5.7.21: cursor-oauth proactive refresh stays disabled until "
@@ -55,6 +58,7 @@ def test_sweep_interval_dropped_to_1h():
     """6h → 1h. A failed refresh now retries within 1h instead of
     waiting 6h, which would miss the 1-day refresh window."""
     from app.monitoring import cursor_oauth_expiry_monitor as m
+
     assert m._SWEEP_INTERVAL_SEC == 3600, (
         f"v5.7.21: sweep interval should be 1h; got {m._SWEEP_INTERVAL_SEC}s"
     )
@@ -64,6 +68,7 @@ def test_initial_delay_dropped_to_5min():
     """2h → 5min. The legacy "don't race the cursor billing scraper"
     concern is moot now that the refresh path is in this worker."""
     from app.monitoring import cursor_oauth_expiry_monitor as m
+
     assert m._INITIAL_DELAY_SEC == 300, (
         f"v5.7.21: initial delay should be 5min; got {m._INITIAL_DELAY_SEC}s"
     )
@@ -99,5 +104,6 @@ def test_refresh_failure_marks_auth_failed():
 def test_version_bumped():
     """v5.7.21 minimum — later patches keep this passing."""
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     assert parts >= (5, 7, 21), f"v5.7.21 must be reachable; got {__version__}"

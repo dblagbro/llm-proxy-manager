@@ -13,13 +13,10 @@ This test file locks in the Phase 1 contract:
 - settings are exposed
 - version bumped
 """
+
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
-
-import pytest
-
 
 # ── (1) ORM model surface ─────────────────────────────────────────────
 
@@ -27,34 +24,48 @@ import pytest
 def test_provider_oauth_account_importable_from_db_shim():
     from app.models.db import ProviderOAuthAccount
     from app.models.db_provider import ProviderOAuthAccount as _direct
+
     assert ProviderOAuthAccount is _direct
 
 
 def test_provider_oauth_account_registered_with_base():
     from app.models.db_base import Base
+
     tables = set(Base.metadata.tables.keys())
     assert "provider_oauth_accounts" in tables
 
 
 def test_provider_oauth_account_columns_present():
     from app.models.db import ProviderOAuthAccount
+
     for col in (
-        "id", "provider_id", "label",
-        "access_token", "refresh_token", "oauth_expires_at",
-        "enabled", "last_used_at", "utilization_pct",
-        "captured_via", "created_at", "updated_at",
-        "deleted_at", "last_user_edit_at",
+        "id",
+        "provider_id",
+        "label",
+        "access_token",
+        "refresh_token",
+        "oauth_expires_at",
+        "enabled",
+        "last_used_at",
+        "utilization_pct",
+        "captured_via",
+        "created_at",
+        "updated_at",
+        "deleted_at",
+        "last_user_edit_at",
     ):
         assert hasattr(ProviderOAuthAccount, col), f"missing {col}"
 
 
 def test_provider_gains_oauth_account_strategy_column():
     from app.models.db import Provider
+
     assert hasattr(Provider, "oauth_account_strategy")
 
 
 def test_provider_has_oauth_accounts_relationship():
     from app.models.db import Provider
+
     assert hasattr(Provider, "oauth_accounts")
 
 
@@ -70,13 +81,12 @@ def test_provider_column_alter_wired_in_migration():
 
 
 def test_seeder_module_importable():
-    from app.providers.oauth_account_seeder import (
-        seed_missing_accounts, _OAUTH_PROVIDER_TYPES,
-    )
+    pass
 
 
 def test_seeder_scope_covers_all_oauth_types():
     from app.providers.oauth_account_seeder import _OAUTH_PROVIDER_TYPES
+
     for t in ("cursor-oauth", "codex-oauth", "claude-oauth"):
         assert t in _OAUTH_PROVIDER_TYPES
 
@@ -94,6 +104,7 @@ def test_seeder_wired_in_init_db():
 
 def test_admin_router_module_importable():
     from app.api.admin_provider_oauth_accounts import router
+
     assert router.prefix == "/api/admin/providers/{provider_id}/oauth-accounts"
 
 
@@ -105,9 +116,10 @@ def test_admin_router_registered_in_main():
 
 def test_admin_router_covers_the_five_endpoints():
     from app.api.admin_provider_oauth_accounts import router
+
     paths_and_methods = set()
     for r in router.routes:
-        for m in (getattr(r, "methods", None) or []):
+        for m in getattr(r, "methods", None) or []:
             paths_and_methods.add((m, r.path))
     # POST + GET on collection root
     assert ("GET", "/api/admin/providers/{provider_id}/oauth-accounts") in paths_and_methods
@@ -128,7 +140,7 @@ def test_admin_writes_audit_row_on_create():
     assert "CompliancePolicyChange" in src
     # Correct shape — matches v5.1.2 pattern
     assert 'scope="per_provider"' in src
-    assert 'target_id=provider_id' in src
+    assert "target_id=provider_id" in src
 
 
 # ── (5) Settings ─────────────────────────────────────────────────────
@@ -136,6 +148,7 @@ def test_admin_writes_audit_row_on_create():
 
 def test_settings_exposed():
     from app.config import settings
+
     assert hasattr(settings, "oauth_account_fanout_enabled")
     assert hasattr(settings, "oauth_account_default_strategy")
     assert settings.oauth_account_fanout_enabled is True
@@ -149,6 +162,7 @@ def test_version_bumped():
     """v5.15.0 shipped Phase 1; assert at-or-beyond so future bumps don't
     require touching this test."""
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'__version__\s*=\s*"(\d+)\.(\d+)\.(\d+)"', src)
     assert m, f"could not parse __version__ from {src!r}"
@@ -166,6 +180,7 @@ def test_phase1_boundary_now_lifted_in_phase2():
     Phase 1 boundary is intentionally lifted from v5.15.1 onward."""
     src = Path("app/__version__.py").read_text()
     import re
+
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m
     major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))

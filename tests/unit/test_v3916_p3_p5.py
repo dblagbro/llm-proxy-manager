@@ -31,16 +31,17 @@ with "cool-off N seconds remaining", parse N and set
 `Provider.auto_skip_until = now + N`. Router naturally avoids the
 provider during cool-off instead of cycling cached 429s.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-
 
 # ── P3a: translator placeholders ──────────────────────────────────
 
 
 def test_empty_user_content_placeholder_defined():
     from app.api._oauth_chat_translate import _EMPTY_USER_CONTENT_PLACEHOLDER
+
     assert isinstance(_EMPTY_USER_CONTENT_PLACEHOLDER, str)
     assert len(_EMPTY_USER_CONTENT_PLACEHOLDER) > 0
 
@@ -49,6 +50,7 @@ def test_translator_substitutes_placeholder_for_empty_user_string():
     """`{role: "user", content: ""}` MUST be translated to a non-empty
     content message so OpenAI doesn't reject with "invalid user message"."""
     from app.api._oauth_chat_translate import anthropic_messages_to_openai
+
     out = anthropic_messages_to_openai(
         [{"role": "user", "content": ""}],
         body_system=None,
@@ -63,6 +65,7 @@ def test_translator_emits_placeholder_for_empty_blocks_list():
     """An empty content list MUST emit a placeholder so message
     positions stay aligned for OpenAI's index-based diagnostics."""
     from app.api._oauth_chat_translate import _anthropic_blocks_to_openai_message_parts
+
     out = _anthropic_blocks_to_openai_message_parts("user", [])
     assert len(out) == 1
     assert out[0]["role"] == "user"
@@ -73,10 +76,14 @@ def test_translator_emits_placeholder_for_all_empty_blocks():
     """All blocks present but all empty (text:"") → still a non-empty
     user message. Caller error pattern from real OpenRouter failures."""
     from app.api._oauth_chat_translate import _anthropic_blocks_to_openai_message_parts
-    out = _anthropic_blocks_to_openai_message_parts("user", [
-        {"type": "text", "text": ""},
-        {"type": "text"},  # no text key
-    ])
+
+    out = _anthropic_blocks_to_openai_message_parts(
+        "user",
+        [
+            {"type": "text", "text": ""},
+            {"type": "text"},  # no text key
+        ],
+    )
     assert len(out) == 1
     assert out[0]["role"] == "user"
     assert out[0]["content"]
@@ -88,10 +95,11 @@ def test_translator_index_preservation_replay():
     would surface as 'Invalid user message at index 2' from OpenAI.
     Post-v3.9.16: 5 messages out, indices intact."""
     from app.api._oauth_chat_translate import anthropic_messages_to_openai
+
     msgs = [
         {"role": "user", "content": "hello"},
         {"role": "assistant", "content": "hi"},
-        {"role": "user", "content": []},   # empty list — was the trap
+        {"role": "user", "content": []},  # empty list — was the trap
         {"role": "assistant", "content": "anything else?"},
         {"role": "user", "content": "thanks"},
     ]
@@ -105,6 +113,7 @@ def test_translator_unknown_content_shape_uses_placeholder_for_user():
     """Dict/int content (truly unknown shape) should still preserve
     message position with a placeholder for user role."""
     from app.api._oauth_chat_translate import anthropic_messages_to_openai
+
     out = anthropic_messages_to_openai(
         [{"role": "user", "content": {"weird": "shape"}}],
         body_system=None,
@@ -131,6 +140,7 @@ def test_rolling_stats_by_node_endpoint_registered():
     both routers."""
     from app.api.providers import router as providers_router
     from app.api.providers_stats import router as stats_router
+
     paths = {r.path for r in providers_router.routes} | {r.path for r in stats_router.routes}
     assert "/api/providers/rolling-stats-by-node" in paths
 
@@ -138,7 +148,11 @@ def test_rolling_stats_by_node_endpoint_registered():
 def test_rolling_stats_by_node_queries_json_extract_node_id():
     """Endpoint uses json_extract on event_meta.node_id — Option B
     approach (no schema migration)."""
-    src = Path("app/api/providers.py").read_text() + "\n" + Path("app/api/providers_stats.py").read_text()
+    src = (
+        Path("app/api/providers.py").read_text()
+        + "\n"
+        + Path("app/api/providers_stats.py").read_text()
+    )
     assert 'json_extract(ActivityLog.event_meta, "$.node_id")' in src
     assert "by_node" in src
 
@@ -155,7 +169,7 @@ def test_rolling_stats_by_node_handles_null_node_id_as_unknown():
     )
     # The function name appears as the route handler in providers_stats.py.
     idx = src.index("provider_rolling_stats_by_node(")
-    fn = src[idx:idx + 4000]
+    fn = src[idx : idx + 4000]
     assert 'node_id or "unknown"' in fn
 
 
@@ -183,15 +197,18 @@ def test_metrics_page_renders_lock_badge_for_override():
 def test_grokweb_cooloff_pattern_regex():
     """Pattern matches the actual grok-web bridge error message format."""
     from app.api._grok_web_dispatch import _GROKWEB_COOLOFF_PATTERN
-    m = _GROKWEB_COOLOFF_PATTERN.search('grok.com 429 (cached, cool-off 59s remaining)')
+
+    m = _GROKWEB_COOLOFF_PATTERN.search("grok.com 429 (cached, cool-off 59s remaining)")
     assert m is not None
     assert int(m.group(1)) == 59
 
 
 def test_grokweb_cooloff_helper_exists():
     """The helper that sets Provider.auto_skip_until on 429 cool-off."""
-    from app.api._grok_web_dispatch import _apply_grokweb_429_cooloff
     import asyncio
+
+    from app.api._grok_web_dispatch import _apply_grokweb_429_cooloff
+
     assert asyncio.iscoroutinefunction(_apply_grokweb_429_cooloff)
 
 
@@ -213,7 +230,7 @@ def test_grokweb_cooloff_sanity_bounds():
     """Cool-off helper rejects out-of-range values (negative or > 1h)."""
     src = Path("app/api/_grok_web_dispatch.py").read_text()
     idx = src.index("_apply_grokweb_429_cooloff")
-    fn = src[idx:idx + 2500]
+    fn = src[idx : idx + 2500]
     assert "secs <= 0 or secs > 3600" in fn  # 1h max
 
 
@@ -222,8 +239,11 @@ def test_grokweb_cooloff_does_not_shorten_longer_skips():
     don't shorten it for a 60s rate-limit cool-off."""
     src = Path("app/api/_grok_web_dispatch.py").read_text()
     idx = src.index("_apply_grokweb_429_cooloff")
-    fn = src[idx:idx + 2500]
-    assert "existing.replace(tzinfo=timezone.utc) < skip_until" in fn
+    fn = src[idx : idx + 2500]
+    assert (
+        "existing.replace(tzinfo=timezone.utc) < skip_until" in fn
+        or "existing.replace(tzinfo=UTC) < skip_until" in fn
+    )
 
 
 # ── P6: OpenAI Assistants handler scaffolding ──────────────────────
@@ -232,6 +252,7 @@ def test_grokweb_cooloff_does_not_shorten_longer_skips():
 def test_assistants_module_imports_clean():
     """Handler module imports without error."""
     import importlib
+
     mod = importlib.import_module("app.memory.handlers_openai_assistants")
     assert hasattr(mod, "flush_openai_assistants")
     assert hasattr(mod, "recover_openai_assistants")
@@ -242,10 +263,12 @@ def test_assistants_handlers_registered_at_import():
     """Importing app.memory registers the openai-assistants handlers
     in both the flush + recover registries."""
     import importlib
+
     # Ensure the memory package has been imported
     importlib.import_module("app.memory")
     from app.memory.flush import _HANDLERS as flush_registry
     from app.memory.recover import _HANDLERS as recover_registry
+
     assert "openai-assistants" in flush_registry
     assert "openai-assistants" in recover_registry
 
@@ -253,36 +276,52 @@ def test_assistants_handlers_registered_at_import():
 def test_assistants_flush_handler_signature():
     """Flush handler is a coroutine that takes a ctx dict."""
     import asyncio
+
     from app.memory.handlers_openai_assistants import flush_openai_assistants
+
     assert asyncio.iscoroutinefunction(flush_openai_assistants)
 
 
 def test_assistants_recover_handler_signature():
     """Recover handler is a coroutine that takes a ctx dict."""
     import asyncio
+
     from app.memory.handlers_openai_assistants import recover_openai_assistants
+
     assert asyncio.iscoroutinefunction(recover_openai_assistants)
 
 
 def test_assistants_flush_succeeds_when_no_thread_id():
     """No thread_id known → trivial success; marker still advances."""
     import asyncio
+
     from app.memory.handlers_openai_assistants import flush_openai_assistants
-    result = asyncio.run(flush_openai_assistants({
-        "old_provider": None,
-        "last_known_external_ref": None,
-    }))
+
+    result = asyncio.run(
+        flush_openai_assistants(
+            {
+                "old_provider": None,
+                "last_known_external_ref": None,
+            }
+        )
+    )
     assert result is True
 
 
 def test_assistants_recover_returns_none_when_no_thread_id():
     """No thread to read back → None (handler caller will retry later)."""
     import asyncio
+
     from app.memory.handlers_openai_assistants import recover_openai_assistants
-    result = asyncio.run(recover_openai_assistants({
-        "old_provider": None,
-        "last_known_external_ref": None,
-    }))
+
+    result = asyncio.run(
+        recover_openai_assistants(
+            {
+                "old_provider": None,
+                "last_known_external_ref": None,
+            }
+        )
+    )
     assert result is None
 
 
@@ -298,6 +337,6 @@ def test_assistants_treats_404_as_success_flush():
     a successful flush (no orphan to clean up)."""
     src = Path("app/memory/handlers_openai_assistants.py").read_text()
     idx = src.index("flush_openai_assistants")
-    fn = src[idx:idx + 3000]
+    fn = src[idx : idx + 3000]
     assert "404" in fn
     assert "already 404" in fn or "already gone" in fn.lower()

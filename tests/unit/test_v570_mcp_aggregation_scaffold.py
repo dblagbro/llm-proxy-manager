@@ -16,6 +16,7 @@ Pin contracts:
 7. read_xlsx_to_markdown reuses v5.6.0's renderer (no code drift
    between the two surfaces).
 """
+
 from __future__ import annotations
 
 import base64
@@ -24,7 +25,6 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 
 # ──── Dependency + module layout ────────────────────────────────────
 
@@ -44,12 +44,21 @@ def test_mcp_tool_call_model_registered():
     """McpToolCall must be importable from the canonical db module so
     Base.metadata picks it up at init_db."""
     from app.models.db import McpToolCall
+
     assert McpToolCall.__tablename__ == "mcp_tool_calls"
     cols = {c.name for c in McpToolCall.__table__.columns}
     assert {
-        "id", "created_at", "api_key_id", "parent_request_id",
-        "tool_name", "mcp_server_id", "input_summary",
-        "output_bytes", "latency_ms", "ok", "error_msg",
+        "id",
+        "created_at",
+        "api_key_id",
+        "parent_request_id",
+        "tool_name",
+        "mcp_server_id",
+        "input_summary",
+        "output_bytes",
+        "latency_ms",
+        "ok",
+        "error_msg",
     }.issubset(cols)
 
 
@@ -61,13 +70,14 @@ def test_build_mcp_app_uses_production_settings():
     is the production combo (no sticky sessions, scales horizontally,
     avoids SDK issue #1367)."""
     src = Path("app/mcp_server/server.py").read_text()
-    assert 'stateless_http=True' in src
-    assert 'json_response=True' in src
+    assert "stateless_http=True" in src
+    assert "json_response=True" in src
     assert 'streamable_http_path="/"' in src
 
 
 def test_build_mcp_app_returns_starlette_sub_app():
     from app.mcp_server.server import build_mcp_app
+
     sub_app = build_mcp_app()
     # The Starlette sub-app should have the FastMCP instance stashed
     # on its state for the lifespan integration.
@@ -126,6 +136,7 @@ def test_main_py_lifespan_runs_session_manager():
 @pytest.mark.asyncio
 async def test_bearer_middleware_rejects_missing_header():
     from app.mcp_server.server import BearerKeyAuthMiddleware
+
     req = MagicMock()
     req.headers = {}  # no Authorization
     mw = BearerKeyAuthMiddleware(MagicMock())
@@ -136,6 +147,7 @@ async def test_bearer_middleware_rejects_missing_header():
 @pytest.mark.asyncio
 async def test_bearer_middleware_rejects_malformed_header():
     from app.mcp_server.server import BearerKeyAuthMiddleware
+
     req = MagicMock()
     req.headers = {"authorization": "NotBearer 123"}
     mw = BearerKeyAuthMiddleware(MagicMock())
@@ -146,6 +158,7 @@ async def test_bearer_middleware_rejects_malformed_header():
 @pytest.mark.asyncio
 async def test_bearer_middleware_rejects_invalid_key():
     from app.mcp_server.server import BearerKeyAuthMiddleware
+
     req = MagicMock()
     req.headers = {"authorization": "Bearer some-invalid-key"}
     mw = BearerKeyAuthMiddleware(MagicMock())
@@ -160,8 +173,9 @@ async def test_bearer_middleware_rejects_invalid_key():
 @pytest.mark.asyncio
 async def test_bearer_middleware_sets_context_var_on_success():
     """Valid key → ContextVar set → tools attribute audit correctly."""
-    from app.mcp_server.server import BearerKeyAuthMiddleware
     from app.mcp_server import current_api_key_id
+    from app.mcp_server.server import BearerKeyAuthMiddleware
+
     req = MagicMock()
     req.headers = {"authorization": "Bearer good-key"}
     mw = BearerKeyAuthMiddleware(MagicMock())
@@ -201,11 +215,14 @@ async def test_read_xlsx_tool_renders_b64():
     """End-to-end: feed a tiny xlsx through the MCP wrapper and
     verify it returns the markdown shape."""
     import openpyxl
+
     wb = openpyxl.Workbook()
     wb.active.append(["product", "qty"])
     wb.active.append(["widget", 10])
-    buf = io.BytesIO(); wb.save(buf)
+    buf = io.BytesIO()
+    wb.save(buf)
     from app.mcp_server.tools import read_xlsx_to_markdown
+
     out = await read_xlsx_to_markdown(
         file_b64=base64.b64encode(buf.getvalue()).decode(),
     )
@@ -216,6 +233,7 @@ async def test_read_xlsx_tool_renders_b64():
 @pytest.mark.asyncio
 async def test_fetch_url_rejects_non_http_schemes():
     from app.mcp_server.tools import fetch_url
+
     out = await fetch_url("file:///etc/passwd")
     assert out.startswith("error:")
     assert "must use http" in out
@@ -224,5 +242,6 @@ async def test_fetch_url_rejects_non_http_schemes():
 @pytest.mark.asyncio
 async def test_fetch_url_rejects_empty_url():
     from app.mcp_server.tools import fetch_url
+
     out = await fetch_url("")
     assert out.startswith("error:")

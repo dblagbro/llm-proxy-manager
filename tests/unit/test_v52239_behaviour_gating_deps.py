@@ -24,6 +24,7 @@ a test lie.**
 A failure here does not mean the code is broken. It means this environment
 cannot reproduce CI, so a green local run proves less than it appears to.
 """
+
 from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError, version
@@ -67,9 +68,7 @@ BEHAVIOUR_GATING = {
         "gates the Playwright UI suite entirely. Absent, those 73 tests do not "
         "run and nothing says so — which is how they went unrun for months."
     ),
-    "pydantic": (
-        "settings and request models; validation behaviour differs across majors."
-    ),
+    "pydantic": ("settings and request models; validation behaviour differs across majors."),
 }
 
 
@@ -120,10 +119,7 @@ def test_every_gating_dependency_is_declared():
     is required without being named directly.
     """
     declared = _declared_specifiers()
-    undeclared = [
-        name for name in BEHAVIOUR_GATING
-        if name not in declared and name != "greenlet"
-    ]
+    undeclared = [name for name in BEHAVIOUR_GATING if name not in declared and name != "greenlet"]
     assert not undeclared, (
         f"these gate test behaviour but requirements.txt does not declare them: "
         f"{undeclared}. An undeclared dependency is one CI may not install."

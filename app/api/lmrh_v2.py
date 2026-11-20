@@ -21,14 +21,15 @@ Rate limiting: per-key, default 4/min for /lmrh/providers (since the
 underlying snapshot only refreshes every 30s, faster polling returns
 duplicates). Override via new ``ApiKey.lmrh_polling_rpm`` column.
 """
+
 from __future__ import annotations
 
 import asyncio
 import time
 from collections import defaultdict
-from dataclasses import asdict
-from datetime import datetime, timezone
-from typing import Optional
+from dataclasses import asdict as asdict
+from datetime import UTC, datetime
+from datetime import timezone as timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
@@ -107,9 +108,7 @@ async def _check_rate_limit(
             override = getattr(db_key, "lmrh_polling_rpm", None)
         elif endpoint == "quotes":
             override = getattr(db_key, "lmrh_quotes_rpm", None)
-    rpm = override or (
-        DEFAULT_PROVIDERS_RPM if endpoint == "providers" else DEFAULT_QUOTES_RPM
-    )
+    rpm = override or (DEFAULT_PROVIDERS_RPM if endpoint == "providers" else DEFAULT_QUOTES_RPM)
     window_sec = 60.0
     now = time.time()
     state_key = (key.id, endpoint)
@@ -123,8 +122,7 @@ async def _check_rate_limit(
             retry_after = max(1, int(window_sec - (now - timestamps[0])))
             raise HTTPException(
                 429,
-                f"LMRH polling rate limit exceeded ({rpm}/min). "
-                f"Retry in {retry_after}s.",
+                f"LMRH polling rate limit exceeded ({rpm}/min). Retry in {retry_after}s.",
                 headers={"Retry-After": str(retry_after)},
             )
         timestamps.append(now)
@@ -230,26 +228,28 @@ async def well_known_config() -> dict:
         # ignored as unknown JSON keys.
         versions.append("2.0")
         versions.append("2.1")
-        endpoints.update({
-            # v3.7.18 (LMRHv2 Q1 operator answer): public, no-auth
-            # endpoint exposing model availability + capabilities
-            # without leaking operator-internal provider names or
-            # per-provider metrics. Lets new clients discover what
-            # the proxy offers before they negotiate an API key.
-            "public": "/lmrh/public",
-            "providers": "/lmrh/providers",
-            "providers_one": "/lmrh/providers/{provider_id}",
-            "quotes": "/lmrh/quotes",
-            "health": "/lmrh/health",
-            # v3.3.2: pointer to the public LMRHv2 spec served by the
-            # proxy itself. Lets clients self-document.
-            "spec": "/lmrh/v2.md",
-            # v3.4.0: Server-Sent Events stream — same payload as
-            # /lmrh/providers but pushed when the underlying snapshot
-            # ETag changes, eliminating the polling-then-304 dance for
-            # clients that prefer push.
-            "stream": "/lmrh/stream",
-        })
+        endpoints.update(
+            {
+                # v3.7.18 (LMRHv2 Q1 operator answer): public, no-auth
+                # endpoint exposing model availability + capabilities
+                # without leaking operator-internal provider names or
+                # per-provider metrics. Lets new clients discover what
+                # the proxy offers before they negotiate an API key.
+                "public": "/lmrh/public",
+                "providers": "/lmrh/providers",
+                "providers_one": "/lmrh/providers/{provider_id}",
+                "quotes": "/lmrh/quotes",
+                "health": "/lmrh/health",
+                # v3.3.2: pointer to the public LMRHv2 spec served by the
+                # proxy itself. Lets clients self-document.
+                "spec": "/lmrh/v2.md",
+                # v3.4.0: Server-Sent Events stream — same payload as
+                # /lmrh/providers but pushed when the underlying snapshot
+                # ETag changes, eliminating the polling-then-304 dance for
+                # clients that prefer push.
+                "stream": "/lmrh/stream",
+            }
+        )
         polling = {
             "providers_min_interval_sec": 15,
             "providers_recommended_interval_sec": 60,
@@ -260,10 +260,12 @@ async def well_known_config() -> dict:
             # see the recommended cadence at a glance.
             "stream_recommended": True,
         }
-        cache.update({
-            "providers_max_age_sec": 30,
-            "health_max_age_sec": 30,
-        })
+        cache.update(
+            {
+                "providers_max_age_sec": 30,
+                "health_max_age_sec": 30,
+            }
+        )
     return {
         "version": "2.0" if _v2_enabled() else "1.2",
         "supported_versions": versions,
@@ -271,9 +273,16 @@ async def well_known_config() -> dict:
         "polling": polling,
         "cache": cache,
         "supported_dims": [
-            "task", "cost", "latency", "region",
-            "cache", "provider-hint", "exclude",
-            "cost-class", "tools", "vision",
+            "task",
+            "cost",
+            "latency",
+            "region",
+            "cache",
+            "provider-hint",
+            "exclude",
+            "cost-class",
+            "tools",
+            "vision",
         ],
     }
 
@@ -319,8 +328,8 @@ async def get_public_view(response: Response) -> dict:
 async def get_providers(
     request: Request,
     response: Response,
-    type: Optional[str] = None,
-    capability: Optional[str] = None,
+    type: str | None = None,
+    capability: str | None = None,
     db: AsyncSession = Depends(get_db),
     key: ApiKeyRecord = Depends(resolve_api_key_dep()),
 ) -> Response:
@@ -358,10 +367,7 @@ async def get_providers(
     if type:
         visible = [p for p in visible if p.type == type]
     if capability:
-        visible = [
-            p for p in visible
-            if any(m.kind == capability for m in p.models)
-        ]
+        visible = [p for p in visible if any(m.kind == capability for m in p.models)]
 
     body = {
         "version": "2.1",
@@ -370,6 +376,7 @@ async def get_providers(
         "providers": [_render_provider(p) for p in visible],
     }
     import json as _json
+
     payload = _json.dumps(body, default=str).encode()
     response.headers["ETag"] = cur.etag
     response.headers["Cache-Control"] = "max-age=30"
@@ -421,8 +428,8 @@ async def get_quotes(
     # v3.10.14 BUG-034 — Optional so a *missing* `model` and an *empty*
     # `model=` both hit the same `if not model` -> 400 below (was 422
     # vs 400 — two shapes for one logical failure).
-    model: Optional[str] = None,
-    hint: Optional[str] = None,
+    model: str | None = None,
+    hint: str | None = None,
     has_tools: bool = False,
     has_images: bool = False,
     db: AsyncSession = Depends(get_db),
@@ -456,6 +463,7 @@ async def get_quotes(
     if hint:
         try:
             from app.routing.lmrh.parse import parse_hint as _parse_hint
+
             parsed_hint = _parse_hint(hint)
         except Exception as e:
             raise HTTPException(400, f"invalid hint: {e}")
@@ -466,9 +474,11 @@ async def get_quotes(
     # private ones owned by other keys — which would then NOT be in
     # the snapshot scope filter and confuse the predicted-metrics join.
     from app.routing import tenant
+
     tok = tenant.current_api_key_id.set(key.id)
     try:
         from app.routing.router import select_provider
+
         try:
             ranked = await select_provider(
                 db,
@@ -529,25 +539,28 @@ async def get_quotes(
                 success_rate = chosen_m.success_rate
                 samples = chosen_m.samples
 
-        candidates.append({
-            "rank": rank_pos,
-            "provider_id": provider.id,
-            "provider_name": provider.name,
-            "model_id": profile.model_id,
-            "score": score,
-            "unmet_hints": unmet,
-            "cost_class": (
-                "subscription" if (snap_p and snap_p.cost_class == "subscription")
-                else "per_call"
-            ),
-            "circuit": (snap_p.circuit if snap_p else "closed"),
-            "predicted_latency_p50_ms": predicted_latency_p50,
-            "predicted_latency_p95_ms": predicted_latency_p95,
-            "predicted_cost_per_1m_input_usd": predicted_cost,
-            "predicted_quota_per_1m_input_usd": predicted_quota,
-            "success_rate": success_rate,
-            "samples": samples,
-        })
+        candidates.append(
+            {
+                "rank": rank_pos,
+                "provider_id": provider.id,
+                "provider_name": provider.name,
+                "model_id": profile.model_id,
+                "score": score,
+                "unmet_hints": unmet,
+                "cost_class": (
+                    "subscription"
+                    if (snap_p and snap_p.cost_class == "subscription")
+                    else "per_call"
+                ),
+                "circuit": (snap_p.circuit if snap_p else "closed"),
+                "predicted_latency_p50_ms": predicted_latency_p50,
+                "predicted_latency_p95_ms": predicted_latency_p95,
+                "predicted_cost_per_1m_input_usd": predicted_cost,
+                "predicted_quota_per_1m_input_usd": predicted_quota,
+                "success_rate": success_rate,
+                "samples": samples,
+            }
+        )
 
     # v3.10.14 BUG-029 — flag a model id that matches no registered
     # capability. /lmrh/quotes mirrors /v1/messages, which substitutes an
@@ -557,12 +570,17 @@ async def get_quotes(
     # a silent empty model_id.
     model_recognized = any(
         model == m.model_id or model in (getattr(m, "aliases", None) or [])
-        for p in visible.values() for m in p.models
+        for p in visible.values()
+        for m in p.models
     )
-    warnings = [] if model_recognized else [
-        f"model '{model}' is not a registered model id — candidates below "
-        f"reflect proxy substitution / auto-routing, not an exact match"
-    ]
+    warnings = (
+        []
+        if model_recognized
+        else [
+            f"model '{model}' is not a registered model id — candidates below "
+            f"reflect proxy substitution / auto-routing, not an exact match"
+        ]
+    )
 
     return {
         "version": "2.0",
@@ -594,10 +612,12 @@ async def get_quotes(
 async def stream_snapshot(
     request: Request,
     heartbeat_sec: int = Query(
-        25, ge=10, le=120,
+        25,
+        ge=10,
+        le=120,
         description="Seconds between SSE heartbeat (`: ping`) frames. "
-                    "Keeps proxies / load-balancers from idle-timing the "
-                    "long-lived connection. Default 25s.",
+        "Keeps proxies / load-balancers from idle-timing the "
+        "long-lived connection. Default 25s.",
     ),
     key: ApiKeyRecord = Depends(resolve_api_key_dep()),
 ):
@@ -624,13 +644,15 @@ async def stream_snapshot(
     # v5.21.8 — own short-lived session for the rate-limit check so we
     # don't hold a pool slot across the infinite SSE loop below.
     from app.models.database import AsyncSessionLocal
+
     async with AsyncSessionLocal() as _rl_db:
         await _check_rate_limit(_rl_db, key, "providers")
     key_id = key.id
 
     async def event_gen():
         import json as _json
-        last_etag: Optional[str] = None
+
+        last_etag: str | None = None
         last_heartbeat = time.time()
         # First frame: emit current snapshot synchronously so the client
         # gets data within the first round-trip rather than waiting for
@@ -720,7 +742,7 @@ async def get_health(
             if m.success_rate is not None and m.samples >= 10 and m.success_rate < 0.95:
                 degraded += 1
                 break
-    age = (datetime.now(timezone.utc) - cur.as_of).total_seconds()
+    age = (datetime.now(UTC) - cur.as_of).total_seconds()
     return {
         "version": "2.0",
         "as_of": cur.as_of.isoformat(),

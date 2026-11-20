@@ -1,4 +1,5 @@
 """v5.7.5 — Frontend MCP dashboard + /api/admin/mcp/summary endpoint."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -15,6 +16,7 @@ def test_admin_mcp_summary_router_registered():
 
 def test_admin_mcp_summary_endpoint_exists():
     from app.api.admin_mcp_summary import router
+
     paths = {r.path for r in router.routes if hasattr(r, "path")}
     assert any("/summary" in p for p in paths)
 
@@ -25,11 +27,14 @@ async def test_admin_mcp_summary_returns_shape_on_empty_db():
     endpoint still returns a well-shaped response (no 500). Defensive
     aggregator design."""
     from app.api.admin_mcp_summary import mcp_summary
+
     db = MagicMock()
 
     # Mock the SQL aggregations to return empty/zero
-    row_count = MagicMock(); row_count.first.return_value = (0, 0)
-    empty_rs = MagicMock(); empty_rs.fetchall.return_value = []
+    row_count = MagicMock()
+    row_count.first.return_value = (0, 0)
+    empty_rs = MagicMock()
+    empty_rs.fetchall.return_value = []
     db.execute = AsyncMock(side_effect=[row_count, empty_rs, empty_rs, empty_rs])
 
     out = await mcp_summary(db=db, _admin=MagicMock())

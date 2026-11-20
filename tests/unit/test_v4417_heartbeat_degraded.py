@@ -17,17 +17,19 @@ Fix: classify the response into three buckets —
 
 These tests drive ``_ping_peer`` with mocked httpx responses.
 """
+
 from __future__ import annotations
 
-from types import SimpleNamespace
-from unittest.mock import patch, AsyncMock
 import json as _json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 
 def _make_peer(status="healthy"):
     from app.cluster.manager import PeerNode
+
     # PeerNode is a dataclass-ish; construct minimally.
     try:
         p = PeerNode(id="llm-proxy2-www2", url="https://www2.example/llm-proxy2")
@@ -35,9 +37,13 @@ def _make_peer(status="healthy"):
         # Fallback if PeerNode requires more args — build a stand-in with
         # the attributes _ping_peer touches.
         p = SimpleNamespace(
-            id="llm-proxy2-www2", url="https://www2.example/llm-proxy2",
-            status=status, latency_ms=0.0, last_heartbeat=0.0,
-            healthy_providers=0, total_providers=0,
+            id="llm-proxy2-www2",
+            url="https://www2.example/llm-proxy2",
+            status=status,
+            latency_ms=0.0,
+            last_heartbeat=0.0,
+            healthy_providers=0,
+            total_providers=0,
         )
         return p
     p.status = status
@@ -58,16 +64,24 @@ class _Resp:
 
 def _patched_client(resp):
     """Return an async context manager whose .get returns resp."""
+
     class _Client:
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): return False
-        async def get(self, *a, **kw): return resp
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, *a, **kw):
+            return resp
+
     return lambda *a, **kw: _Client()
 
 
 @pytest.mark.asyncio
 async def test_200_valid_json_marks_healthy():
     from app.cluster import manager
+
     peer = _make_peer(status="unreachable")
     resp = _Resp(200, {"status": "healthy", "healthyProviders": 10, "totalProviders": 10})
     notify = AsyncMock()
@@ -82,6 +96,7 @@ async def test_200_valid_json_marks_healthy():
 async def test_non_200_marks_degraded_not_unreachable():
     """A 502 (deploy-window error page) → degraded, no notify."""
     from app.cluster import manager
+
     peer = _make_peer(status="healthy")
     resp = _Resp(502)
     notify = AsyncMock()
@@ -96,6 +111,7 @@ async def test_200_non_json_body_marks_degraded_not_unreachable():
     """200 but a non-JSON body (HTML error page) → degraded, no notify.
     This is the exact JSONDecodeError case from the 2026-05-22 audit."""
     from app.cluster import manager
+
     peer = _make_peer(status="healthy")
     resp = _Resp(200, raise_on_json=True)
     notify = AsyncMock()
@@ -112,10 +128,15 @@ async def test_connection_exception_marks_unreachable_and_notifies():
 
     def _raising_client(*a, **kw):
         class _Client:
-            async def __aenter__(self): return self
-            async def __aexit__(self, *a): return False
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
             async def get(self, *a, **kw):
                 raise manager.httpx.ConnectError("Connection refused")
+
         return _Client()
 
     peer = _make_peer(status="healthy")
@@ -131,6 +152,7 @@ async def test_degraded_then_healthy_logs_recovery():
     """A peer that was degraded (restarting) coming back to 200+JSON
     should log recovery (was_unreachable covers degraded too)."""
     from app.cluster import manager
+
     peer = _make_peer(status="degraded")
     resp = _Resp(200, {"status": "healthy", "healthyProviders": 10, "totalProviders": 10})
     with patch.object(manager.httpx, "AsyncClient", _patched_client(resp)):
@@ -142,9 +164,10 @@ def test_source_classifies_three_buckets():
     """Source-level guard: the function handles non-200, non-JSON, and
     connection-exception as distinct paths."""
     from pathlib import Path
+
     src = Path("app/cluster/manager.py").read_text()
-    fn = src[src.index("async def _ping_peer("):src.index("async def _ping_peer(") + 3500]
-    assert 'resp.status_code != 200' in fn
+    fn = src[src.index("async def _ping_peer(") : src.index("async def _ping_peer(") + 3500]
+    assert "resp.status_code != 200" in fn
     assert 'peer.status = "degraded"' in fn
     assert 'peer.status = "unreachable"' in fn
     # degraded path must not notify

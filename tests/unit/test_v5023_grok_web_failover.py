@@ -15,22 +15,21 @@ through to the litellm dispatch path with a header
 GrokWebAuthError (401) still raises — that's an operator-attention
 condition (bridge needs re-login), not a transient/failover case.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
 
-
 # ── Source pins ─────────────────────────────────────────────────────
-
-
 from tests.unit._handler_surface import completions_handler_source
 
 
 def test_dispatcher_has_trip_helper():
     """The new _trip_cb_for_failover helper exists and is callable."""
     from app.api._grok_web_dispatch import _trip_cb_for_failover
+
     assert callable(_trip_cb_for_failover)
 
 
@@ -52,9 +51,7 @@ def test_dispatcher_returns_none_on_grokweberror():
     # And confirm no longer raises HTTPException after the trip
     # (sanity check — would be a regression if a raise crept back in).
     return_nones = src.count("return None  # caller: try next provider")
-    assert return_nones >= 4, (
-        "expected ≥4 'return None' sites with the failover comment"
-    )
+    assert return_nones >= 4, "expected ≥4 'return None' sites with the failover comment"
 
 
 def test_messages_handles_grok_web_none_and_failovers():
@@ -63,7 +60,7 @@ def test_messages_handles_grok_web_none_and_failovers():
     src = Path("app/api/messages.py").read_text()
     assert "if gw_resp is not None:" in src
     assert "exclude_provider_id=failed_id" in src
-    assert 'X-Grok-Web-Failover' in src
+    assert "X-Grok-Web-Failover" in src
 
 
 def test_completions_handles_grok_web_none_and_failovers():
@@ -74,7 +71,7 @@ def test_completions_handles_grok_web_none_and_failovers():
     src = completions_handler_source()
     assert "if gw_resp is not None:" in src
     assert "exclude_provider_id=failed_id" in src
-    assert 'X-Grok-Web-Failover' in src
+    assert "X-Grok-Web-Failover" in src
 
 
 def test_grokwebautherror_still_raises():
@@ -96,8 +93,9 @@ def test_grokwebautherror_still_raises():
 @pytest.mark.asyncio
 async def test_dispatcher_returns_none_for_failover_eligible(monkeypatch):
     from types import SimpleNamespace
-    from app.providers.grok_web import GrokWebError
+
     from app.api._grok_web_dispatch import dispatch_grok_web_openai
+    from app.providers.grok_web import GrokWebError
 
     async def fake_complete(*a, **kw):
         raise GrokWebError("upstream 502", status_code=502)
@@ -110,23 +108,27 @@ async def test_dispatcher_returns_none_for_failover_eligible(monkeypatch):
 
     monkeypatch.setattr("app.providers.grok_web.complete_grok_web", fake_complete)
     monkeypatch.setattr("app.monitoring.helpers.record_outcome", fake_record)
-    monkeypatch.setattr(
-        "app.routing.circuit_breaker.record_failure", fake_trip
-    )
+    monkeypatch.setattr("app.routing.circuit_breaker.record_failure", fake_trip)
 
     route = SimpleNamespace(
         provider=SimpleNamespace(
-            id="p1", name="Grok-Web-Devin", provider_type="grok-web",
+            id="p1",
+            name="Grok-Web-Devin",
+            provider_type="grok-web",
             extra_config={"bridge_url": "http://b", "conversation_id": "c"},
         ),
         profile=SimpleNamespace(model_id="grok-3"),
     )
 
     import time as _t
+
     result = await dispatch_grok_web_openai(
         route=route,
         body={"model": "grok-3", "messages": [{"role": "user", "content": "x"}]},
-        stream=False, resp_headers={},
-        db="fake", key_record_id="k", t0=_t.monotonic(),
+        stream=False,
+        resp_headers={},
+        db="fake",
+        key_record_id="k",
+        t0=_t.monotonic(),
     )
     assert result is None

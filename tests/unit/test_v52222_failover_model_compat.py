@@ -75,6 +75,7 @@ class TestWiring:
         # into the dispatch modules when both handlers were split for their LOC
         # pins, so naming a single file here goes stale on the next move.
         from tests.unit._handler_surface import handler_source
+
         return handler_source(fn)
 
     @pytest.mark.parametrize("fn", ["app/api/messages.py", "app/api/completions.py"])

@@ -26,11 +26,11 @@ Contents:
 Callers import these from ``app.api._messages_streaming`` as before; that
 module re-exports them for back-compat.
 """
+
 from __future__ import annotations
 
 import json
 import logging
-from typing import Optional
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -91,10 +91,20 @@ async def preflight_sse(gen):
 def http_status_for_stream_error(msg: str) -> int:
     """Best-effort HTTP status for a pre-stream upstream error string."""
     low = (msg or "").lower()
-    if any(s in low for s in (
-        "x-api-key", "api key", "api-key", "unauthor", "invalid_grant",
-        "authenticationerror", "permissiondenied", " 401", " 403",
-    )):
+    if any(
+        s in low
+        for s in (
+            "x-api-key",
+            "api key",
+            "api-key",
+            "unauthor",
+            "invalid_grant",
+            "authenticationerror",
+            "permissiondenied",
+            " 401",
+            " 403",
+        )
+    ):
         return 401
     if "rate limit" in low or "rate_limit" in low or "429" in low:
         return 429
@@ -127,9 +137,7 @@ def _sse_frame_has_content(frame: bytes) -> bool:
     ptype = payload.get("type")
     if ptype == "content_block_delta":
         delta = payload.get("delta") or {}
-        return bool(
-            delta.get("text") or delta.get("partial_json") or delta.get("thinking")
-        )
+        return bool(delta.get("text") or delta.get("partial_json") or delta.get("thinking"))
     if ptype == "content_block_start":
         block = payload.get("content_block") or {}
         return block.get("type") == "tool_use"
@@ -188,15 +196,15 @@ async def buffer_sse_until_content(first, gen, max_frames: int = 64):
 
 async def stream_with_empty_guard(
     *,
-    start_stream,            # callable(route) -> fresh async SSE generator
-    route,                   # primary RouteResult (already selected)
+    start_stream,  # callable(route) -> fresh async SSE generator
+    route,  # primary RouteResult (already selected)
     db: AsyncSession,
     hint,
     has_tools: bool,
     has_images: bool,
     key_type: str,
-    api_key_id: Optional[str],
-    model_override: Optional[str],   # None for auto / logical aliases
+    api_key_id: str | None,
+    model_override: str | None,  # None for auto / logical aliases
     max_attempts: int = 3,
 ):
     """v5.3.9 — dispatch a streaming request with pre-flight + empty-success
@@ -215,14 +223,14 @@ async def stream_with_empty_guard(
     Returns ``(frames, gen, served_route)``; raises HTTPException(502) when
     every candidate streams empty.
     """
-    from app.routing.circuit_breaker import record_failure
-    from app.routing.router import select_provider
     # v5.7.14 — persist empty-success failovers to activity_log so the
     # AI provider supervisor (and burst-trigger logic in subsequent
     # ships) can see them at sweep time. Pre-5.7.14 these only landed
     # in stdout via logger.warning, invisible to the database-driven
     # supervisor and to the operator dashboard's recent-events panel.
     from app.monitoring.activity import log_event
+    from app.routing.circuit_breaker import record_failure
+    from app.routing.router import select_provider
 
     attempt_route = route
     empty_failed: set = set()
@@ -242,10 +250,11 @@ async def stream_with_empty_guard(
         await record_failure(attempt_route.provider.id, billing_error=False)
         empty_failed.add(attempt_route.provider.id)
         logger.warning(
-            "streaming empty-success failure provider=%s model=%s "
-            "(attempt %d/%d) — failing over",
-            attempt_route.provider.name, attempt_route.litellm_model,
-            attempt, max_attempts,
+            "streaming empty-success failure provider=%s model=%s (attempt %d/%d) — failing over",
+            attempt_route.provider.name,
+            attempt_route.litellm_model,
+            attempt,
+            max_attempts,
         )
         try:
             await log_event(
@@ -284,8 +293,10 @@ async def stream_with_empty_guard(
         next_route = None
         try:
             cand = await select_provider(
-                db, hint,
-                has_tools=has_tools, has_images=has_images,
+                db,
+                hint,
+                has_tools=has_tools,
+                has_images=has_images,
                 key_type=key_type,
                 model_override=model_override,
                 exclude_provider_ids=set(empty_failed),

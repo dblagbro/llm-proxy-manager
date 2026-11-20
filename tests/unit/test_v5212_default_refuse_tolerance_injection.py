@@ -3,7 +3,9 @@
 Static-grep pins for the injection wire between the api_keys column,
 the messages.py handler, the admin PATCH surface, and the list-response.
 """
+
 from __future__ import annotations
+
 from pathlib import Path
 
 
@@ -51,8 +53,8 @@ def test_messages_handler_injects_when_missing():
     src = Path("app/api/messages.py").read_text()
     assert "_key_rt_default" in src
     # Injection is gated on absence of caller's dim
-    assert 'refuse-tolerance=' in src
-    assert 'X-LMRH-Injected-Dim' in src
+    assert "refuse-tolerance=" in src
+    assert "X-LMRH-Injected-Dim" in src
 
 
 def test_caller_hint_wins_over_default():
@@ -61,11 +63,13 @@ def test_caller_hint_wins_over_default():
     caller's dim before injecting."""
     src = Path("app/api/messages.py").read_text()
     handler_start = src.find("apply_privacy_filters(messages_list")
-    handler_body = src[handler_start:handler_start + 3000]
+    handler_body = src[handler_start : handler_start + 3000]
     # The check pattern that ensures we skip injection when caller
     # already sent their own value:
-    assert '.find("refuse-tolerance=") < 0' in handler_body or \
-           '"refuse-tolerance=" not in' in handler_body
+    assert (
+        '.find("refuse-tolerance=") < 0' in handler_body
+        or '"refuse-tolerance=" not in' in handler_body
+    )
 
 
 def test_frontend_type_declared():

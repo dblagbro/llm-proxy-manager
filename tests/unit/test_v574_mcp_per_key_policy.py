@@ -5,12 +5,12 @@ Three new ApiKey columns (mcp_tools_allow, mcp_tools_deny,
 mcp_schema_token_budget) plus a policy module that filters list_tools
 and gates call_tool, plus an admin endpoint for editing the policy.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
-
 
 # ──── Schema ───────────────────────────────────────────────────────
 
@@ -19,14 +19,12 @@ def test_alter_adds_mcp_policy_columns():
     src = Path("app/models/database.py").read_text()
     assert "ALTER TABLE api_keys ADD COLUMN mcp_tools_allow TEXT" in src
     assert "ALTER TABLE api_keys ADD COLUMN mcp_tools_deny TEXT" in src
-    assert (
-        "ALTER TABLE api_keys ADD COLUMN mcp_schema_token_budget INTEGER"
-        in src
-    )
+    assert "ALTER TABLE api_keys ADD COLUMN mcp_schema_token_budget INTEGER" in src
 
 
 def test_apikey_model_has_mcp_policy_columns():
     from app.models.db import ApiKey
+
     cols = {c.name for c in ApiKey.__table__.columns}
     for c in ("mcp_tools_allow", "mcp_tools_deny", "mcp_schema_token_budget"):
         assert c in cols, f"ApiKey model missing column {c!r}"
@@ -37,6 +35,7 @@ def test_apikey_model_has_mcp_policy_columns():
 
 def test_is_tool_allowed_null_allow_means_permissive():
     from app.mcp_server.policy import is_tool_allowed_for_key
+
     assert is_tool_allowed_for_key("any_tool", None, None) is True
     assert is_tool_allowed_for_key("foo_bar", None, []) is True
 
@@ -44,21 +43,27 @@ def test_is_tool_allowed_null_allow_means_permissive():
 def test_is_tool_allowed_empty_allow_means_restrictive():
     """Empty allow list = explicit 'no tools'. v5.7.4 contract."""
     from app.mcp_server.policy import is_tool_allowed_for_key
+
     assert is_tool_allowed_for_key("read_xlsx_to_markdown", [], None) is False
 
 
 def test_is_tool_allowed_deny_wins_over_allow():
     """Even if a tool matches the allow list, an overlapping deny wins."""
     from app.mcp_server.policy import is_tool_allowed_for_key
-    assert is_tool_allowed_for_key(
-        "fetch_url",
-        ["fetch_*"],   # allowed via glob
-        ["fetch_url"], # denied exact
-    ) is False
+
+    assert (
+        is_tool_allowed_for_key(
+            "fetch_url",
+            ["fetch_*"],  # allowed via glob
+            ["fetch_url"],  # denied exact
+        )
+        is False
+    )
 
 
 def test_is_tool_allowed_fnmatch_globs():
     from app.mcp_server.policy import is_tool_allowed_for_key
+
     assert is_tool_allowed_for_key("read_pdf", ["read_*"], None) is True
     assert is_tool_allowed_for_key("write_pdf", ["read_*"], None) is False
     assert is_tool_allowed_for_key("read_xlsx_to_markdown", ["read_*"], None) is True
@@ -69,6 +74,7 @@ def test_estimate_schema_tokens_is_conservative():
     realistic schema. Pin the 4-chars/token approximation so a future
     refactor doesn't silently loosen the budget."""
     from app.mcp_server.policy import estimate_schema_tokens
+
     assert estimate_schema_tokens(None) == 0
     assert estimate_schema_tokens({}) >= 0
     schema = {
@@ -84,8 +90,10 @@ def test_estimate_schema_tokens_is_conservative():
 
 
 def test_filter_tools_respects_allow_and_deny():
-    from app.mcp_server.policy import filter_tools_for_key
     from types import SimpleNamespace as NS
+
+    from app.mcp_server.policy import filter_tools_for_key
+
     tools = [
         NS(name="read_xlsx_to_markdown", inputSchema={}),
         NS(name="fetch_url", inputSchema={}),
@@ -100,8 +108,10 @@ def test_filter_tools_respects_allow_and_deny():
 
 
 def test_check_token_budget_null_means_unlimited():
-    from app.mcp_server.policy import check_token_budget
     from types import SimpleNamespace as NS
+
+    from app.mcp_server.policy import check_token_budget
+
     big = NS(inputSchema={"x": "y" * 10_000})
     ok, total = check_token_budget([big], None)
     assert ok is True
@@ -109,8 +119,10 @@ def test_check_token_budget_null_means_unlimited():
 
 
 def test_check_token_budget_blocks_when_exceeded():
-    from app.mcp_server.policy import check_token_budget
     from types import SimpleNamespace as NS
+
+    from app.mcp_server.policy import check_token_budget
+
     schema = {"a": "x" * 4000}  # ~1000 tokens estimate
     tools = [NS(inputSchema=schema), NS(inputSchema=schema)]
     ok_high, _ = check_token_budget(tools, 5000)
@@ -123,8 +135,10 @@ def test_check_token_budget_blocks_when_exceeded():
 
 
 def test_server_module_exposes_policy_contextvar():
-    from app.mcp_server.server import current_mcp_policy
     import contextvars
+
+    from app.mcp_server.server import current_mcp_policy
+
     assert isinstance(current_mcp_policy, contextvars.ContextVar)
     # default is None (permissive — only ContextVar absent in tests)
     assert current_mcp_policy.get() is None
@@ -172,17 +186,22 @@ def test_admin_mcp_policy_router_registered():
 
 def test_admin_mcp_policy_endpoints_exist():
     from app.api.admin_mcp_policy import router
+
     paths = {r.path for r in router.routes if hasattr(r, "path")}
     assert any("/policy" in p for p in paths)
 
 
 @pytest.mark.asyncio
 async def test_admin_mcp_policy_get_404_unknown_key():
-    from app.api.admin_mcp_policy import get_mcp_policy
-    from fastapi import HTTPException
     from unittest.mock import AsyncMock, MagicMock
+
+    from fastapi import HTTPException
+
+    from app.api.admin_mcp_policy import get_mcp_policy
+
     db = MagicMock()
-    rs = MagicMock(); rs.scalar_one_or_none.return_value = None
+    rs = MagicMock()
+    rs.scalar_one_or_none.return_value = None
     db.execute = AsyncMock(return_value=rs)
     with pytest.raises(HTTPException) as exc:
         await get_mcp_policy("does-not-exist", db=db, _admin=MagicMock())

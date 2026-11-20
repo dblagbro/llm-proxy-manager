@@ -1,10 +1,8 @@
 """v5.1.1 — C2 time-range purge + B1/B2 UI follow-up pins."""
+
 from __future__ import annotations
 
 from pathlib import Path
-
-import pytest
-
 
 # ── C2 backend ─────────────────────────────────────────────────────
 
@@ -36,10 +34,7 @@ def test_purge_window_capped_at_90_days():
 
 def test_purge_router_registered():
     src = Path("app/main.py").read_text()
-    assert (
-        "from app.api.admin_activity_purge import router as admin_activity_purge_router"
-        in src
-    )
+    assert "from app.api.admin_activity_purge import router as admin_activity_purge_router" in src
     assert "app.include_router(admin_activity_purge_router)" in src
 
 
@@ -50,7 +45,7 @@ def test_peer_endpoint_does_not_re_fanout():
     peer_idx = src.find("async def peer_purge_activity_log")
     assert peer_idx != -1
     next_def = src.find("async def ", peer_idx + 1)
-    body = src[peer_idx:next_def if next_def != -1 else peer_idx + 3000]
+    body = src[peer_idx : next_def if next_def != -1 else peer_idx + 3000]
     assert "_fan_out_to_peers" not in body, (
         "BUG: peer-side purge handler called _fan_out_to_peers — "
         "this would create an infinite cycle on the cluster."
@@ -70,4 +65,4 @@ def test_apikey_serialize_emits_deleted_at():
 
 def test_create_key_copy_from_id_validates_source_exists():
     src = Path("app/api/apikeys.py").read_text()
-    assert 'copy_from_id key {body.copy_from_id} not found' in src
+    assert "copy_from_id key {body.copy_from_id} not found" in src

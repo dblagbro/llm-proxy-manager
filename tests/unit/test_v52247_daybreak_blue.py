@@ -5,6 +5,7 @@ Covers:
   - the daybreak_gate policy: Red hard-block, unauthorized-key block,
     missing-alias 503, normal-model passthrough, and the authorized Blue path.
 """
+
 from types import SimpleNamespace
 
 import pytest
@@ -19,6 +20,7 @@ from app.providers.daybreak import (
 )
 
 # ── body translator ─────────────────────────────────────────────────────────
+
 
 def _body():
     return {"model": "codex-auto-review", "messages": [{"role": "user", "content": "hi"}]}
@@ -37,6 +39,7 @@ def test_access_programs_absent_by_default():
 
 
 # ── alias / key helpers ──────────────────────────────────────────────────────
+
 
 @pytest.mark.parametrize("m", ["daybreak", "daybreak-blue", "DAYBREAK", " daybreak_blue "])
 def test_is_blue(m):
@@ -63,6 +66,7 @@ def test_key_tier_normalization():
 
 # ── gate policy ──────────────────────────────────────────────────────────────
 
+
 def _key(tier):
     return SimpleNamespace(id="k1", daybreak_tier=tier)
 
@@ -73,15 +77,19 @@ def _alias():
 
 class _FakeDB:
     """Minimal stand-in; emit_event is best-effort inside the gate."""
+
     def add(self, *a, **k):
         pass
 
 
 @pytest.mark.asyncio
 async def test_normal_model_returns_none():
-    assert await daybreak_gate(
-        _FakeDB(), requested_model="gpt-5.5", key_record=_key("blue"), alias=None
-    ) is None
+    assert (
+        await daybreak_gate(
+            _FakeDB(), requested_model="gpt-5.5", key_record=_key("blue"), alias=None
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio

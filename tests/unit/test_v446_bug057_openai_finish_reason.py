@@ -29,6 +29,7 @@ Live capture confirming the shape (Devin Personal OpenAI ChatGPT, gpt-4o,
 
   Total chunks: 4
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -37,7 +38,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-
 # ── Source-level guards ──────────────────────────────────────────
 
 
@@ -45,7 +45,7 @@ def test_bug057_fix_marker_present():
     """BUG-057 inline comment is in _stream_openai."""
     src = Path("app/api/_completions_streaming.py").read_text()
     idx = src.index("async def _stream_openai(")
-    fn = src[idx:idx + 6000]
+    fn = src[idx : idx + 6000]
     assert "BUG-057" in fn
 
 
@@ -54,12 +54,12 @@ def test_bug057_buffer_strategy_in_source():
     tracker, and patches the final chunk before emit."""
     src = Path("app/api/_completions_streaming.py").read_text()
     idx = src.index("async def _stream_openai(")
-    fn = src[idx:idx + 6000]
+    fn = src[idx : idx + 6000]
     assert "prev_chunk" in fn
     assert "last_finish" in fn
     # The patch happens conditionally — only when last chunk lacks
     # finish_reason AND we saw one earlier in the stream.
-    assert "not getattr(c0, \"finish_reason\", None)" in fn
+    assert 'not getattr(c0, "finish_reason", None)' in fn
     assert "c0.finish_reason = last_finish" in fn
 
 
@@ -69,7 +69,7 @@ def test_bug057_existing_first_chunk_ttft_path_preserved():
     contain, except for the final-chunk finish_reason injection."""
     src = Path("app/api/_completions_streaming.py").read_text()
     idx = src.index("async def _stream_openai(")
-    fn = src[idx:idx + 6000]
+    fn = src[idx : idx + 6000]
     assert "if first_chunk:" in fn
     assert "ttft_ms = (time.monotonic() - t0) * 1000" in fn
 
@@ -81,6 +81,7 @@ class _MockChoice:
     """Mutable chat-completion-chunk choice. The fix mutates
     finish_reason on the last chunk's choice in place, so the mock
     needs to allow attribute writes."""
+
     def __init__(self, finish_reason=None, content=None):
         self.finish_reason = finish_reason
         self.delta = SimpleNamespace(content=content, role=None, tool_calls=None)
@@ -94,46 +95,59 @@ class _MockChunk:
 
     def model_dump_json(self):
         import json
+
         usage = self.usage
         if usage is not None and hasattr(usage, "__dict__"):
             # SimpleNamespace → dict for JSON serializability
             usage = vars(usage)
-        return json.dumps({
-            "object": "chat.completion.chunk",
-            "choices": [{
-                "index": 0,
-                "finish_reason": self.choices[0].finish_reason,
-                "delta": {"content": self.choices[0].delta.content},
-            }],
-            "usage": usage,
-        })
+        return json.dumps(
+            {
+                "object": "chat.completion.chunk",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": self.choices[0].finish_reason,
+                        "delta": {"content": self.choices[0].delta.content},
+                    }
+                ],
+                "usage": usage,
+            }
+        )
 
 
 async def _mock_openai_stream_with_usage_chunk(*args, **kwargs):
     """Simulates the modern OpenAI streaming pattern: a finish_reason
     chunk followed by a separate usage chunk (litellm default since
     1.83.x with stream_options.include_usage=true)."""
+
     async def gen():
-        yield _MockChunk(finish_reason=None, content="")           # role chunk
-        yield _MockChunk(finish_reason=None, content="OK")          # content
-        yield _MockChunk(finish_reason="stop", content=None)        # finish
-        yield _MockChunk(finish_reason=None, content=None,          # usage
-                         usage=SimpleNamespace(prompt_tokens=9, completion_tokens=1))
+        yield _MockChunk(finish_reason=None, content="")  # role chunk
+        yield _MockChunk(finish_reason=None, content="OK")  # content
+        yield _MockChunk(finish_reason="stop", content=None)  # finish
+        yield _MockChunk(
+            finish_reason=None,
+            content=None,  # usage
+            usage=SimpleNamespace(prompt_tokens=9, completion_tokens=1),
+        )
+
     return gen()
 
 
 async def _mock_openai_stream_classic(*args, **kwargs):
     """Simulates the old-style OpenAI streaming where the final chunk
     has finish_reason set directly (no separate usage chunk)."""
+
     async def gen():
         yield _MockChunk(finish_reason=None, content="")
         yield _MockChunk(finish_reason=None, content="OK")
         yield _MockChunk(finish_reason="stop", content=None)
+
     return gen()
 
 
 def _collect_chunks(byte_chunks):
     import json
+
     full = b"".join(byte_chunks).decode("utf-8", errors="ignore")
     chunks = []
     for line in full.splitlines():
@@ -157,15 +171,19 @@ async def test_bug057_usage_chunk_pattern_patches_finish_reason():
     preserves the usage info from the original usage chunk."""
     from app.api import _completions_streaming as cs
 
-    with patch.object(cs, "acompletion_with_retry",
-                      _mock_openai_stream_with_usage_chunk), \
-         patch.object(cs, "record_outcome", AsyncMock()):
+    with (
+        patch.object(cs, "acompletion_with_retry", _mock_openai_stream_with_usage_chunk),
+        patch.object(cs, "record_outcome", AsyncMock()),
+    ):
         bytes_out = []
         async for c in cs._stream_openai(
             model="openai/gpt-4o",
             messages=[{"role": "user", "content": "hi"}],
-            extra={}, provider_id="prov-test",
-            db=None, key_record_id="key-test", t0=0.0,
+            extra={},
+            provider_id="prov-test",
+            db=None,
+            key_record_id="key-test",
+            t0=0.0,
         ):
             bytes_out.append(c)
 
@@ -177,13 +195,15 @@ async def test_bug057_usage_chunk_pattern_patches_finish_reason():
         assert c.get("object") == "chat.completion.chunk"
     # The LAST chunk must have finish_reason set (the BUG-057 fix).
     last = chunks[-1]
-    assert last["choices"][0]["finish_reason"] == "stop", \
-        f"BUG-057 regression: last chunk finish_reason should be 'stop', got " \
+    assert last["choices"][0]["finish_reason"] == "stop", (
+        f"BUG-057 regression: last chunk finish_reason should be 'stop', got "
         f"{last['choices'][0]['finish_reason']!r}"
+    )
     # The usage info must be preserved on the last chunk (we didn't
     # drop or move it).
-    assert last.get("usage") is not None, \
+    assert last.get("usage") is not None, (
         "usage info from the original usage chunk must be preserved"
+    )
     assert last["usage"].get("completion_tokens") == 1
 
 
@@ -193,15 +213,19 @@ async def test_bug057_classic_stream_unaffected():
     the last chunk (old-style) must not be modified by the fix."""
     from app.api import _completions_streaming as cs
 
-    with patch.object(cs, "acompletion_with_retry",
-                      _mock_openai_stream_classic), \
-         patch.object(cs, "record_outcome", AsyncMock()):
+    with (
+        patch.object(cs, "acompletion_with_retry", _mock_openai_stream_classic),
+        patch.object(cs, "record_outcome", AsyncMock()),
+    ):
         bytes_out = []
         async for c in cs._stream_openai(
             model="openai/gpt-4o",
             messages=[{"role": "user", "content": "hi"}],
-            extra={}, provider_id="prov-test",
-            db=None, key_record_id="key-test", t0=0.0,
+            extra={},
+            provider_id="prov-test",
+            db=None,
+            key_record_id="key-test",
+            t0=0.0,
         ):
             bytes_out.append(c)
 
@@ -225,16 +249,22 @@ async def test_bug057_no_finish_reason_anywhere_emits_as_is():
         async def gen():
             yield _MockChunk(finish_reason=None, content="")
             yield _MockChunk(finish_reason=None, content="hi")
+
         return gen()
 
-    with patch.object(cs, "acompletion_with_retry", _no_finish), \
-         patch.object(cs, "record_outcome", AsyncMock()):
+    with (
+        patch.object(cs, "acompletion_with_retry", _no_finish),
+        patch.object(cs, "record_outcome", AsyncMock()),
+    ):
         bytes_out = []
         async for c in cs._stream_openai(
             model="openai/gpt-4o",
             messages=[{"role": "user", "content": "hi"}],
-            extra={}, provider_id="prov-test",
-            db=None, key_record_id="key-test", t0=0.0,
+            extra={},
+            provider_id="prov-test",
+            db=None,
+            key_record_id="key-test",
+            t0=0.0,
         ):
             bytes_out.append(c)
 

@@ -14,29 +14,41 @@ Sibling split:
 Behaviour is identical to the inline block it replaced; this is a pure
 extraction.
 """
+
 from __future__ import annotations
 
 import logging
 import time
-from typing import Optional
 
 import httpx
 from fastapi import HTTPException
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
-from app.config import settings
-from app.api._messages_streaming import _stream_claude_oauth, _complete_claude_oauth
 from app.api._cache_inject import (
-    inject_cache_control, parse_cache_mode, resolve_min_chars,
-    build_cache_disclosure, append_cache_disclosure,
+    append_cache_disclosure,
+    build_cache_disclosure,
+    inject_cache_control,
+    parse_cache_mode,
+    resolve_min_chars,
 )
+from app.api._messages_streaming import _complete_claude_oauth, _stream_claude_oauth
 from app.api._quality_hint import merge_into_headers
+from app.config import settings
 from app.memory.extract import maybe_extract_memory_writes
 
 logger = logging.getLogger(__name__)
 
 
-async def _select_excluding(db, hint, has_tools, has_images, key_type, excluded: set[str], api_key_id=None, blocked_companies=None):
+async def _select_excluding(
+    db,
+    hint,
+    has_tools,
+    has_images,
+    key_type,
+    excluded: set[str],
+    api_key_id=None,
+    blocked_companies=None,
+):
     """v2.8.6: select_provider only accepts a single exclude_id. To walk
     through a chain of OAuth providers we need to call it repeatedly,
     excluding one id per pass and discarding any pick already in the
@@ -46,6 +58,7 @@ async def _select_excluding(db, hint, has_tools, has_images, key_type, excluded:
     on every iteration of the OAuth-chain walk (the per-call cache makes
     the threading more efficient than the lazy resolve on each pass)."""
     from app.routing.router import select_provider as _select
+
     last_exc = None
     # Cap iterations conservatively so we never spin if every provider was tried.
     for _ in range(20):
@@ -55,8 +68,12 @@ async def _select_excluding(db, hint, has_tools, has_images, key_type, excluded:
         seed = next(iter(excluded), None) if excluded else None
         try:
             r = await _select(
-                db, hint, has_tools=has_tools, has_images=has_images,
-                key_type=key_type, exclude_provider_id=seed,
+                db,
+                hint,
+                has_tools=has_tools,
+                has_images=has_images,
+                key_type=key_type,
+                exclude_provider_id=seed,
                 api_key_id=api_key_id,
                 blocked_companies=blocked_companies,
             )
@@ -115,13 +132,13 @@ async def dispatch_claude_oauth_chain(
     resp_headers: dict,
     stream: bool,
     max_tokens: int,
-    llm_hint: Optional[str],
+    llm_hint: str | None,
     hint,
     has_tools: bool,
     has_images: bool,
-    conversation_id: Optional[str],
-    memory_tag: Optional[str],
-    blocked_companies: Optional[set] = None,
+    conversation_id: str | None,
+    memory_tag: str | None,
+    blocked_companies: set | None = None,
 ):
     """Walk the claude-oauth provider chain and dispatch the request.
 
@@ -148,7 +165,7 @@ async def dispatch_claude_oauth_chain(
         access_token = route.provider.api_key or ""
         t0 = time.monotonic()
         upstream_body = dict(body)
-        # v3.0.42: auto-cache injection. Coordinator-hub bot daemons send
+        # v3.0.42: auto-cache injection. Integration client bot daemons send
         # large stable system prompts repeatedly; the v3.0.39 audit showed
         # cache_control adoption at exactly 0% across 3,005 claude-oauth
         # events in 24h. Wrap the last system block with cache_control:
@@ -159,7 +176,8 @@ async def dispatch_claude_oauth_chain(
         cache_injected = False
         if cache_decision.mode != "none":
             upstream_body, cache_injected = inject_cache_control(
-                upstream_body, "claude-oauth",
+                upstream_body,
+                "claude-oauth",
                 min_chars=resolve_min_chars(cache_decision),
             )
         oauth_provider_id = route.provider.id
@@ -170,8 +188,10 @@ async def dispatch_claude_oauth_chain(
         # v5.0.21 hotfix: use getattr to tolerate test mocks that omit
         # extra_config; production ORM rows always have the column.
         from app.providers.claude_oauth import set_disable_long_context
+
         set_disable_long_context(
-            (getattr(route.provider, "extra_config", None) or {}).get("disable_long_context") is True
+            (getattr(route.provider, "extra_config", None) or {}).get("disable_long_context")
+            is True
         )
         if stream:
             # v2.7.6: pre-flight the streaming connection so 401/4xx errors
@@ -179,9 +199,12 @@ async def dispatch_claude_oauth_chain(
             # _stream_claude_oauth raises HTTPStatusError on pre-stream
             # failure (after one auto-refresh retry on 401).
             stream_gen = _stream_claude_oauth(
-                access_token, upstream_body,
-                provider_id=oauth_provider_id, db=db,
-                key_record_id=key_record.id, t0=t0,
+                access_token,
+                upstream_body,
+                provider_id=oauth_provider_id,
+                db=db,
+                key_record_id=key_record.id,
+                t0=t0,
                 budget_total=max_tokens,
                 provider_name=route.provider.name,
                 llm_hint=llm_hint,
@@ -219,9 +242,12 @@ async def dispatch_claude_oauth_chain(
             ), route
         try:
             result = await _complete_claude_oauth(
-                access_token, upstream_body,
-                provider_id=oauth_provider_id, db=db,
-                key_record_id=key_record.id, t0=t0,
+                access_token,
+                upstream_body,
+                provider_id=oauth_provider_id,
+                db=db,
+                key_record_id=key_record.id,
+                t0=t0,
                 provider_name=route.provider.name,
                 llm_hint=llm_hint,
             )
@@ -238,7 +264,12 @@ async def dispatch_claude_oauth_chain(
                     # the same one. select_provider only takes one exclude_id;
                     # repeat-call until we get one we haven't tried.
                     route = await _select_excluding(
-                        db, hint, has_tools, has_images, key_record.key_type, tried_oauth_ids,
+                        db,
+                        hint,
+                        has_tools,
+                        has_images,
+                        key_record.key_type,
+                        tried_oauth_ids,
                         api_key_id=key_record.id,
                         blocked_companies=blocked_companies,
                     )
@@ -252,10 +283,17 @@ async def dispatch_claude_oauth_chain(
             raise HTTPException(status, f"Claude OAuth upstream: {e.response.text[:200]}")
         except httpx.HTTPError as e:
             if settings.fallback_enabled:
-                logger.info(f"claude-oauth provider {oauth_provider_id} network error; trying next provider")
+                logger.info(
+                    f"claude-oauth provider {oauth_provider_id} network error; trying next provider"
+                )
                 try:
                     route = await _select_excluding(
-                        db, hint, has_tools, has_images, key_record.key_type, tried_oauth_ids,
+                        db,
+                        hint,
+                        has_tools,
+                        has_images,
+                        key_record.key_type,
+                        tried_oauth_ids,
                         api_key_id=key_record.id,
                         blocked_companies=blocked_companies,
                     )
@@ -274,12 +312,18 @@ async def dispatch_claude_oauth_chain(
                 logger.warning(
                     "claude-oauth provider %s returned an EMPTY completion "
                     "(0 output tokens, no content) — failing over. tried=%s",
-                    oauth_provider_id, tried_oauth_ids,
+                    oauth_provider_id,
+                    tried_oauth_ids,
                 )
                 try:
                     route = await _select_excluding(
-                        db, hint, has_tools, has_images, key_record.key_type,
-                        tried_oauth_ids, api_key_id=key_record.id,
+                        db,
+                        hint,
+                        has_tools,
+                        has_images,
+                        key_record.key_type,
+                        tried_oauth_ids,
+                        api_key_id=key_record.id,
                         blocked_companies=blocked_companies,
                     )
                 except Exception:
@@ -311,7 +355,8 @@ async def dispatch_claude_oauth_chain(
             # writes to the king-store. No-op unless caller_memory_enabled
             # AND X-Conversation-Id is set. Silent degrade on any error.
             mem_writes = await maybe_extract_memory_writes(
-                db, response_dict=result,
+                db,
+                response_dict=result,
                 api_key_id=key_record.id,
                 conversation_id=conversation_id,
                 memory_tag_default=memory_tag,
@@ -355,7 +400,7 @@ async def try_cascade_dispatch(
     max_tokens,
     t0,
     call_with_route,
-    blocked_companies: Optional[set] = None,
+    blocked_companies: set | None = None,
 ):
     """Cascade orchestration: cheap-route call → grader verdict → return
     accepted response OR fall through to the caller's non-cascade path.
@@ -368,16 +413,20 @@ async def try_cascade_dispatch(
     non-CoT); this function trusts the gate and runs the cascade
     unconditionally.
     """
-    from app.routing.router import select_provider
-    from app.routing.cascade import grade_answer
-    from app.monitoring.helpers import record_outcome
     from app.cache.middleware import maybe_store
-    from app.cot.sse import to_anthropic_response, extract_cache_tokens
+    from app.cot.sse import extract_cache_tokens, to_anthropic_response
+    from app.monitoring.helpers import record_outcome
+    from app.routing.cascade import grade_answer
+    from app.routing.router import select_provider
 
     try:
         cheap_route = await select_provider(
-            db, hint, has_tools=False, has_images=has_images,
-            key_type=key_record.key_type, prefer_cheapest=True,
+            db,
+            hint,
+            has_tools=False,
+            has_images=has_images,
+            key_type=key_record.key_type,
+            prefer_cheapest=True,
             excluded_provider_types={"claude-oauth"},
             api_key_id=key_record.id,
             blocked_companies=blocked_companies,
@@ -387,7 +436,10 @@ async def try_cascade_dispatch(
         if grader_route is None:
             try:
                 grader_route = await select_provider(
-                    db, hint, has_tools=False, has_images=has_images,
+                    db,
+                    hint,
+                    has_tools=False,
+                    has_images=has_images,
                     key_type=key_record.key_type,
                     exclude_provider_id=cheap_route.provider.id,
                     prefer_cheapest=True,
@@ -410,15 +462,18 @@ async def try_cascade_dispatch(
                     _user_text = _c
                 elif isinstance(_c, list):
                     _user_text = "\n".join(
-                        b.get("text", "") for b in _c
+                        b.get("text", "")
+                        for b in _c
                         if isinstance(b, dict) and b.get("type") == "text"
                     )
                 break
 
         if grader_route is not None:
             verdict = await grade_answer(
-                grader_route.litellm_model, grader_route.litellm_kwargs,
-                _user_text, cheap_answer,
+                grader_route.litellm_model,
+                grader_route.litellm_kwargs,
+                _user_text,
+                cheap_answer,
             )
         else:
             # No distinct grader available → accept cheap result
@@ -426,20 +481,23 @@ async def try_cascade_dispatch(
 
         if verdict.acceptable:
             resp_headers["X-Cascade"] = "accepted"
-            resp_headers["X-Cascade-Grader"] = (
-                grader_route.provider.name if grader_route else "—"
-            )
+            resp_headers["X-Cascade-Grader"] = grader_route.provider.name if grader_route else "—"
             resp_headers["X-Provider"] = cheap_route.provider.name
             resp_headers["X-Resolved-Model"] = cheap_route.litellm_model
             in_tok = getattr(cheap_result.usage, "prompt_tokens", 0)
             out_tok = getattr(cheap_result.usage, "completion_tokens", 0)
             cache_creation, cache_read = extract_cache_tokens(cheap_result.usage)
             await record_outcome(
-                db, cheap_route.provider.id, cheap_route.litellm_model,
+                db,
+                cheap_route.provider.id,
+                cheap_route.litellm_model,
                 success=True,
-                in_tok=in_tok, out_tok=out_tok, t0=t0,
+                in_tok=in_tok,
+                out_tok=out_tok,
+                t0=t0,
                 key_record_id=key_record.id,
-                cache_creation=cache_creation, cache_read=cache_read,
+                cache_creation=cache_creation,
+                cache_read=cache_read,
                 provider_name=cheap_route.provider.name,
             )
             try:

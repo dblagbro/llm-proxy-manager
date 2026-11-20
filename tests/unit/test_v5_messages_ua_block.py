@@ -9,6 +9,7 @@ These tests exercise the full request handler through FastAPI's
 TestClient so the 451 path's response shape, headers, and side-effect
 (one compliance_events row written) are verified end-to-end.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -18,7 +19,7 @@ from sqlalchemy import delete, select
 
 @pytest_asyncio.fixture
 async def fixture_db_ua():
-    from app.models.database import engine, AsyncSessionLocal
+    from app.models.database import AsyncSessionLocal, engine
     from app.models.db import ApiKey, Base, Provider
     from app.models.db_compliance import ComplianceEvent
 
@@ -26,51 +27,69 @@ async def fixture_db_ua():
         await conn.run_sync(Base.metadata.create_all)
     # Pre-clean any rows from a prior crashed run
     async with AsyncSessionLocal() as cleanup:
-        await cleanup.execute(delete(ComplianceEvent).where(
-            ComplianceEvent.api_key_id.in_(["ua-key-blocked", "ua-key-allowed"])
-        ))
-        await cleanup.execute(delete(ApiKey).where(
-            ApiKey.id.in_(["ua-key-blocked", "ua-key-allowed"])
-        ))
+        await cleanup.execute(
+            delete(ComplianceEvent).where(
+                ComplianceEvent.api_key_id.in_(["ua-key-blocked", "ua-key-allowed"])
+            )
+        )
+        await cleanup.execute(
+            delete(ApiKey).where(ApiKey.id.in_(["ua-key-blocked", "ua-key-allowed"]))
+        )
         await cleanup.execute(delete(Provider).where(Provider.id == "ua-prov"))
         await cleanup.commit()
     async with AsyncSessionLocal() as db:
-        db.add(Provider(
-            id="ua-prov", name="ua-test",
-            provider_type="openai", priority=10, enabled=True,
-            api_key="stub", default_model="gpt-4o-mini",
-        ))
-        db.add(ApiKey(
-            id="ua-key-blocked", name="ua-key-blocked",
-            key_prefix="llmp-block",
-            key_hash="hash-stub-1",
-            enabled=True,
-            blocked_companies=["anthropic"],
-        ))
-        db.add(ApiKey(
-            id="ua-key-allowed", name="ua-key-allowed",
-            key_prefix="llmp-allow",
-            key_hash="hash-stub-2",
-            enabled=True,
-            blocked_companies=[],
-        ))
+        db.add(
+            Provider(
+                id="ua-prov",
+                name="ua-test",
+                provider_type="openai",
+                priority=10,
+                enabled=True,
+                api_key="stub",
+                default_model="gpt-4o-mini",
+            )
+        )
+        db.add(
+            ApiKey(
+                id="ua-key-blocked",
+                name="ua-key-blocked",
+                key_prefix="llmp-block",
+                key_hash="hash-stub-1",
+                enabled=True,
+                blocked_companies=["anthropic"],
+            )
+        )
+        db.add(
+            ApiKey(
+                id="ua-key-allowed",
+                name="ua-key-allowed",
+                key_prefix="llmp-allow",
+                key_hash="hash-stub-2",
+                enabled=True,
+                blocked_companies=[],
+            )
+        )
         await db.commit()
     yield AsyncSessionLocal
     async with AsyncSessionLocal() as cleanup:
-        await cleanup.execute(delete(ComplianceEvent).where(
-            ComplianceEvent.api_key_id.in_(["ua-key-blocked", "ua-key-allowed"])
-        ))
-        await cleanup.execute(delete(ApiKey).where(
-            ApiKey.id.in_(["ua-key-blocked", "ua-key-allowed"])
-        ))
+        await cleanup.execute(
+            delete(ComplianceEvent).where(
+                ComplianceEvent.api_key_id.in_(["ua-key-blocked", "ua-key-allowed"])
+            )
+        )
+        await cleanup.execute(
+            delete(ApiKey).where(ApiKey.id.in_(["ua-key-blocked", "ua-key-allowed"]))
+        )
         await cleanup.execute(delete(Provider).where(Provider.id == "ua-prov"))
         await cleanup.commit()
 
 
 def _key_record(id_, blocked_companies):
     """Bare-minimum ApiKey-shaped object for verify_api_key mock."""
+
     class _K:
         pass
+
     k = _K()
     k.id = id_
     k.blocked_companies = blocked_companies
@@ -87,12 +106,14 @@ async def test_banned_ua_with_anthropic_blocklist_returns_451(fixture_db_ua, mon
     blocked_companies=["anthropic"] → 451 with X-Compliance-Refusal
     headers + 1 compliance_events row written."""
     from app.compliance.policy import invalidate_blocklist_cache
+
     invalidate_blocklist_cache()
 
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
+
     from app.api.messages import router as messages_router
-    from app.models.database import get_db, AsyncSessionLocal as Real_ASL
+    from app.models.database import get_db
     from app.models.db_compliance import ComplianceEvent
 
     AsyncSessionLocal = fixture_db_ua
@@ -120,9 +141,11 @@ async def test_banned_ua_with_anthropic_blocklist_returns_451(fixture_db_ua, mon
     client = TestClient(app)
     resp = client.post(
         "/v1/messages",
-        json={"model": "claude-haiku", "messages": [
-            {"role": "user", "content": "hi"}
-        ], "max_tokens": 16},
+        json={
+            "model": "claude-haiku",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 16,
+        },
         headers={
             "x-api-key": "irrelevant-mocked",
             "user-agent": "claude-cli/2.1.88",
@@ -143,9 +166,15 @@ async def test_banned_ua_with_anthropic_blocklist_returns_451(fixture_db_ua, mon
 
     # One compliance_events row written.
     async with AsyncSessionLocal() as db:
-        rows = (await db.execute(
-            select(ComplianceEvent).where(ComplianceEvent.api_key_id == "ua-key-blocked")
-        )).scalars().all()
+        rows = (
+            (
+                await db.execute(
+                    select(ComplianceEvent).where(ComplianceEvent.api_key_id == "ua-key-blocked")
+                )
+            )
+            .scalars()
+            .all()
+        )
     assert len(rows) == 1
     assert rows[0].event_type == "client_product_refusal"
     assert rows[0].http_status == 451
@@ -159,10 +188,12 @@ async def test_banned_ua_with_empty_blocklist_does_not_block(fixture_db_ua, monk
     must NOT return 451 — UA detection alone doesn't refuse; the company
     has to be on the effective blocklist."""
     from app.compliance.policy import invalidate_blocklist_cache
+
     invalidate_blocklist_cache()
 
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
+
     from app.api.messages import router as messages_router
     from app.models.database import get_db
     from app.models.db_compliance import ComplianceEvent
@@ -192,22 +223,26 @@ async def test_banned_ua_with_empty_blocklist_does_not_block(fixture_db_ua, monk
     # request short-circuits cleanly after the UA check passes. We only
     # care that it gets past the 451 gate; the downstream behavior is
     # tested elsewhere.
-    class _Boom(Exception): pass
+    class _Boom(Exception):
+        pass
 
     async def fake_select(*a, **kw):
         raise _Boom("post-UA-check-reached")
 
     monkeypatch.setattr(
-        "app.api._request_pipeline.select_provider_with_503", fake_select,
+        "app.api._request_pipeline.select_provider_with_503",
+        fake_select,
     )
 
     client = TestClient(app)
     try:
         resp = client.post(
             "/v1/messages",
-            json={"model": "claude-haiku", "messages": [
-                {"role": "user", "content": "hi"}
-            ], "max_tokens": 16},
+            json={
+                "model": "claude-haiku",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 16,
+            },
             headers={
                 "x-api-key": "irrelevant-mocked",
                 "user-agent": "claude-cli/2.1",
@@ -228,9 +263,15 @@ async def test_banned_ua_with_empty_blocklist_does_not_block(fixture_db_ua, monk
 
     # No compliance_events row written either.
     async with AsyncSessionLocal() as db:
-        rows = (await db.execute(
-            select(ComplianceEvent).where(ComplianceEvent.api_key_id == "ua-key-allowed")
-        )).scalars().all()
+        rows = (
+            (
+                await db.execute(
+                    select(ComplianceEvent).where(ComplianceEvent.api_key_id == "ua-key-allowed")
+                )
+            )
+            .scalars()
+            .all()
+        )
     assert len(rows) == 0
 
 
@@ -241,10 +282,12 @@ async def test_unbanned_ua_with_anthropic_blocklist_does_not_block(fixture_db_ua
     match any banned product, so blocked_companies is irrelevant for the
     UA gate."""
     from app.compliance.policy import invalidate_blocklist_cache
+
     invalidate_blocklist_cache()
 
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
+
     from app.api.messages import router as messages_router
     from app.models.database import get_db
     from app.models.db_compliance import ComplianceEvent
@@ -270,22 +313,26 @@ async def test_unbanned_ua_with_anthropic_blocklist_does_not_block(fixture_db_ua
     # request then 401s on the real verifier before reaching the UA gate).
     monkeypatch.setattr("app.auth.keys.verify_api_key", fake_verify)
 
-    class _Boom(Exception): pass
+    class _Boom(Exception):
+        pass
 
     async def fake_select(*a, **kw):
         raise _Boom("post-UA-check-reached")
 
     monkeypatch.setattr(
-        "app.api._request_pipeline.select_provider_with_503", fake_select,
+        "app.api._request_pipeline.select_provider_with_503",
+        fake_select,
     )
 
     client = TestClient(app)
     try:
         resp = client.post(
             "/v1/messages",
-            json={"model": "gpt-4o-mini", "messages": [
-                {"role": "user", "content": "hi"}
-            ], "max_tokens": 16},
+            json={
+                "model": "gpt-4o-mini",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 16,
+            },
             headers={
                 "x-api-key": "irrelevant-mocked",
                 "user-agent": "opencode/0.1.0",
@@ -302,9 +349,15 @@ async def test_unbanned_ua_with_anthropic_blocklist_does_not_block(fixture_db_ua
     )
 
     async with AsyncSessionLocal() as db:
-        rows = (await db.execute(
-            select(ComplianceEvent).where(ComplianceEvent.api_key_id == "ua-key-blocked")
-        )).scalars().all()
+        rows = (
+            (
+                await db.execute(
+                    select(ComplianceEvent).where(ComplianceEvent.api_key_id == "ua-key-blocked")
+                )
+            )
+            .scalars()
+            .all()
+        )
     assert len(rows) == 0
 
 
@@ -325,6 +378,7 @@ def test_both_endpoints_delegate_to_the_shared_pre_route():
     be bypassed on one of them.
     """
     from pathlib import Path
+
     for mod in ("app/api/messages.py", "app/api/completions.py"):
         src = Path(mod).read_text()
         assert "prepare_request_context" in src, (
@@ -345,6 +399,7 @@ def test_shared_pre_route_runs_ua_check_after_verify_api_key():
     reordering at all.
     """
     from pathlib import Path
+
     src = Path("app/api/_handler_shared.py").read_text()
     i_verify = src.index("verify_api_key(db, x_api_key)")
     i_ua = src.index("raise_if_banned_client_ua(request, db, key_record)")

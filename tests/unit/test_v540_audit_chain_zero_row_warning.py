@@ -5,9 +5,10 @@ zero-row days, emit one ``audit_chain_zero_row_streak`` warning to
 ``activity_log``. Idempotent — re-running on the same streak doesn't
 multiply the noise.
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -40,9 +41,10 @@ def _opted_in_setting():
 
 def test_zero_row_check_helper_exists():
     from app.monitoring.compliance_audit_worker import (
-        _emit_zero_row_warning_if_threshold,
         _ZERO_ROW_WARN_THRESHOLD,
+        _emit_zero_row_warning_if_threshold,
     )
+
     assert callable(_emit_zero_row_warning_if_threshold)
     assert _ZERO_ROW_WARN_THRESHOLD >= 3, (
         f"threshold must be >= 3 days so a long weekend doesn't trigger; "
@@ -69,7 +71,7 @@ def test_audit_worker_has_heartbeat_wiring():
     """v5.4.0 also wires compliance_audit_worker to WorkerHeartbeat."""
     src = Path("app/monitoring/compliance_audit_worker.py").read_text()
     assert "from app.monitoring.worker_heartbeat import" in src
-    assert "WorkerHeartbeat(name=\"compliance_audit\")" in src
+    assert 'WorkerHeartbeat(name="compliance_audit")' in src
 
 
 # ── Behavior ────────────────────────────────────────────────────────
@@ -80,6 +82,7 @@ async def test_zero_row_check_does_not_fire_below_threshold(tmp_path, monkeypatc
     """With fewer than _ZERO_ROW_WARN_THRESHOLD chain rows, the helper
     must NOT emit anything (a fresh deploy must not warn after 1 day)."""
     from unittest.mock import AsyncMock, MagicMock
+
     from app.monitoring.compliance_audit_worker import _emit_zero_row_warning_if_threshold
 
     db = MagicMock()
@@ -102,12 +105,13 @@ async def test_zero_row_check_does_not_fire_when_any_day_has_events(monkeypatch)
     """If any of the last N days had events, no warning. The streak
     must be unbroken."""
     from unittest.mock import AsyncMock, MagicMock
+
     from app.monitoring.compliance_audit_worker import _emit_zero_row_warning_if_threshold
 
     db = MagicMock()
     rows = [
         MagicMock(row_count=0, day="2026-06-12"),
-        MagicMock(row_count=5, day="2026-06-11"),   # broke the streak
+        MagicMock(row_count=5, day="2026-06-11"),  # broke the streak
         MagicMock(row_count=0, day="2026-06-10"),
     ]
     rs = MagicMock()
@@ -126,6 +130,7 @@ async def test_zero_row_check_fires_on_unbroken_streak(monkeypatch):
     """N consecutive zero-row days WITH no existing warning row in the
     last 24h → exactly one ActivityLog row added."""
     from unittest.mock import AsyncMock, MagicMock
+
     from app.monitoring.compliance_audit_worker import _emit_zero_row_warning_if_threshold
 
     db = MagicMock()
@@ -161,6 +166,7 @@ async def test_zero_row_check_is_idempotent_within_24h(monkeypatch):
     """If a warning for the same streak was already emitted in the
     last 24h, the helper must NOT emit a duplicate."""
     from unittest.mock import AsyncMock, MagicMock
+
     from app.monitoring.compliance_audit_worker import _emit_zero_row_warning_if_threshold
 
     db = MagicMock()
@@ -181,6 +187,5 @@ async def test_zero_row_check_is_idempotent_within_24h(monkeypatch):
     await _emit_zero_row_warning_if_threshold(db, datetime.utcnow().date())
     db.add.assert_not_called()
     assert db.execute.await_count == 3, (
-        "the dedup probe was never reached, so suppression here is not "
-        "evidence of idempotency"
+        "the dedup probe was never reached, so suppression here is not evidence of idempotency"
     )

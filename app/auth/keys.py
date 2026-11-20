@@ -1,29 +1,43 @@
 """API key authentication."""
+
 import hashlib
-import secrets
 import logging
-from dataclasses import dataclass, field
-from typing import Optional, List
+import secrets
+from dataclasses import dataclass
 
 from fastapi import HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import func
-
-from app.models.db import ApiKey
-from app.cluster.sync import get_peer_total_cost
-from app.budget.tracker import check_budget_pre_request, BudgetStatus
-from app.auth.rate_limit_tiers import get_tier
 
 # Rate-limit machinery lives in a sibling module (extracted 2026-04-23). These
 # re-exports preserve the previous public surface so existing tests (which
 # reach into _rpm_windows etc.) keep working unchanged.
 from app.auth import rate_limit_state as _rl_state
 from app.auth.rate_limit_state import (
-    _rpm_windows, _rpd_buckets, _burst_counters,
-    _check_rate_limit, _check_rpd, _check_burst,
-    begin_in_flight, end_in_flight,
+    _burst_counters as _burst_counters,
 )
+from app.auth.rate_limit_state import (
+    _check_burst,
+    _check_rate_limit,
+    _check_rpd,
+)
+from app.auth.rate_limit_state import (
+    _rpd_buckets as _rpd_buckets,
+)
+from app.auth.rate_limit_state import (
+    _rpm_windows as _rpm_windows,
+)
+from app.auth.rate_limit_state import (
+    begin_in_flight as begin_in_flight,
+)
+from app.auth.rate_limit_state import (
+    end_in_flight as end_in_flight,
+)
+from app.auth.rate_limit_tiers import get_tier
+from app.budget.tracker import BudgetStatus, check_budget_pre_request
+from app.cluster.sync import get_peer_total_cost
+from app.models.db import ApiKey
 
 
 def active_node_count() -> int:
@@ -31,6 +45,7 @@ def active_node_count() -> int:
     `app.auth.keys.active_node_count`. Forwards into rate_limit_state
     so the override is seen by _check_rate_limit / _check_rpd."""
     return _rl_state.active_node_count()
+
 
 logger = logging.getLogger(__name__)
 
@@ -41,13 +56,13 @@ class ApiKeyRecord:
     name: str
     key_type: str  # standard|claude-code
     semantic_cache_enabled: bool = False
-    budget_status: Optional[BudgetStatus] = None
-    rate_limit_tier: Optional[str] = None
+    budget_status: BudgetStatus | None = None
+    rate_limit_tier: str | None = None
     # v5.0.0 — compliance policy fields. Populated from the ApiKey row in
     # verify_api_key so downstream middleware + handlers (allowed_paths,
     # debug-echo, compliance disclosure) read from one place.
-    blocked_companies: Optional[List[str]] = None
-    allowed_paths: Optional[List[str]] = None
+    blocked_companies: list[str] | None = None
+    allowed_paths: list[str] | None = None
     debug_echo_enabled: bool = False
     # v5.22.28 — carried into the request path so messages.py's
     # getattr(key_record, "default_refuse_tolerance", None) finally sees a
@@ -62,9 +77,9 @@ class ApiKeyRecord:
     # That silently voided the operator's allow/deny lists AND the documented
     # ``mcp_tools_allow=[]`` "disable MCP entirely" opt-out. Populated here so
     # both enforcement paths (mcp_server + proxy_tools injection) see the policy.
-    mcp_tools_allow: Optional[List[str]] = None
-    mcp_tools_deny: Optional[List[str]] = None
-    mcp_schema_token_budget: Optional[int] = None
+    mcp_tools_allow: list[str] | None = None
+    mcp_tools_deny: list[str] | None = None
+    mcp_schema_token_budget: int | None = None
 
 
 def _hash_key(raw_key: str) -> str:
@@ -77,7 +92,7 @@ def generate_api_key() -> tuple[str, str]:
     return raw, _hash_key(raw)
 
 
-async def verify_api_key(db: AsyncSession, raw_key: Optional[str]) -> ApiKeyRecord:
+async def verify_api_key(db: AsyncSession, raw_key: str | None) -> ApiKeyRecord:
     if not raw_key:
         raise HTTPException(401, "Missing API key")
     key_hash = _hash_key(raw_key)
@@ -88,7 +103,7 @@ async def verify_api_key(db: AsyncSession, raw_key: Optional[str]) -> ApiKeyReco
     result = await db.execute(
         select(ApiKey).where(
             ApiKey.key_hash == key_hash,
-            ApiKey.enabled == True,
+            ApiKey.enabled.is_(True),
             ApiKey.deleted_at.is_(None),
         )
     )
@@ -142,6 +157,7 @@ async def verify_api_key(db: AsyncSession, raw_key: Optional[str]) -> ApiKeyReco
             return [str(x) for x in raw if x]
         if isinstance(raw, str):
             import json as _json
+
             try:
                 v = _json.loads(raw)
                 return [str(x) for x in v if x] if isinstance(v, list) else None
@@ -176,9 +192,9 @@ async def verify_api_key(db: AsyncSession, raw_key: Optional[str]) -> ApiKeyReco
 
 
 async def get_api_key_record(
-    x_api_key: Optional[str] = None,
-    authorization: Optional[str] = None,
-    db: Optional[AsyncSession] = None,
+    x_api_key: str | None = None,
+    authorization: str | None = None,
+    db: AsyncSession | None = None,
 ) -> ApiKeyRecord:
     """FastAPI dependency that accepts an api key from either the
     ``x-api-key`` header or an ``Authorization: Bearer`` header, then
@@ -209,11 +225,12 @@ def resolve_api_key_dep():
     for the db session). Wrapping in a factory keeps the import-time
     surface light (no FastAPI types pulled in until first use)."""
     from fastapi import Depends, Header
+
     from app.models.database import get_db
 
     async def _resolver(
-        x_api_key: Optional[str] = Header(None, alias="x-api-key"),
-        authorization: Optional[str] = Header(None, alias="authorization"),
+        x_api_key: str | None = Header(None, alias="x-api-key"),
+        authorization: str | None = Header(None, alias="authorization"),
         db: AsyncSession = Depends(get_db),
     ) -> ApiKeyRecord:
         return await get_api_key_record(
@@ -221,4 +238,5 @@ def resolve_api_key_dep():
             authorization=authorization,
             db=db,
         )
+
     return _resolver

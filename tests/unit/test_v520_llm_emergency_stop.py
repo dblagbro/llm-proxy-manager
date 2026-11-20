@@ -11,18 +11,22 @@ Covers acceptance criteria:
 - reject zero/negative arguments isn't applicable here (boolean only)
 - audit row is system-scope, never purgeable
 """
+
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
 from sqlalchemy.ext.asyncio import (
-    AsyncSession, async_sessionmaker, create_async_engine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
 )
 
 
 async def _fresh_db():
     from app.models.db import Base
+
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -39,6 +43,7 @@ def _clear_emergency_stop_cache():
     (notably test_v5_messages_ua_block which exercises the same
     request handler path). Wipe before AND after every test."""
     from app.monitoring import llm_emergency_stop as les
+
     les.invalidate_cache()
     yield
     les.invalidate_cache()
@@ -49,9 +54,12 @@ def _clear_emergency_stop_cache():
 
 def test_emergency_stop_module_exists():
     from app.monitoring import llm_emergency_stop as les
+
     for fn in (
-        les.is_llm_stopped, les.is_llm_stopped_session_less,
-        les.set_llm_stopped, les.invalidate_cache,
+        les.is_llm_stopped,
+        les.is_llm_stopped_session_less,
+        les.set_llm_stopped,
+        les.invalidate_cache,
     ):
         assert callable(fn)
     assert les.SETTING_KEY == "compliance.llm_emergency_stop"
@@ -140,6 +148,7 @@ def test_admin_router_registered():
 async def test_default_is_not_stopped():
     """Pre-feature behavior preserved: no setting row → not stopped."""
     from app.monitoring import llm_emergency_stop as les
+
     les.invalidate_cache()
     Session = await _fresh_db()
     async with Session() as db:
@@ -149,11 +158,15 @@ async def test_default_is_not_stopped():
 @pytest.mark.asyncio
 async def test_set_then_is_stopped():
     from app.monitoring import llm_emergency_stop as les
+
     les.invalidate_cache()
     Session = await _fresh_db()
     async with Session() as db:
         result = await les.set_llm_stopped(
-            db, enabled=True, actor="qa", reason="test",
+            db,
+            enabled=True,
+            actor="qa",
+            reason="test",
         )
         assert result["ok"] is True
         assert result["enabled"] is True
@@ -162,7 +175,10 @@ async def test_set_then_is_stopped():
         assert await les.is_llm_stopped(db) is True
         # Disengage
         result2 = await les.set_llm_stopped(
-            db, enabled=False, actor="qa", reason="all-clear",
+            db,
+            enabled=False,
+            actor="qa",
+            reason="all-clear",
         )
         assert result2["prior_state"] is True
         assert result2["enabled"] is False
@@ -173,9 +189,11 @@ async def test_set_then_is_stopped():
 async def test_noop_flip_still_audits():
     """Re-engaging an already-engaged stop must record an audit row —
     operator intent must be visible even on no-ops."""
-    from app.monitoring import llm_emergency_stop as les
+    from sqlalchemy import func, select
+
     from app.models.db import CompliancePolicyChange
-    from sqlalchemy import select, func
+    from app.monitoring import llm_emergency_stop as les
+
     les.invalidate_cache()
     Session = await _fresh_db()
     async with Session() as db:
@@ -183,9 +201,9 @@ async def test_noop_flip_still_audits():
         result = await les.set_llm_stopped(db, enabled=True, actor="qa")
         assert result["noop"] is True
         # Two rows: the engage + the re-affirm
-        count = (await db.execute(
-            select(func.count()).select_from(CompliancePolicyChange)
-        )).scalar_one()
+        count = (
+            await db.execute(select(func.count()).select_from(CompliancePolicyChange))
+        ).scalar_one()
         assert count == 2
 
 
@@ -193,14 +211,19 @@ async def test_noop_flip_still_audits():
 async def test_audit_row_fields():
     """Each flip writes a CompliancePolicyChange row with scope=system,
     actor, reason, before/after state JSON."""
-    from app.monitoring import llm_emergency_stop as les
-    from app.models.db import CompliancePolicyChange
     from sqlalchemy import select
+
+    from app.models.db import CompliancePolicyChange
+    from app.monitoring import llm_emergency_stop as les
+
     les.invalidate_cache()
     Session = await _fresh_db()
     async with Session() as db:
         await les.set_llm_stopped(
-            db, enabled=True, actor="alice", reason="incident-2026-06-06",
+            db,
+            enabled=True,
+            actor="alice",
+            reason="incident-2026-06-06",
         )
         row = (await db.execute(select(CompliancePolicyChange))).scalar_one()
         assert row.scope == "system"
@@ -217,6 +240,7 @@ async def test_cache_invalidate_on_toggle():
     not after the 30s TTL expires. The toggle calls invalidate_cache().
     """
     from app.monitoring import llm_emergency_stop as les
+
     les.invalidate_cache()
     Session = await _fresh_db()
     async with Session() as db:
@@ -233,8 +257,9 @@ async def test_direct_db_write_propagates_after_refresh():
     """Simulates a cluster-sync apply: a peer's value lands in
     system_settings directly. After invalidating the cache (or TTL
     expiry), the new value surfaces."""
-    from app.monitoring import llm_emergency_stop as les
     from app.models.db import SystemSetting
+    from app.monitoring import llm_emergency_stop as les
+
     les.invalidate_cache()
     Session = await _fresh_db()
     async with Session() as db:
@@ -242,10 +267,14 @@ async def test_direct_db_write_propagates_after_refresh():
         assert await les.is_llm_stopped(db) is False
         # Direct write — bypass set_llm_stopped to simulate a peer's
         # cluster_sync apply.
-        db.add(SystemSetting(
-            key=les.SETTING_KEY, value="true",
-            value_type="bool", updated_at=0.0,
-        ))
+        db.add(
+            SystemSetting(
+                key=les.SETTING_KEY,
+                value="true",
+                value_type="bool",
+                updated_at=0.0,
+            )
+        )
         await db.commit()
         # Cache still says False
         assert await les.is_llm_stopped(db) is False
@@ -260,11 +289,13 @@ async def test_retry_wrapper_raises_when_stopped():
     the stop is engaged, BEFORE attempting any litellm call."""
     from app.monitoring import llm_emergency_stop as les
     from app.routing.retry import acompletion_with_retry
+
     les.invalidate_cache()
     Session = await _fresh_db()
     # Patch AsyncSessionLocal to return our in-memory session so
     # is_llm_stopped_session_less() sees the engaged setting.
     import app.models.database as _dbmod
+
     _saved = _dbmod.AsyncSessionLocal
     _dbmod.AsyncSessionLocal = Session
     try:
@@ -287,6 +318,7 @@ async def test_emergency_stop_is_orthogonal_to_logging_stop():
     Different SETTING_KEY guards against an inadvertent merge."""
     from app.monitoring import llm_emergency_stop as les
     from app.monitoring import logging_controls as lc
+
     assert les.SETTING_KEY != lc.SETTING_KEY
     les.invalidate_cache()
     lc.invalidate_cache()
@@ -306,13 +338,19 @@ async def test_handler_helper_no_op_when_disengaged():
     """raise_if_llm_emergency_stopped is a no-op when the stop is OFF."""
     from app.api._compliance_handler import raise_if_llm_emergency_stopped
     from app.monitoring import llm_emergency_stop as les
+
     les.invalidate_cache()
     Session = await _fresh_db()
+
     class FakeKey:
         id = "key-test-1"
+
     async with Session() as db:
         await raise_if_llm_emergency_stopped(
-            db, FakeKey(), endpoint="messages", requested_model="claude-haiku",
+            db,
+            FakeKey(),
+            endpoint="messages",
+            requested_model="claude-haiku",
         )  # no raise
 
 
@@ -321,18 +359,24 @@ async def test_handler_helper_raises_503_when_engaged():
     """When engaged, raises HTTPException(503) with the right code +
     writes a compliance_events audit row."""
     from fastapi import HTTPException
-    from app.api._compliance_handler import raise_if_llm_emergency_stopped
-    from app.monitoring import llm_emergency_stop as les
-    from app.models.db import ComplianceEvent, ApiKey
     from sqlalchemy import select
+
+    from app.api._compliance_handler import raise_if_llm_emergency_stopped
+    from app.models.db import ApiKey, ComplianceEvent
+    from app.monitoring import llm_emergency_stop as les
+
     les.invalidate_cache()
     Session = await _fresh_db()
     async with Session() as db:
         # ComplianceEvent has FK to api_keys; create the row first.
-        db.add(ApiKey(
-            id="key-test-2", key_hash="h-key-test-2",
-            key_prefix="k-test-2", name="t",
-        ))
+        db.add(
+            ApiKey(
+                id="key-test-2",
+                key_hash="h-key-test-2",
+                key_prefix="k-test-2",
+                name="t",
+            )
+        )
         await db.commit()
         await les.set_llm_stopped(db, enabled=True, actor="qa")
 
@@ -341,7 +385,8 @@ async def test_handler_helper_raises_503_when_engaged():
 
         with pytest.raises(HTTPException) as exc_info:
             await raise_if_llm_emergency_stopped(
-                db, FakeKey(),
+                db,
+                FakeKey(),
                 endpoint="messages",
                 requested_model="claude-haiku-4-5",
             )
@@ -350,11 +395,11 @@ async def test_handler_helper_raises_503_when_engaged():
         assert detail["error"]["code"] == "llm-emergency-stop"
         assert detail["error"]["audit_id"]
         # Audit row written
-        ev = (await db.execute(
-            select(ComplianceEvent).where(
-                ComplianceEvent.event_type == "llm_emergency_stop"
+        ev = (
+            await db.execute(
+                select(ComplianceEvent).where(ComplianceEvent.event_type == "llm_emergency_stop")
             )
-        )).scalar_one()
+        ).scalar_one()
         assert ev.reason_code == "llm-emergency-stop"
         assert ev.http_status == 503
         assert ev.requested_model == "claude-haiku-4-5"

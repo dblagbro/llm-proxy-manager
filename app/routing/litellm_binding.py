@@ -23,13 +23,12 @@ select_provider / scoring strategy code in router.py.
 All public names are re-exported from ``app.routing.router`` so existing
 callers (every `from app.routing.router import …` site in the tree)
 keep working without changes — this is a behavior-preserving move."""
+
 from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Optional
-
-logger = logging.getLogger(__name__)
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models.db import Provider
 
+logger = logging.getLogger(__name__)
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 
@@ -52,13 +52,12 @@ def _is_embedding_model(model: str) -> bool:
     if not model:
         return False
     m = model.lower()
-    return (m.startswith("embed-") or m.startswith("text-embedding-")
-            or m.startswith("embedding-"))
+    return m.startswith("embed-") or m.startswith("text-embedding-") or m.startswith("embedding-")
 
 
 async def resolve_chat_model_for_provider(
     db: AsyncSession, provider: Provider
-) -> tuple[Optional[str], Optional[str]]:
+) -> tuple[str | None, str | None]:
     """v3.0.32: shared helper for "what chat-capable model should we dispatch
     to this provider with?".
 
@@ -90,22 +89,26 @@ async def resolve_chat_model_for_provider(
         return (default or None, None)
 
     from app.models.db import ModelCapability
-    caps = (await db.execute(
-        select(ModelCapability.model_id).where(
-            ModelCapability.provider_id == provider.id
+
+    caps = (
+        (
+            await db.execute(
+                select(ModelCapability.model_id).where(ModelCapability.provider_id == provider.id)
+            )
         )
-    )).scalars().all()
+        .scalars()
+        .all()
+    )
     chat_candidates = [c for c in caps if not _is_embedding_model(c)]
     if not chat_candidates:
         return (None, f"provider {provider.id!r} has no chat-capable scanned models")
     # Prefer `command-*` (Cohere chat) or `gpt-*` over the alphabetical
     # default — those are the most reliable chat surfaces for a probe.
-    preferred = [c for c in chat_candidates
-                 if c.startswith("command-") or c.startswith("gpt-")]
+    preferred = [c for c in chat_candidates if c.startswith("command-") or c.startswith("gpt-")]
     return ((preferred or sorted(chat_candidates))[0], None)
 
 
-def _model_family_provider_types(model: str) -> Optional[set[str]]:
+def _model_family_provider_types(model: str) -> set[str] | None:
     """v3.0.26: map a requested model name to the set of provider types that
     can physically serve it. Returns None when no family is detected (caller
     falls through to the existing capability/scoring path).
@@ -115,7 +118,7 @@ def _model_family_provider_types(model: str) -> Optional[set[str]]:
     families) return None and skip the family filter entirely so we don't
     over-restrict legitimate routes.
 
-    DevinGPT report 2026-05-01: claude-sonnet-4-6 was being routed to
+    integration client report 2026-05-01: claude-sonnet-4-6 was being routed to
     codex-oauth via a v3.0.22 fall-through. This filter is the hard backstop.
 
     v4.4.40 BUG-086 fix: ``cursor-oauth`` was missing from both the Claude
@@ -142,10 +145,16 @@ def _model_family_provider_types(model: str) -> Optional[set[str]]:
     # which runs after this). cursor-oauth's relay also serves the gpt-*
     # family (gpt-4o, gpt-5, gpt-5-codex, …); the same downstream cap
     # filter eliminates models the operator's Cursor account can't reach.
-    if (m.startswith("gpt-") or m.startswith("o1-") or m.startswith("o3-")
-            or m.startswith("o4-") or m.startswith("text-embedding-")
-            or m.startswith("whisper-") or m.startswith("dall-e-")
-            or m.startswith("codex-")):
+    if (
+        m.startswith("gpt-")
+        or m.startswith("o1-")
+        or m.startswith("o3-")
+        or m.startswith("o4-")
+        or m.startswith("text-embedding-")
+        or m.startswith("whisper-")
+        or m.startswith("dall-e-")
+        or m.startswith("codex-")
+    ):
         return {"openai", "ChatGPT-oauth-plan", "cursor-oauth"}
     # Google / Gemini family.
     if m.startswith("gemini-") or m.startswith("text-bison") or m.startswith("chat-bison"):
@@ -188,9 +197,7 @@ def _model_family_provider_types(model: str) -> Optional[set[str]]:
 # api/embeddings.py and api/images.py already exclude these types by hand;
 # this is the shared definition so the routing layer stops being the odd one
 # out. See bug-log 2026-09-18.
-OWN_DISPATCHER_PROVIDER_TYPES = frozenset(
-    {"claude-oauth", "ChatGPT-oauth-plan", "grok-web"}
-)
+OWN_DISPATCHER_PROVIDER_TYPES = frozenset({"claude-oauth", "ChatGPT-oauth-plan", "grok-web"})
 
 
 PROVIDER_TYPE_TO_LITELLM = {
@@ -200,7 +207,7 @@ PROVIDER_TYPE_TO_LITELLM = {
     "vertex": "vertex_ai",
     "ollama": "ollama",
     "grok": "xai",
-    "compatible": "openai",     # OpenAI-compatible uses openai provider with custom base_url
+    "compatible": "openai",  # OpenAI-compatible uses openai provider with custom base_url
     # v2.7.0: claude-oauth never routes through litellm — messages.py
     # dispatches a direct httpx call to platform.claude.com. The "anthropic"
     # prefix here is only used for the `X-Resolved-Model` response header.
@@ -251,20 +258,20 @@ PROVIDER_TYPE_TO_LITELLM = {
 
 PROVIDER_DEFAULT_MODELS = {
     "anthropic": "claude-sonnet-4-6",
-    "google":    "gemini-2.0-flash",
-    "vertex":    "gemini-2.0-flash-002",
-    "openai":    "gpt-4o",
-    "grok":      "grok-2",
+    "google": "gemini-2.0-flash",
+    "vertex": "gemini-2.0-flash-002",
+    "openai": "gpt-4o",
+    "grok": "grok-2",
     # v5.23.0: llama3 is a 2024-era tag current Ollama catalogs no longer
     # ship as a first-class pull. qwen2.5-coder:7b is a real, tool-capable
     # local default matching the inner-loop class in
     # docs/5.23-local-accelerator-orchestration-backpressure-design.md.
     # Operators override per-row (e.g. a local `coder` alias).
-    "ollama":    "qwen2.5-coder:7b",
+    "ollama": "qwen2.5-coder:7b",
     "compatible": "gpt-4o",
     # v3.0.66: Azure deployments are caller-named — admin sets the
     # deployment name as default_model on the provider row.
-    "azure":     "gpt-4o",
+    "azure": "gpt-4o",
     # Claude Pro Max subscription — caller chooses model at request time.
     "claude-oauth": "claude-sonnet-4-6",
     # ChatGPT Plus/Team/Enterprise subscription via Codex CLI.
@@ -300,7 +307,7 @@ PROVIDER_DEFAULT_MODELS = {
 # ── builders ────────────────────────────────────────────────────────────────
 
 
-def build_litellm_model(provider: Provider, model_override: Optional[str] = None) -> str:
+def build_litellm_model(provider: Provider, model_override: str | None = None) -> str:
     prefix = PROVIDER_TYPE_TO_LITELLM.get(provider.provider_type, "openai")
     default = PROVIDER_DEFAULT_MODELS.get(provider.provider_type, "gpt-4o")
     model = model_override or provider.default_model or default
@@ -313,8 +320,8 @@ def build_litellm_model(provider: Provider, model_override: Optional[str] = None
     # failover plumbing works but the SERVED model is wrong.
     if provider.provider_type == "openrouter" and "/" not in model:
         bare_to_vendor = {
-            "grok-3":   "x-ai/grok-3",
-            "grok-4":   "x-ai/grok-4",
+            "grok-3": "x-ai/grok-3",
+            "grok-4": "x-ai/grok-4",
             "grok-3-beta": "x-ai/grok-3-beta",
         }
         model = bare_to_vendor.get(model, model)
@@ -332,6 +339,7 @@ def build_litellm_kwargs(provider: Provider) -> dict:
     if provider.base_url and provider.provider_type in ("ollama", "compatible", "cursor-oauth"):
         kwargs["api_base"] = provider.base_url
     from app.routing.aliases import effective_timeout_sec
+
     kwargs["timeout"] = effective_timeout_sec(provider)
     return kwargs
 
@@ -345,7 +353,9 @@ def _native_thinking_params(provider_type: str, model_id: str) -> dict:
     from ``app.config.settings``."""
     m = model_id.lower()
     if provider_type in ("google", "vertex") and "2.5" in m:
-        return {"thinking": {"type": "enabled", "budget_tokens": settings.native_thinking_budget_tokens}}
+        return {
+            "thinking": {"type": "enabled", "budget_tokens": settings.native_thinking_budget_tokens}
+        }
     if provider_type == "openai" and _O_SERIES.match(m):
         return {"reasoning_effort": settings.native_reasoning_effort}
     return {}
@@ -355,7 +365,7 @@ def _native_thinking_params(provider_type: str, model_id: str) -> dict:
 # toward maxOutputTokens on Gemini 2.5, so a fixed budget_tokens (default
 # 8192) >= the caller's max_tokens lets the model burn the ENTIRE output
 # cap on internal reasoning and return HTTP 200 with empty content + zero
-# completion text. Observed fleet-wide on coordinator-hub callers
+# completion text. Observed fleet-wide on integration client callers
 # 2026-06-10..12 (10-30% empty-completion rate at max_tokens=1024..4096;
 # 0% at max_tokens=32768). 128 is the floor because Gemini 2.5 Pro's
 # thinkingBudget minimum is 128 (Flash accepts 0 but Pro 400s below 128).
@@ -382,7 +392,9 @@ def clamp_thinking_budget(extra: dict) -> dict:
             if new_budget != budget:
                 logger.info(
                     "thinking-budget clamp: %s -> %s (max_tokens=%s)",
-                    budget, new_budget, max_tokens,
+                    budget,
+                    new_budget,
+                    max_tokens,
                 )
                 thinking["budget_tokens"] = new_budget
     except Exception as exc:  # pragma: no cover — defensive

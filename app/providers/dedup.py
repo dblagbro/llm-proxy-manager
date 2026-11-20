@@ -17,11 +17,12 @@ Soft-deletes from the migration stamp ``last_user_edit_at`` so the
 dedup decision propagates through cluster sync as an authoritative
 edit — peers won't undo it.
 """
+
 from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,9 +38,7 @@ async def dedup_providers_by_name(db: AsyncSession) -> list[dict]:
     Returns a list of {name, kept, dropped} dicts for whatever was deduped.
     Idempotent — second pass finds zero groups with >1 active row.
     """
-    result = await db.execute(
-        select(Provider).where(Provider.deleted_at.is_(None))
-    )
+    result = await db.execute(select(Provider).where(Provider.deleted_at.is_(None)))
     rows = result.scalars().all()
 
     by_name: dict[str, list[Provider]] = {}
@@ -47,17 +46,19 @@ async def dedup_providers_by_name(db: AsyncSession) -> list[dict]:
         by_name.setdefault(r.name, []).append(r)
 
     actions: list[dict] = []
-    now_dt = datetime.now(timezone.utc)
+    now_dt = datetime.now(UTC)
     now_ts = time.time()
 
     for name, group in by_name.items():
         if len(group) <= 1:
             continue
-        group.sort(key=lambda p: (
-            p.priority if p.priority is not None else 1_000_000,
-            p.created_at or datetime.max.replace(tzinfo=timezone.utc),
-            p.id,
-        ))
+        group.sort(
+            key=lambda p: (
+                p.priority if p.priority is not None else 1_000_000,
+                p.created_at or datetime.max.replace(tzinfo=UTC),
+                p.id,
+            )
+        )
         keep, drops = group[0], group[1:]
         for d in drops:
             d.deleted_at = now_dt
@@ -65,14 +66,18 @@ async def dedup_providers_by_name(db: AsyncSession) -> list[dict]:
             d.updated_at = now_dt
             # Stamp so the tombstone propagates as an authoritative edit.
             d.last_user_edit_at = now_ts
-        actions.append({
-            "name": name,
-            "kept": keep.id,
-            "dropped": [d.id for d in drops],
-        })
+        actions.append(
+            {
+                "name": name,
+                "kept": keep.id,
+                "dropped": [d.id for d in drops],
+            }
+        )
         logger.warning(
             "providers.dedup_tombstoned name=%r kept=%s dropped=%s",
-            name, keep.id, [d.id for d in drops],
+            name,
+            keep.id,
+            [d.id for d in drops],
         )
 
     if actions:
@@ -80,9 +85,7 @@ async def dedup_providers_by_name(db: AsyncSession) -> list[dict]:
     return actions
 
 
-async def name_is_taken(
-    db: AsyncSession, name: str, exclude_id: str | None = None
-) -> bool:
+async def name_is_taken(db: AsyncSession, name: str, exclude_id: str | None = None) -> bool:
     """True if another active provider already uses this name."""
     stmt = select(Provider.id).where(
         Provider.name == name,

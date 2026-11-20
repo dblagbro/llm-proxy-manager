@@ -50,15 +50,17 @@ Provider config (stored in ``Provider.extra_config``):
                         account (paste from the URL after creating one in
                         the browser: grok.com/c/<this-uuid>)
 """
+
 from __future__ import annotations
 
 import json
 import time
 import uuid
-from typing import AsyncIterator, Optional
+from collections.abc import AsyncIterator
 
 import httpx
 
+from app.providers.grok_web_bridge import _bridge_chat as _bridge_chat
 
 GROK_BASE_URL = "https://grok.com"
 
@@ -254,7 +256,9 @@ def _model_to_mode_id(model: str) -> str:
 
 
 def _build_manual_request(
-    extra_config: dict, prompt: str, model: str,
+    extra_config: dict,
+    prompt: str,
+    model: str,
 ) -> tuple[str, str, dict, dict, str]:
     """v3.5.x R3 — pre-flight setup for the manual-mode (non-bridge) HTTP
     replay against grok.com. Returned tuple feeds straight into either
@@ -309,7 +313,7 @@ def _flatten_messages_to_prompt(messages: list[dict]) -> str:
     even though it can't issue tool_use blocks back.
     """
     parts: list[str] = []
-    last_user: Optional[str] = None
+    last_user: str | None = None
     for msg in messages:
         role = msg.get("role", "user")
         content = msg.get("content", "")
@@ -322,13 +326,11 @@ def _flatten_messages_to_prompt(messages: list[dict]) -> str:
                         text_chunks.append(block.get("text", ""))
                     elif block.get("type") == "tool_use":
                         text_chunks.append(
-                            f"[tool_use: {block.get('name','')} "
+                            f"[tool_use: {block.get('name', '')} "
                             f"input={json.dumps(block.get('input', {}))}]"
                         )
                     elif block.get("type") == "tool_result":
-                        text_chunks.append(
-                            f"[tool_result: {json.dumps(block.get('content', ''))}]"
-                        )
+                        text_chunks.append(f"[tool_result: {json.dumps(block.get('content', ''))}]")
                 else:
                     text_chunks.append(str(block))
             text = "\n".join(c for c in text_chunks if c)
@@ -417,7 +419,6 @@ def _validate_extra_config(extra_config: dict) -> None:
 # manual/bridge axial split. Re-exported here so the public surface
 # (including tests/unit/test_grok_web.py's ``from app.providers.grok_web
 # import _bridge_chat``) stays unchanged.
-from app.providers.grok_web_bridge import _bridge_chat  # noqa: F401  (re-export)
 
 
 async def complete_grok_web(
@@ -440,12 +441,17 @@ async def complete_grok_web(
     _validate_extra_config(provider_extra_config)
     if _is_bridge_mode(provider_extra_config):
         return await _bridge_chat(
-            provider_extra_config, messages, model,
-            stream=False, timeout=timeout,
+            provider_extra_config,
+            messages,
+            model,
+            stream=False,
+            timeout=timeout,
         )
     prompt = _flatten_messages_to_prompt(messages)
     conv_id, mode_id, url, headers, body = _build_manual_request(
-        provider_extra_config, prompt, model,
+        provider_extra_config,
+        prompt,
+        model,
     )
 
     async with httpx.AsyncClient(timeout=timeout) as client:
@@ -468,7 +474,7 @@ async def complete_grok_web(
 
     full_text = ""
     upstream_model = "grok-3" if mode_id == "fast" else "grok-4"
-    response_id: Optional[str] = None
+    response_id: str | None = None
 
     for line in resp.text.splitlines():
         line = line.strip()
@@ -534,8 +540,11 @@ async def stream_grok_web(
     _validate_extra_config(provider_extra_config)
     if _is_bridge_mode(provider_extra_config):
         result = await _bridge_chat(
-            provider_extra_config, messages, model,
-            stream=False, timeout=timeout,
+            provider_extra_config,
+            messages,
+            model,
+            stream=False,
+            timeout=timeout,
         )
         chunk_id = result.get("id", f"chatcmpl-bridge-{uuid.uuid4().hex[:16]}")
         upstream_model = result.get("model", model)
@@ -544,20 +553,26 @@ async def stream_grok_web(
         if result.get("choices"):
             text = result["choices"][0].get("message", {}).get("content", "") or ""
         first = {
-            "id": chunk_id, "object": "chat.completion.chunk",
-            "created": created, "model": upstream_model,
+            "id": chunk_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": upstream_model,
             "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
         }
         yield f"data: {json.dumps(first)}\n\n".encode()
         delta = {
-            "id": chunk_id, "object": "chat.completion.chunk",
-            "created": created, "model": upstream_model,
+            "id": chunk_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": upstream_model,
             "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}],
         }
         yield f"data: {json.dumps(delta)}\n\n".encode()
         final = {
-            "id": chunk_id, "object": "chat.completion.chunk",
-            "created": created, "model": upstream_model,
+            "id": chunk_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": upstream_model,
             "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
         }
         yield f"data: {json.dumps(final)}\n\n".encode()
@@ -565,7 +580,9 @@ async def stream_grok_web(
         return
     prompt = _flatten_messages_to_prompt(messages)
     conv_id, mode_id, url, headers, body = _build_manual_request(
-        provider_extra_config, prompt, model,
+        provider_extra_config,
+        prompt,
+        model,
     )
 
     chunk_id = f"chatcmpl-grokweb-{uuid.uuid4().hex[:16]}"
@@ -578,9 +595,7 @@ async def stream_grok_web(
         "object": "chat.completion.chunk",
         "created": created,
         "model": upstream_model,
-        "choices": [
-            {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
-        ],
+        "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
     }
     yield f"data: {json.dumps(first_chunk)}\n\n".encode()
 
@@ -671,7 +686,7 @@ def anthropic_response_from_openai(openai_resp: dict) -> dict:
 async def stream_grok_web_anthropic(
     provider_extra_config: dict,
     messages: list[dict],
-    system: Optional[str],
+    system: str | None,
     model: str,
     timeout: float = 60.0,
 ) -> AsyncIterator[bytes]:
@@ -690,8 +705,11 @@ async def stream_grok_web_anthropic(
         if system:
             msgs_with_system = [{"role": "system", "content": system}] + msgs_with_system
         result = await _bridge_chat(
-            provider_extra_config, msgs_with_system, model,
-            stream=False, timeout=timeout,
+            provider_extra_config,
+            msgs_with_system,
+            model,
+            stream=False,
+            timeout=timeout,
         )
         text = ""
         if result.get("choices"):
@@ -702,33 +720,53 @@ async def stream_grok_web_anthropic(
         def _evt(name: str, data: dict) -> bytes:
             return f"event: {name}\ndata: {json.dumps(data)}\n\n".encode()
 
-        yield _evt("message_start", {
-            "type": "message_start",
-            "message": {
-                "id": msg_id, "type": "message", "role": "assistant",
-                "content": [], "model": upstream_model,
-                "stop_reason": None, "stop_sequence": None,
-                "usage": {"input_tokens": 0, "output_tokens": 0},
+        yield _evt(
+            "message_start",
+            {
+                "type": "message_start",
+                "message": {
+                    "id": msg_id,
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "model": upstream_model,
+                    "stop_reason": None,
+                    "stop_sequence": None,
+                    "usage": {"input_tokens": 0, "output_tokens": 0},
+                },
             },
-        })
-        yield _evt("content_block_start", {
-            "type": "content_block_start", "index": 0,
-            "content_block": {"type": "text", "text": ""},
-        })
+        )
+        yield _evt(
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            },
+        )
         if text:
-            yield _evt("content_block_delta", {
-                "type": "content_block_delta", "index": 0,
-                "delta": {"type": "text_delta", "text": text},
-            })
+            yield _evt(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": text},
+                },
+            )
         yield _evt("content_block_stop", {"type": "content_block_stop", "index": 0})
-        yield _evt("message_delta", {
-            "type": "message_delta",
-            "delta": {"stop_reason": "end_turn", "stop_sequence": None},
-            "usage": {
-                "input_tokens": max(1, len("\n".join(str(m.get('content','')) for m in msgs_with_system)) // 4),
-                "output_tokens": max(1, len(text) // 4),
+        yield _evt(
+            "message_delta",
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                "usage": {
+                    "input_tokens": max(
+                        1, len("\n".join(str(m.get("content", "")) for m in msgs_with_system)) // 4
+                    ),
+                    "output_tokens": max(1, len(text) // 4),
+                },
             },
-        })
+        )
         yield _evt("message_stop", {"type": "message_stop"})
         return
     msgs_with_system = list(messages)
@@ -736,7 +774,9 @@ async def stream_grok_web_anthropic(
         msgs_with_system = [{"role": "system", "content": system}] + msgs_with_system
     prompt = _flatten_messages_to_prompt(msgs_with_system)
     conv_id, mode_id, url, headers, body = _build_manual_request(
-        provider_extra_config, prompt, model,
+        provider_extra_config,
+        prompt,
+        model,
     )
 
     msg_id = f"msg_grokweb_{uuid.uuid4().hex[:16]}"

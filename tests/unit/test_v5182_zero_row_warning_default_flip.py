@@ -8,6 +8,7 @@ the default (True) kept the warning noisy.
 Fix: default flipped. Warning fires only when operator has EXPLICITLY
 set the setting to a truthy value. Absence = silent.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -25,16 +26,16 @@ def test_absence_of_setting_now_silences_warning():
     the worker MUST return early without emitting a warning."""
     src = Path("app/monitoring/compliance_audit_worker.py").read_text()
     # New default-off gate: is_enabled requires row0 present AND truthy value
-    assert "is_enabled = (" in src
-    assert 'row0 is not None' in src
-    assert 'if not is_enabled:' in src
-    assert 'return' in src
+    assert "is_enabled = (" in src or "is_enabled = row0 is not None and" in src
+    assert "row0 is not None" in src
+    assert "if not is_enabled:" in src
+    assert "return" in src
 
 
 def test_explicit_opt_in_values_documented():
     """Operator can opt IN by setting the value to true/1/yes/on."""
     src = Path("app/monitoring/compliance_audit_worker.py").read_text()
-    assert '"true", "1", "yes", "on"' in src
+    assert '"true","1","yes","on"' in "".join(src.split())
 
 
 def test_read_failure_now_suppresses():
@@ -47,10 +48,9 @@ def test_read_failure_now_suppresses():
 
 def test_version_bumped():
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m
     major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    assert (major, minor, patch) >= (5, 18, 2), (
-        f"expected >= 5.18.2, got {major}.{minor}.{patch}"
-    )
+    assert (major, minor, patch) >= (5, 18, 2), f"expected >= 5.18.2, got {major}.{minor}.{patch}"

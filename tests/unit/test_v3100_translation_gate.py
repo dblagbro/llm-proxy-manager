@@ -19,15 +19,13 @@ Two fixes:
      window) is emitted as plain user text, never as a dangling
      ``role:"tool"`` message (which OpenAI also rejects).
 """
+
 from __future__ import annotations
 
-from pathlib import Path
-
 from app.api._oauth_chat_translate import (
-    anthropic_to_openai_body,
     anthropic_messages_to_openai,
+    anthropic_to_openai_body,
 )
-
 
 # ── helpers ────────────────────────────────────────────────────────
 
@@ -80,15 +78,28 @@ def _tool_conversation() -> dict:
         "max_tokens": 512,
         "messages": [
             {"role": "user", "content": "list the files"},
-            {"role": "assistant", "content": [
-                {"type": "text", "text": "Running ls."},
-                {"type": "tool_use", "id": "toolu_01", "name": "Bash",
-                 "input": {"command": "ls"}},
-            ]},
-            {"role": "user", "content": [
-                {"type": "tool_result", "tool_use_id": "toolu_01",
-                 "content": ".bashrc\n.profile"},
-            ]},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Running ls."},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_01",
+                        "name": "Bash",
+                        "input": {"command": "ls"},
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_01",
+                        "content": ".bashrc\n.profile",
+                    },
+                ],
+            },
         ],
     }
 
@@ -138,10 +149,16 @@ def test_orphan_tool_result_becomes_user_text():
     body = {
         "model": "gemini-2.5-flash",
         "messages": [
-            {"role": "user", "content": [
-                {"type": "tool_result", "tool_use_id": "toolu_GONE",
-                 "content": "[Bash] empty command"},
-            ]},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_GONE",
+                        "content": "[Bash] empty command",
+                    },
+                ],
+            },
             {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
             {"role": "user", "content": "continue"},
         ],
@@ -169,16 +186,28 @@ def test_orphan_and_matched_mixed():
     body = {
         "model": "gemini-2.5-flash",
         "messages": [
-            {"role": "assistant", "content": [
-                {"type": "tool_use", "id": "toolu_REAL", "name": "Bash",
-                 "input": {"command": "pwd"}},
-            ]},
-            {"role": "user", "content": [
-                {"type": "tool_result", "tool_use_id": "toolu_REAL",
-                 "content": "/home"},
-                {"type": "tool_result", "tool_use_id": "toolu_ORPHAN",
-                 "content": "stale result"},
-            ]},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_REAL",
+                        "name": "Bash",
+                        "input": {"command": "pwd"},
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_REAL", "content": "/home"},
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_ORPHAN",
+                        "content": "stale result",
+                    },
+                ],
+            },
         ],
     }
     out = anthropic_to_openai_body(body)
@@ -186,8 +215,11 @@ def test_orphan_and_matched_mixed():
     tool_msgs = [m for m in out["messages"] if m.get("role") == "tool"]
     assert len(tool_msgs) == 1 and tool_msgs[0]["tool_call_id"] == "toolu_REAL"
     # orphan substance survives as user text somewhere
-    assert any("stale result" in (m.get("content") or "")
-               for m in out["messages"] if m.get("role") == "user")
+    assert any(
+        "stale result" in (m.get("content") or "")
+        for m in out["messages"]
+        if m.get("role") == "user"
+    )
 
 
 # ── plain text unaffected ──────────────────────────────────────────
@@ -223,6 +255,7 @@ def test_gate_no_longer_limited_to_cross_family_fallback():
     # _has_anthropic_tool_defs -> has_anthropic_tool_defs); _has_tool_blocks is
     # still computed in messages.py and passed in. entry_surface covers both.
     from tests._entry_surface import entry_surface
+
     src = entry_surface("app/api/messages.py")
     assert "needs_translation" in src
     # Each of the four trigger clauses must be present in the gate surface.
@@ -234,8 +267,9 @@ def test_gate_no_longer_limited_to_cross_family_fallback():
 
 def test_gate_excludes_claude_oauth_and_tool_emulation():
     from tests._entry_surface import entry_surface
+
     src = entry_surface("app/api/messages.py")
     idx = src.index("needs_translation")
-    block = src[idx:idx + 400]
+    block = src[idx : idx + 400]
     assert 'route.profile.provider_type != "claude-oauth"' in block
     assert "not route.tool_emulation_engaged" in block

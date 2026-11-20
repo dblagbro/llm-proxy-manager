@@ -1,7 +1,7 @@
 """Unit tests for router pure helpers (build_litellm_model, kwargs, native-thinking)."""
+
 import sys
 import types
-import pytest
 
 # Stub heavy deps before app imports
 _stub = types.ModuleType("litellm")
@@ -10,17 +10,18 @@ sys.modules.setdefault("litellm", _stub)
 if not hasattr(sys.modules["litellm"], "RateLimitError"):
     sys.modules["litellm"].RateLimitError = type("RateLimitError", (Exception,), {})
 
-from app.routing.router import (
-    build_litellm_model,
-    build_litellm_kwargs,
-    _native_thinking_params,
-    PROVIDER_TYPE_TO_LITELLM,
+from app.routing.router import (  # noqa: E402
     PROVIDER_DEFAULT_MODELS,
+    PROVIDER_TYPE_TO_LITELLM,
+    _native_thinking_params,
+    build_litellm_kwargs,
+    build_litellm_model,
 )
 
 
 class _FakeProvider:
     """Minimal Provider stand-in — just the fields router helpers touch."""
+
     def __init__(
         self,
         provider_type="openai",
@@ -241,6 +242,7 @@ class TestBuildLitellmKwargs:
         was charging per token (which it isn't — the operator's Cursor Pro
         subscription is flat-rate)."""
         from app.monitoring.helpers import SUBSCRIPTION_TIER_PROVIDER_TYPES
+
         assert "cursor-oauth" in SUBSCRIPTION_TIER_PROVIDER_TYPES
 
 

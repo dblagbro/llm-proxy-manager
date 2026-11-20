@@ -4,18 +4,18 @@ Called from both /v1/messages and /v1/chat/completions. Returns structured
 results so the endpoint handler can either short-circuit on hit or continue
 with the normal LLM path and call store() after success.
 """
+
 import logging
 from dataclasses import dataclass
-from typing import Optional
 
-from app.config import settings
 from app.cache.keys import (
     build_namespace,
-    split_prior_messages,
-    is_cacheable_temperature,
     contains_pii,
+    is_cacheable_temperature,
+    split_prior_messages,
 )
 from app.cache.semantic import get_cache
+from app.config import settings
 from app.observability.prometheus import observe_cache_lookup
 
 logger = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class CacheDecision:
     eligible: bool
-    reason: str                   # bypass reason if not eligible
+    reason: str  # bypass reason if not eligible
     namespace: str = ""
     query: str = ""
     ttl_sec: int = 0
@@ -36,7 +36,7 @@ class CacheHit:
     similarity: float
 
 
-def resolve_ttl(header_value: Optional[str]) -> int:
+def resolve_ttl(header_value: str | None) -> int:
     if header_value:
         try:
             return max(60, min(86400, int(header_value)))
@@ -47,20 +47,20 @@ def resolve_ttl(header_value: Optional[str]) -> int:
 
 def decide_cacheable(
     *,
-    x_cache_header: Optional[str],
+    x_cache_header: str | None,
     api_key_opt_in: bool,
     key_type: str,
     cot_engaged: bool,
     tool_emulation: bool,
     has_tools: bool,
-    webhook_url: Optional[str],
-    temperature: Optional[float],
+    webhook_url: str | None,
+    temperature: float | None,
     messages: list[dict],
     model: str,
     tenant_id: str,
-    system: Optional[object],
-    tools: Optional[list],
-    x_cache_ttl_header: Optional[str] = None,
+    system: object | None,
+    tools: list | None,
+    x_cache_ttl_header: str | None = None,
 ) -> CacheDecision:
     """Single source of truth for whether to cache this request."""
     # Global kill-switch
@@ -118,9 +118,9 @@ async def maybe_check(
     endpoint: str,
     *,
     db=None,
-    api_key_id: Optional[str] = None,
-    requested_model: Optional[str] = None,
-) -> Optional[CacheHit]:
+    api_key_id: str | None = None,
+    requested_model: str | None = None,
+) -> CacheHit | None:
     """Check cache; emit Prometheus counter for hit/miss/bypass.
 
     v5.0.0 compliance: when ``db`` + ``api_key_id`` are supplied, resolve
@@ -131,10 +131,11 @@ async def maybe_check(
     if not decision.eligible:
         observe_cache_lookup("bypass", endpoint)
         return None
-    blocked_companies: Optional[set[str]] = None
+    blocked_companies: set[str] | None = None
     if db is not None and api_key_id:
         try:
             from app.compliance import get_effective_blocklist
+
             blocked_companies = await get_effective_blocklist(db, api_key_id)
         except Exception as exc:
             # v5.22.43 — fail CLOSED. Resolving the blocklist failed, so we
@@ -143,9 +144,7 @@ async def maybe_check(
             # company's response — violating design decision 7 ("unknown =
             # blocked"). Bypass the *cache* instead: the live request path still
             # enforces the blocklist itself.
-            logger.warning(
-                "cache.middleware.blocklist_resolve_failed %s — bypassing cache", exc
-            )
+            logger.warning("cache.middleware.blocklist_resolve_failed %s — bypassing cache", exc)
             observe_cache_lookup("bypass", endpoint)
             return None
     cache = get_cache()
@@ -174,6 +173,7 @@ async def maybe_check(
                     # own commit will pick it up.
                     try:
                         from app.compliance import emit_event, generate_audit_id
+
                         await emit_event(
                             db,
                             audit_id=generate_audit_id(),
@@ -199,7 +199,7 @@ async def maybe_check(
 async def maybe_store(
     decision: CacheDecision,
     response_text: str,
-    min_chars: Optional[int] = None,
+    min_chars: int | None = None,
     *,
     provider=None,
 ) -> None:
@@ -215,13 +215,13 @@ async def maybe_store(
     floor = min_chars if min_chars is not None else settings.semantic_cache_min_response_chars
     if len(response_text) < floor:
         return  # too short — likely error/refusal/pathological
-    source_company: Optional[str] = None
+    source_company: str | None = None
     if provider is not None:
         try:
             from app.compliance import provider_type_to_company
-            source_company = (
-                getattr(provider, "owner_company", None)
-                or provider_type_to_company(getattr(provider, "provider_type", None))
+
+            source_company = getattr(provider, "owner_company", None) or provider_type_to_company(
+                getattr(provider, "provider_type", None)
             )
         except Exception as exc:
             logger.warning("cache.middleware.resolve_source_company_failed %s", exc)

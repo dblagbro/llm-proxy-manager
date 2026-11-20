@@ -21,6 +21,7 @@ These tests pin the contract:
   a future regression where someone removes the section commits and
   reintroduces the single-transaction pattern).
 """
+
 import inspect
 
 import pytest
@@ -65,6 +66,7 @@ async def test_apply_sync_commits_at_least_4_times_on_empty_payload():
     section commits (no early-return paths skip them). Counted via a
     monkeypatched commit method that records each call."""
     from app.models.database import AsyncSessionLocal
+
     commit_calls = []
 
     async with AsyncSessionLocal() as db:

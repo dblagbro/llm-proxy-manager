@@ -15,10 +15,10 @@ production keys keep ``debug_echo_enabled=False``).
 Defensive: on any unexpected exception we fail OPEN. Refusing every
 request because of a DB hiccup would be worse than the misconfig leak.
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -36,8 +36,13 @@ logger = logging.getLogger(__name__)
 # unauthenticated by design. Avoids bricking a key that fat-fingers its
 # allowed_paths list.
 _BYPASS_PREFIXES = (
-    "/health", "/version", "/metrics", "/favicon",
-    "/api/auth/", "/cluster/", "/assets/",
+    "/health",
+    "/version",
+    "/metrics",
+    "/favicon",
+    "/api/auth/",
+    "/cluster/",
+    "/assets/",
 )
 
 
@@ -52,7 +57,7 @@ def _normalize_path(path: str) -> str:
     # part of it.
     for prefix in ("/llm-proxy2-smoke", "/llm-proxy2"):
         if p.startswith(prefix):
-            p = p[len(prefix):] or "/"
+            p = p[len(prefix) :] or "/"
             break
     # Collapse double slashes
     while "//" in p:
@@ -67,7 +72,7 @@ def _is_bypass_path(path: str) -> bool:
     return any(path.startswith(p) for p in _BYPASS_PREFIXES)
 
 
-def _extract_raw_key(request: Request) -> Optional[str]:
+def _extract_raw_key(request: Request) -> str | None:
     auth = request.headers.get("authorization") or ""
     if auth.lower().startswith("bearer "):
         return auth[7:].strip() or None
@@ -77,9 +82,12 @@ def _extract_raw_key(request: Request) -> Optional[str]:
 async def _resolve_api_key(raw_key: str):
     """Return the ApiKey ORM row for ``raw_key``, or None."""
     import hashlib
+
     from sqlalchemy import select
+
     from app.models.database import AsyncSessionLocal
     from app.models.db import ApiKey
+
     key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
     async with AsyncSessionLocal() as db:
         rs = await db.execute(
@@ -92,7 +100,7 @@ async def _resolve_api_key(raw_key: str):
         return rs.scalar_one_or_none()
 
 
-async def _emit_path_block_event(api_key_id: str, path: str, ua: Optional[str]) -> str:
+async def _emit_path_block_event(api_key_id: str, path: str, ua: str | None) -> str:
     """Write the ``path_not_allowed`` compliance row in its own session
     (commit=True). Returns the generated audit_id so callers can echo
     it in the 403 response + X-Compliance-Audit-Id header.
@@ -108,6 +116,7 @@ async def _emit_path_block_event(api_key_id: str, path: str, ua: Optional[str]) 
     audit_id = generate_audit_id()
     try:
         from app.models.database import AsyncSessionLocal
+
         async with AsyncSessionLocal() as db:
             await emit_event(
                 db,

@@ -10,13 +10,13 @@ dry_run, reason}. The four critical invariants:
 3. dry_run=true never modifies the DB and never writes an audit row.
 4. dry_run=false writes the audit row BEFORE the DELETEs run.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
 
 # ── Allowlist / blocklist contracts ─────────────────────────────────
 
@@ -25,8 +25,11 @@ def test_purgable_tables_is_security_team_approved():
     """Pin the exact allow-list. A future ship adding a table to
     PURGABLE_TABLES must update this test on purpose."""
     from app.api.admin_compliance_epoch_purge import PURGABLE_TABLES
+
     assert set(PURGABLE_TABLES.keys()) == {
-        "activity_log", "provider_metrics", "provider_ai_review",
+        "activity_log",
+        "provider_metrics",
+        "provider_ai_review",
     }, (
         f"PURGABLE_TABLES drift; ANY addition requires security-team sign-off. "
         f"Got: {sorted(PURGABLE_TABLES.keys())}"
@@ -37,6 +40,7 @@ def test_forbidden_tables_covers_audit_chain():
     """Compliance audit-grade tables MUST be in FORBIDDEN_TABLES. If a
     refactor removes one, this test fails so the regression is caught."""
     from app.api.admin_compliance_epoch_purge import FORBIDDEN_TABLES
+
     for required in {
         "compliance_events",
         "compliance_policy_changes",
@@ -51,8 +55,10 @@ def test_no_overlap_between_purgable_and_forbidden():
     """A table cannot be both purgable and forbidden — defence-in-depth
     against a buggy edit."""
     from app.api.admin_compliance_epoch_purge import (
-        FORBIDDEN_TABLES, PURGABLE_TABLES,
+        FORBIDDEN_TABLES,
+        PURGABLE_TABLES,
     )
+
     overlap = set(PURGABLE_TABLES) & FORBIDDEN_TABLES
     assert not overlap, f"FORBIDDEN & PURGABLE overlap: {overlap}"
 
@@ -65,9 +71,12 @@ async def test_forbidden_table_rejected_even_with_dry_run():
     """compliance_events cannot be purged even in dry-run mode. The
     endpoint must return 400 immediately, not silently dry-run a no-op."""
     from fastapi import HTTPException
+
     from app.api.admin_compliance_epoch_purge import (
-        compliance_epoch_purge, PurgeRequest,
+        PurgeRequest,
+        compliance_epoch_purge,
     )
+
     req = PurgeRequest(
         cutoff_date="2026-06-06T00:00:00Z",
         tables=["compliance_events"],
@@ -75,7 +84,9 @@ async def test_forbidden_table_rejected_even_with_dry_run():
     )
     with pytest.raises(HTTPException) as exc:
         await compliance_epoch_purge(
-            req, db=MagicMock(), admin=MagicMock(),
+            req,
+            db=MagicMock(),
+            admin=MagicMock(),
         )
     assert exc.value.status_code == 400
     assert "FORBIDDEN_TABLES" in exc.value.detail
@@ -86,9 +97,12 @@ async def test_unknown_table_rejected_even_with_dry_run():
     """A table not in PURGABLE_TABLES (and not in FORBIDDEN) is still
     400. Closing the implicit-deny door."""
     from fastapi import HTTPException
+
     from app.api.admin_compliance_epoch_purge import (
-        compliance_epoch_purge, PurgeRequest,
+        PurgeRequest,
+        compliance_epoch_purge,
     )
+
     req = PurgeRequest(
         cutoff_date="2026-06-06T00:00:00Z",
         tables=["sessions"],  # not in PURGABLE
@@ -96,7 +110,9 @@ async def test_unknown_table_rejected_even_with_dry_run():
     )
     with pytest.raises(HTTPException) as exc:
         await compliance_epoch_purge(
-            req, db=MagicMock(), admin=MagicMock(),
+            req,
+            db=MagicMock(),
+            admin=MagicMock(),
         )
     assert exc.value.status_code == 400
     assert "PURGABLE_TABLES" in exc.value.detail
@@ -105,9 +121,12 @@ async def test_unknown_table_rejected_even_with_dry_run():
 @pytest.mark.asyncio
 async def test_bad_cutoff_date_rejected():
     from fastapi import HTTPException
+
     from app.api.admin_compliance_epoch_purge import (
-        compliance_epoch_purge, PurgeRequest,
+        PurgeRequest,
+        compliance_epoch_purge,
     )
+
     req = PurgeRequest(
         cutoff_date="not-a-date",
         tables=["activity_log"],
@@ -115,7 +134,9 @@ async def test_bad_cutoff_date_rejected():
     )
     with pytest.raises(HTTPException) as exc:
         await compliance_epoch_purge(
-            req, db=MagicMock(), admin=MagicMock(),
+            req,
+            db=MagicMock(),
+            admin=MagicMock(),
         )
     assert exc.value.status_code == 400
 
@@ -128,8 +149,10 @@ async def test_dry_run_returns_counts_without_modifying_db():
     """dry_run=true must NOT add any rows, NOT commit, NOT issue
     DELETE. The response carries rows_deleted=0 even when matched > 0."""
     from app.api.admin_compliance_epoch_purge import (
-        compliance_epoch_purge, PurgeRequest,
+        PurgeRequest,
+        compliance_epoch_purge,
     )
+
     db = MagicMock()
     # COUNT returns 86 for activity_log; MIN returns a timestamp.
     rs_count = MagicMock()
@@ -167,11 +190,15 @@ async def test_live_mode_writes_audit_row_before_deletes():
     DELETE — so a crash mid-DELETE still records intent in the chain.
     Verified by checking the commit() sequencing."""
     from app.api.admin_compliance_epoch_purge import (
-        compliance_epoch_purge, PurgeRequest,
+        PurgeRequest,
+        compliance_epoch_purge,
     )
+
     db = MagicMock()
-    rs_count = MagicMock(); rs_count.scalar.return_value = 86
-    rs_min = MagicMock(); rs_min.scalar.return_value = "2026-05-29T12:00:00"
+    rs_count = MagicMock()
+    rs_count.scalar.return_value = 86
+    rs_min = MagicMock()
+    rs_min.scalar.return_value = "2026-05-29T12:00:00"
     rs_del = MagicMock(rowcount=86)
     db.execute = AsyncMock(side_effect=[rs_count, rs_min, rs_del])
     db.add = MagicMock()

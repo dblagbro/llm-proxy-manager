@@ -1,13 +1,14 @@
 """GET /v1/models — OpenAI-compatible model listing."""
+
 import time
 
 from fastapi import APIRouter, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.database import get_db
-from app.models.db import Provider, ModelCapability
 from app.auth.keys import resolve_api_key_dep
+from app.models.database import get_db
+from app.models.db import ModelCapability, Provider
 
 router = APIRouter(tags=["models"])
 
@@ -33,7 +34,9 @@ def _infer_kind(model_id: str) -> str:
     if any(p in m for p in ("text-embedding", "embed-", "/embed", "embedding-")):
         return "embedding"
     # Image generation / edit
-    if any(p in m for p in ("dall-e", "stable-diffusion", "imagen", "midjourney", "/imag", "gpt-image")):
+    if any(
+        p in m for p in ("dall-e", "stable-diffusion", "imagen", "midjourney", "/imag", "gpt-image")
+    ):
         return "image"
     # Audio (TTS / STT)
     if any(p in m for p in ("whisper", "tts-", "/tts", "voice-")):
@@ -55,9 +58,9 @@ async def list_models(
 
     History:
 
-    - Pre-v3.0.95: returned full catalog. Cross-node inconsistency: www01
-      had 196 models, www02 + GCP had 5. Root cause: ``ModelCapability``
-      wasn't cluster-synced; one-time discoveries on www01 leaked into the
+    - Pre-v3.0.95: returned full catalog. Cross-node inconsistency: the first gateway
+      had 196 models, other gateways had 5. Root cause: ``ModelCapability``
+      wasn't cluster-synced; one-time discoveries on the first gateway leaked into the
       response and listed non-existent model names (``gemma-4-26b-a4b-it``,
       etc.). Hub callers picking from those names got 4xx on peers.
     - v3.0.95: switched to defaults-only (one entry per enabled provider).
@@ -67,7 +70,7 @@ async def list_models(
     - v3.1.2: bulk catalog cluster-sync shipped — ModelCapability now
       replicates across all 4 nodes deterministically (LWW by updated_at).
       The v3.0.95 cross-node-inconsistency rationale no longer applies.
-    - v3.1.7 (this version): default back to full catalog. Coordinator-hub
+    - v3.1.7 (this version): default back to full catalog. An integration client
       team's "Scan Models" UI expects to see all available models; 5 was
       surprising-low for a fleet with ~670 catalog entries (304 indexed
       from claude-oauth + 367 from OpenRouter + various Google/OpenAI/
@@ -82,7 +85,10 @@ async def list_models(
     even if no ModelCapability row exists for it.
     """
     result = await db.execute(
-        select(Provider).where(Provider.enabled == True).where(Provider.deleted_at.is_(None)).order_by(Provider.priority)
+        select(Provider)
+        .where(Provider.enabled.is_(True))
+        .where(Provider.deleted_at.is_(None))
+        .order_by(Provider.priority)
     )
     providers = result.scalars().all()
     provider_by_id = {p.id: p for p in providers}
@@ -103,10 +109,13 @@ async def list_models(
         )
         caps = cap_result.scalars().all()
         # Stable sort: priority asc, model_id asc
-        caps_sorted = sorted(caps, key=lambda c: (
-            provider_by_id[c.provider_id].priority,
-            c.model_id,
-        ))
+        caps_sorted = sorted(
+            caps,
+            key=lambda c: (
+                provider_by_id[c.provider_id].priority,
+                c.model_id,
+            ),
+        )
         # v3.4.1 + v3.5.0: surface aliases + family/variant in each entry.
         # Pre-v3.4.1 the same upstream model could appear twice when it
         # was registered under both bare and provider-prefixed spellings
@@ -121,6 +130,7 @@ async def list_models(
         # multi-route variants of the same upstream model. When NULL
         # the family is derived from the canonical id (strip prefix).
         from app.routing.canonical import collect_canonical_aliases, derive_family
+
         for c in caps_sorted:
             # Build the full set of names this capability represents
             all_names = collect_canonical_aliases(c.model_id, c.aliases or [])
@@ -161,12 +171,14 @@ async def list_models(
         if p.default_model in seen:
             continue
         seen.add(p.default_model)
-        entries.append({
-            "id": p.default_model,
-            "object": "model",
-            "created": now,
-            "owned_by": p.name,
-            "kind": _infer_kind(p.default_model),
-        })
+        entries.append(
+            {
+                "id": p.default_model,
+                "object": "model",
+                "created": now,
+                "owned_by": p.name,
+                "kind": _infer_kind(p.default_model),
+            }
+        )
 
     return {"object": "list", "data": entries}

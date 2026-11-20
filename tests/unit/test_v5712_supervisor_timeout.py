@@ -6,6 +6,7 @@ chain time ~33s in the 2026-06-16 log-watch — caused a 50%+ timeout
 rate at the prior 30s ceiling. 90s removes the noise without hiding a
 real slow-routing regression.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -35,4 +36,4 @@ def test_supervisor_timeout_is_setting_overridable():
     ai_provider_supervisor_http_timeout_sec when their cluster has
     different routing latency characteristics."""
     src = Path("app/monitoring/ai_provider_supervisor.py").read_text()
-    assert "getattr(settings, \"ai_provider_supervisor_http_timeout_sec\"" in src
+    assert 'getattr(settings, "ai_provider_supervisor_http_timeout_sec"' in src

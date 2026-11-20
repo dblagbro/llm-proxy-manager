@@ -121,7 +121,7 @@ async def login(
 
     token = await create_session(user.id, user.username, user.role)
     # v2.6.1 bugfix: scoped path + unique name — otherwise other apps on
-    # voipguru.org that set a cookie named `session` at path=/ overwrite
+    # example.invalid that set a cookie named `session` at path=/ overwrite
     # ours, which was the "logged out every minute" bug.
     response.set_cookie(
         SESSION_COOKIE_NAME,

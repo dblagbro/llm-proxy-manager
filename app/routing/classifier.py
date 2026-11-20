@@ -11,12 +11,12 @@ Task vectors are computed lazily on first use and kept in-memory for
 the life of the process. With 6 task vectors × 1536 dims × float32 ≈
 36 KB, memory cost is negligible.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import math
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -75,9 +75,12 @@ async def _embed_many(texts: list[str], model: str, dims: int) -> list[list[floa
     """Embed a batch of strings. Returns empty list on provider error."""
     try:
         import litellm
+
         resp = await litellm.aembedding(model=model, input=texts, dimensions=dims)
         data = resp.data if not isinstance(resp.data, list) else resp.data
-        return [list(d.embedding) if hasattr(d, "embedding") else list(d["embedding"]) for d in data]
+        return [
+            list(d.embedding) if hasattr(d, "embedding") else list(d["embedding"]) for d in data
+        ]
     except Exception as exc:
         logger.warning("classifier.embed_failed %s", exc)
         return []
@@ -96,7 +99,9 @@ async def _build_prototypes(model: str, dims: int) -> None:
             spans.append((task, start, len(all_texts)))
         vectors = await _embed_many(all_texts, model, dims)
         if len(vectors) != len(all_texts):
-            logger.warning("classifier.prototype_build_failed got=%d expected=%d", len(vectors), len(all_texts))
+            logger.warning(
+                "classifier.prototype_build_failed got=%d expected=%d", len(vectors), len(all_texts)
+            )
             return
         for task, start, end in spans:
             _prototypes[task] = _mean(vectors[start:end])
@@ -126,7 +131,7 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb)
 
 
-async def classify(prompt: str, model: str, dims: int) -> Optional[tuple[str, float]]:
+async def classify(prompt: str, model: str, dims: int) -> tuple[str, float] | None:
     """Return (task, confidence) or None if confidence < threshold.
 
     Never raises — any provider failure just returns None so the caller
@@ -141,7 +146,7 @@ async def classify(prompt: str, model: str, dims: int) -> Optional[tuple[str, fl
     if not vecs:
         return None
     query = vecs[0]
-    best_task: Optional[str] = None
+    best_task: str | None = None
     best_sim = -1.0
     for task, proto in _prototypes.items():
         sim = _cosine(query, proto)

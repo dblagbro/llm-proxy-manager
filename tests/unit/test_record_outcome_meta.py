@@ -7,20 +7,21 @@ proactive-monitoring sweep mis-attributed traffic because of this gap.
 v3.2.12 adds ``api_key_prefix`` directly to event_meta so log greps
 and dashboard filters are self-contained.
 """
+
 from __future__ import annotations
 
 import time
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select
+from sqlalchemy import delete
 
 
 @pytest_asyncio.fixture
 async def fixture_db():
     """Bring up a fresh DB session, seed a Provider + ApiKey row, yield
     the session factory."""
-    from app.models.database import engine, AsyncSessionLocal
+    from app.models.database import AsyncSessionLocal, engine
     from app.models.db import ApiKey, Base, Provider
 
     async with engine.begin() as conn:
@@ -30,17 +31,24 @@ async def fixture_db():
         await cleanup.execute(delete(Provider).where(Provider.id == "rmeta-prov"))
         await cleanup.commit()
     async with AsyncSessionLocal() as db:
-        db.add(Provider(
-            id="rmeta-prov", name="rmeta-test",
-            provider_type="claude-oauth",
-            priority=10, enabled=True,
-        ))
-        db.add(ApiKey(
-            id="rmeta-key", name="rmeta-key-name",
-            key_prefix="llmp-test123",
-            key_hash="hash-stub",
-            enabled=True,
-        ))
+        db.add(
+            Provider(
+                id="rmeta-prov",
+                name="rmeta-test",
+                provider_type="claude-oauth",
+                priority=10,
+                enabled=True,
+            )
+        )
+        db.add(
+            ApiKey(
+                id="rmeta-key",
+                name="rmeta-key-name",
+                key_prefix="llmp-test123",
+                key_hash="hash-stub",
+                enabled=True,
+            )
+        )
         await db.commit()
 
     yield AsyncSessionLocal
@@ -60,15 +68,22 @@ async def test_success_meta_includes_api_key_prefix(fixture_db, monkeypatch):
     captured = []
 
     async def fake_log(db, *, event_type, message, severity, provider_id, api_key_id, metadata):
-        captured.append({
-            "type": event_type, "severity": severity,
-            "provider_id": provider_id, "api_key_id": api_key_id,
-            "metadata": metadata,
-        })
+        captured.append(
+            {
+                "type": event_type,
+                "severity": severity,
+                "provider_id": provider_id,
+                "api_key_id": api_key_id,
+                "metadata": metadata,
+            }
+        )
 
     monkeypatch.setattr("app.monitoring.helpers.log_event", fake_log)
+
     # No-op the rest of the side-effecting machinery
-    async def _noop(*a, **kw): return None
+    async def _noop(*a, **kw):
+        return None
+
     monkeypatch.setattr("app.monitoring.helpers.record_success", _noop)
     monkeypatch.setattr("app.monitoring.helpers.record_request", _noop)
     monkeypatch.setattr("app.monitoring.helpers.record_cost", _noop)
@@ -81,15 +96,22 @@ async def test_success_meta_includes_api_key_prefix(fixture_db, monkeypatch):
     AsyncSessionLocal = fixture_db
     async with AsyncSessionLocal() as db:
         await record_outcome(
-            db, "rmeta-prov", "claude-sonnet-4-6",
-            success=True, in_tok=10, out_tok=5, t0=time.monotonic() - 0.1,
-            key_record_id="rmeta-key", endpoint="messages",
+            db,
+            "rmeta-prov",
+            "claude-sonnet-4-6",
+            success=True,
+            in_tok=10,
+            out_tok=5,
+            t0=time.monotonic() - 0.1,
+            key_record_id="rmeta-key",
+            endpoint="messages",
         )
 
     assert len(captured) == 1
     meta = captured[0]["metadata"]
-    assert meta["api_key_prefix"] == "llmp-test123", \
+    assert meta["api_key_prefix"] == "llmp-test123", (
         "success path must denormalize key_prefix from api_keys row"
+    )
     assert captured[0]["api_key_id"] == "rmeta-key"
 
 
@@ -105,7 +127,10 @@ async def test_failure_meta_includes_api_key_prefix(fixture_db, monkeypatch):
         captured.append({"metadata": metadata, "severity": severity})
 
     monkeypatch.setattr("app.monitoring.helpers.log_event", fake_log)
-    async def _noop(*a, **kw): return None
+
+    async def _noop(*a, **kw):
+        return None
+
     monkeypatch.setattr("app.monitoring.helpers.record_failure", _noop)
     monkeypatch.setattr("app.monitoring.helpers.record_auth_failure", _noop)
     monkeypatch.setattr("app.monitoring.helpers.record_request", _noop)
@@ -114,9 +139,13 @@ async def test_failure_meta_includes_api_key_prefix(fixture_db, monkeypatch):
     AsyncSessionLocal = fixture_db
     async with AsyncSessionLocal() as db:
         await record_outcome(
-            db, "rmeta-prov", "claude-sonnet-4-6",
-            success=False, t0=time.monotonic() - 0.1,
-            key_record_id="rmeta-key", endpoint="messages",
+            db,
+            "rmeta-prov",
+            "claude-sonnet-4-6",
+            success=False,
+            t0=time.monotonic() - 0.1,
+            key_record_id="rmeta-key",
+            endpoint="messages",
             error_str="some upstream 502",
         )
 
@@ -140,7 +169,10 @@ async def test_probe_keepalive_gets_literal_prefix(fixture_db, monkeypatch):
         captured.append({"metadata": metadata})
 
     monkeypatch.setattr("app.monitoring.helpers.log_event", fake_log)
-    async def _noop(*a, **kw): return None
+
+    async def _noop(*a, **kw):
+        return None
+
     monkeypatch.setattr("app.monitoring.helpers.record_success", _noop)
     monkeypatch.setattr("app.monitoring.helpers.record_request", _noop)
     monkeypatch.setattr("app.monitoring.helpers.record_cost", _noop)
@@ -153,8 +185,13 @@ async def test_probe_keepalive_gets_literal_prefix(fixture_db, monkeypatch):
     AsyncSessionLocal = fixture_db
     async with AsyncSessionLocal() as db:
         await record_outcome(
-            db, "rmeta-prov", "claude-sonnet-4-6",
-            success=True, in_tok=1, out_tok=1, t0=time.monotonic() - 0.1,
+            db,
+            "rmeta-prov",
+            "claude-sonnet-4-6",
+            success=True,
+            in_tok=1,
+            out_tok=1,
+            t0=time.monotonic() - 0.1,
             key_record_id="probe-keepalive",
         )
 
@@ -175,7 +212,10 @@ async def test_unknown_key_prefix_is_none(fixture_db, monkeypatch):
         captured.append({"metadata": metadata})
 
     monkeypatch.setattr("app.monitoring.helpers.log_event", fake_log)
-    async def _noop(*a, **kw): return None
+
+    async def _noop(*a, **kw):
+        return None
+
     monkeypatch.setattr("app.monitoring.helpers.record_success", _noop)
     monkeypatch.setattr("app.monitoring.helpers.record_request", _noop)
     monkeypatch.setattr("app.monitoring.helpers.record_cost", _noop)
@@ -188,8 +228,13 @@ async def test_unknown_key_prefix_is_none(fixture_db, monkeypatch):
     AsyncSessionLocal = fixture_db
     async with AsyncSessionLocal() as db:
         await record_outcome(
-            db, "rmeta-prov", "claude-sonnet-4-6",
-            success=True, in_tok=1, out_tok=1, t0=time.monotonic() - 0.1,
+            db,
+            "rmeta-prov",
+            "claude-sonnet-4-6",
+            success=True,
+            in_tok=1,
+            out_tok=1,
+            t0=time.monotonic() - 0.1,
             key_record_id="nonexistent-key-id",
         )
 

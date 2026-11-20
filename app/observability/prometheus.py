@@ -7,6 +7,7 @@ status (success/failure), direction (input/output).
 `/metrics` endpoint is unauthenticated — standard Prometheus convention;
 protect at the nginx layer if the proxy is on a public network.
 """
+
 from fastapi.responses import Response
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
@@ -250,7 +251,9 @@ def observe_request(
     status = "success" if success else "failure"
     REQUESTS_TOTAL.labels(provider=provider, model=model, endpoint=endpoint, status=status).inc()
     if duration_sec > 0:
-        REQUEST_DURATION.labels(provider=provider, model=model, endpoint=endpoint).observe(duration_sec)
+        REQUEST_DURATION.labels(provider=provider, model=model, endpoint=endpoint).observe(
+            duration_sec
+        )
     if in_tokens > 0:
         TOKENS_TOTAL.labels(provider=provider, model=model, direction="input").inc(in_tokens)
     if out_tokens > 0:
@@ -302,7 +305,9 @@ def observe_verify_execution(status: str) -> None:
 
 
 def observe_shadow_similarity(primary_model: str, shadow_model: str, similarity: float) -> None:
-    SHADOW_SIMILARITY.labels(primary_model=primary_model, shadow_model=shadow_model).observe(similarity)
+    SHADOW_SIMILARITY.labels(primary_model=primary_model, shadow_model=shadow_model).observe(
+        similarity
+    )
 
 
 def observe_memory_operation(operation: str, outcome: str) -> None:
@@ -341,7 +346,9 @@ def observe_local_accelerator(snap) -> None:
         pass
 
 
-def observe_scrape_freshness(provider_id: str, provider_name: str, source: str, age_sec: float) -> None:
+def observe_scrape_freshness(
+    provider_id: str, provider_name: str, source: str, age_sec: float
+) -> None:
     """v3.9.10 — emit one gauge sample per provider per scrape pass."""
     SCRAPE_FRESHNESS_SECONDS.labels(
         provider_id=provider_id,

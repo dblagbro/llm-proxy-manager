@@ -19,10 +19,10 @@ The validation is INTENTIONALLY permissive on edge cases the proxy
 already handles correctly (auto-routing with model="auto", flexible
 content shapes). We only reject what is unambiguously broken.
 """
+
 from __future__ import annotations
 
 from fastapi import HTTPException
-
 
 # Anthropic and OpenAI both use these roles. Different shapes for content
 # (Anthropic allows list-of-blocks; OpenAI accepts string + tool_calls)
@@ -58,7 +58,8 @@ def validate_completion_request(body: dict, *, endpoint: str) -> None:
     """
     if not isinstance(body, dict):
         raise HTTPException(
-            400, f"{endpoint}: request body must be a JSON object",
+            400,
+            f"{endpoint}: request body must be a JSON object",
         )
 
     # 1. model required (or "auto")
@@ -74,7 +75,8 @@ def validate_completion_request(body: dict, *, endpoint: str) -> None:
     messages = body.get("messages")
     if not isinstance(messages, list):
         raise HTTPException(
-            400, f"{endpoint}: 'messages' must be an array",
+            400,
+            f"{endpoint}: 'messages' must be an array",
         )
     if len(messages) == 0:
         raise HTTPException(
@@ -116,6 +118,7 @@ def validate_completion_request(body: dict, *, endpoint: str) -> None:
     # body's already an in-memory dict by the time we reach here.
     try:
         import json as _json
+
         approx_size = len(_json.dumps(body))
         if approx_size > 8 * 1024 * 1024:
             raise HTTPException(
@@ -143,8 +146,7 @@ def validate_completion_request(body: dict, *, endpoint: str) -> None:
         if isinstance(ss, list) and len(ss) > 16:
             raise HTTPException(
                 400,
-                f"{endpoint}: 'stop_sequences'/'stop' may have at most 16 "
-                f"entries (got {len(ss)})",
+                f"{endpoint}: 'stop_sequences'/'stop' may have at most 16 entries (got {len(ss)})",
             )
 
 
@@ -168,6 +170,7 @@ def validate_webhook_url(url: str) -> None:
     if not url:
         return
     from urllib.parse import urlparse
+
     try:
         parsed = urlparse(url)
     except Exception:
@@ -175,8 +178,7 @@ def validate_webhook_url(url: str) -> None:
     if parsed.scheme not in ("http", "https"):
         raise HTTPException(
             400,
-            f"x-webhook-url: scheme must be http:// or https:// "
-            f"(got {parsed.scheme!r})",
+            f"x-webhook-url: scheme must be http:// or https:// (got {parsed.scheme!r})",
         )
     if not parsed.netloc:
         raise HTTPException(400, "x-webhook-url: missing host")
@@ -190,7 +192,7 @@ def validate_webhook_url(url: str) -> None:
     import ipaddress
     import socket
 
-    def _is_blocked(ip: "ipaddress._BaseAddress") -> bool:
+    def _is_blocked(ip: ipaddress._BaseAddress) -> bool:
         return ip.is_loopback or ip.is_link_local
 
     host = parsed.hostname or ""
@@ -234,6 +236,7 @@ def sanitize_upstream_error(error_text: str, max_chars: int = 300) -> str:
     if not error_text:
         return "upstream provider error (empty)"
     import re
+
     # Drop traceback frames + file references
     cleaned_lines: list[str] = []
     for raw in str(error_text).splitlines():
@@ -245,13 +248,13 @@ def sanitize_upstream_error(error_text: str, max_chars: int = 300) -> str:
         if ln.startswith('File "'):
             continue
         # Strip ``/path/to/file.py:NNN`` markers within a line
-        ln = re.sub(r'/[a-zA-Z0-9_./-]+\.py:\d+', '<...>', ln)
+        ln = re.sub(r"/[a-zA-Z0-9_./-]+\.py:\d+", "<...>", ln)
         # Strip standalone absolute paths
-        ln = re.sub(r'/[a-zA-Z0-9_./-]+/[a-zA-Z0-9_./-]+\.py', '<...>', ln)
+        ln = re.sub(r"/[a-zA-Z0-9_./-]+/[a-zA-Z0-9_./-]+\.py", "<...>", ln)
         cleaned_lines.append(ln)
     text = " ".join(cleaned_lines).strip()
     if not text:
         return "upstream provider error"
     if len(text) > max_chars:
-        text = text[:max_chars - 3] + "..."
+        text = text[: max_chars - 3] + "..."
     return text

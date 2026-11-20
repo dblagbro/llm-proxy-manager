@@ -21,18 +21,19 @@ Same shape as ``app/monitoring/prune.py``: an asyncio task scheduled in
 block the request loop. The last-sweep snapshot is surfaced via
 ``get_last_sweep()`` for the admin debug endpoint.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import date, datetime, timedelta
-from typing import Any, Dict, Optional
+from datetime import date as date
+from datetime import datetime, timedelta
+from typing import Any
 
 from app.compliance.audit import (
     compute_daily_integrity_hash,
     purge_expired_events,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,7 @@ _SWEEP_INTERVAL_SEC = 24 * 60 * 60
 _INITIAL_DELAY_SEC = 90 * 60
 
 
-_LAST_SWEEP_RESULT: Dict[str, Any] = {
+_LAST_SWEEP_RESULT: dict[str, Any] = {
     "last_sweep_ts": None,
     "last_hash_day": None,
     "last_hash": None,
@@ -77,8 +78,9 @@ async def _emit_zero_row_warning_if_threshold(db, just_signed_day) -> None:
     matches operator's actual decision; anyone who wants the warning
     can set the setting to "true" explicitly (operator opts IN, not out).
     """
-    from app.models.db import ComplianceAuditChain, ActivityLog, SystemSetting
-    from sqlalchemy import select, desc
+    from sqlalchemy import desc, select
+
+    from app.models.db import ActivityLog, ComplianceAuditChain, SystemSetting
 
     # v5.18.2 — default False. Only fire when operator has EXPLICITLY
     # opted in via the system_setting. Absence of the setting = silent.
@@ -90,11 +92,11 @@ async def _emit_zero_row_warning_if_threshold(db, just_signed_day) -> None:
         )
         row0 = rs0.scalar_one_or_none()
         # Truthy values re-enable the warning; anything else (or absent) → suppress.
-        is_enabled = (
-            row0 is not None
-            and (row0.value or "").strip().lower() in (
-                "true", "1", "yes", "on",
-            )
+        is_enabled = row0 is not None and (row0.value or "").strip().lower() in (
+            "true",
+            "1",
+            "yes",
+            "on",
         )
         if not is_enabled:
             return
@@ -129,27 +131,31 @@ async def _emit_zero_row_warning_if_threshold(db, just_signed_day) -> None:
     if existing.scalar_one_or_none():
         return
 
-    db.add(ActivityLog(
-        created_at=datetime.utcnow(),
-        severity="warning",
-        event_type="audit_chain_zero_row_streak",
-        message=(
-            f"compliance_audit_chain has signed {_ZERO_ROW_WARN_THRESHOLD} "
-            f"consecutive zero-row days (streak_start={streak_oldest_day}, "
-            f"streak_end={rows[0].day}). The chain is cryptographically valid "
-            f"but no compliance_events have fired in this window — usually a "
-            f"sign that the dominant API key has no policy applied (BUG-071) "
-            f"or the subsystem is in dry-run mode."
-        ),
-    ))
+    db.add(
+        ActivityLog(
+            created_at=datetime.utcnow(),
+            severity="warning",
+            event_type="audit_chain_zero_row_streak",
+            message=(
+                f"compliance_audit_chain has signed {_ZERO_ROW_WARN_THRESHOLD} "
+                f"consecutive zero-row days (streak_start={streak_oldest_day}, "
+                f"streak_end={rows[0].day}). The chain is cryptographically valid "
+                f"but no compliance_events have fired in this window — usually a "
+                f"sign that the dominant API key has no policy applied (BUG-071) "
+                f"or the subsystem is in dry-run mode."
+            ),
+        )
+    )
     await db.commit()
     logger.warning(
         "compliance_audit.zero_row_streak threshold=%d span=%s..%s",
-        _ZERO_ROW_WARN_THRESHOLD, streak_oldest_day, rows[0].day,
+        _ZERO_ROW_WARN_THRESHOLD,
+        streak_oldest_day,
+        rows[0].day,
     )
 
 
-def get_last_sweep() -> Dict[str, Any]:
+def get_last_sweep() -> dict[str, Any]:
     """Read-only snapshot of the last sweep. Same surface as
     ``prune.get_last_sweep()`` so the admin debug endpoint can read both
     with the same shape."""
@@ -161,18 +167,20 @@ async def _run_one_sweep() -> None:
     events. Both steps are independent — a failure in one doesn't skip
     the other.
     """
-    from app.models.database import AsyncSessionLocal
     from app.config import settings
+    from app.models.database import AsyncSessionLocal
 
     retention_days = getattr(
-        settings, "compliance_audit_retention_days", _DEFAULT_RETENTION_DAYS,
+        settings,
+        "compliance_audit_retention_days",
+        _DEFAULT_RETENTION_DAYS,
     )
     if not isinstance(retention_days, int) or retention_days < 1:
         retention_days = _DEFAULT_RETENTION_DAYS
 
     # Step 1 — integrity hash for the closed prior UTC day
     prior_day = (datetime.utcnow() - timedelta(days=1)).date()
-    chain_hash: Optional[str] = None
+    chain_hash: str | None = None
     try:
         async with AsyncSessionLocal() as db:
             chain_hash = await compute_daily_integrity_hash(db, prior_day)
@@ -215,19 +223,22 @@ async def _run_one_sweep() -> None:
     except Exception as exc:
         logger.warning("compliance_audit.purge_failed err=%r", exc)
 
-    _LAST_SWEEP_RESULT.update({
-        "last_sweep_ts": datetime.utcnow().isoformat(),
-        "last_hash_day": prior_day.isoformat(),
-        "last_hash": chain_hash,
-        "last_purge_count": purged,
-        "retention_days": retention_days,
-    })
+    _LAST_SWEEP_RESULT.update(
+        {
+            "last_sweep_ts": datetime.utcnow().isoformat(),
+            "last_hash_day": prior_day.isoformat(),
+            "last_hash": chain_hash,
+            "last_purge_count": purged,
+            "retention_days": retention_days,
+        }
+    )
 
 
 async def _sweep_loop() -> None:
     """Daily loop. Boot-delayed so init_db migrations + first-traffic
     settling finish first."""
     from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+
     hb = WorkerHeartbeat(name="compliance_audit")
     register_expected_interval("compliance_audit", _SWEEP_INTERVAL_SEC)
     await asyncio.sleep(_INITIAL_DELAY_SEC)
@@ -237,7 +248,7 @@ async def _sweep_loop() -> None:
             await hb.tick(
                 status="ok",
                 note=f"purged={_LAST_SWEEP_RESULT.get('last_purge_count', 0)} "
-                     f"day={_LAST_SWEEP_RESULT.get('last_hash_day', '?')}",
+                f"day={_LAST_SWEEP_RESULT.get('last_hash_day', '?')}",
             )
         except Exception as exc:
             # Defence-in-depth — _run_one_sweep already catches at the
@@ -248,7 +259,7 @@ async def _sweep_loop() -> None:
         await asyncio.sleep(_SWEEP_INTERVAL_SEC)
 
 
-_TASK: Optional[asyncio.Task] = None
+_TASK: asyncio.Task | None = None
 
 
 def start() -> None:

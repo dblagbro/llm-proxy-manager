@@ -1,25 +1,34 @@
 """v3.6.1 — quality-hint detector + 412 ETag-header fix tests."""
+
 from __future__ import annotations
 
 from app.api._quality_hint import (
     detect_thin_content,
     extract_response_text_anthropic,
     extract_response_text_openai,
-    quality_hint_header,
     merge_into_headers,
+    quality_hint_header,
 )
-
 
 # ── detect_thin_content ────────────────────────────────────────────
 
 
 def test_detect_cookie_banner():
-    text = "I appreciate the request, but the content provided appears to be only the cookie consent section of the page."
+    text = (
+        "I appreciate the request, but the "
+        "content provided appears to be only "
+        "the cookie consent section of the "
+        "page."
+    )
     assert detect_thin_content(text) == "cookie_banner"
 
 
 def test_detect_only_the_footer():
-    text = "I must inform you that the document content provided appears to be only the footer/cookie consent section."
+    text = (
+        "I must inform you that the document "
+        "content provided appears to be only "
+        "the footer/cookie consent section."
+    )
     assert detect_thin_content(text) == "cookie_banner"
 
 
@@ -34,7 +43,13 @@ def test_detect_short_refusal():
 
 
 def test_no_match_on_normal_response():
-    text = "The article describes Avaya Analytics backup procedures including step-by-step migration instructions, prerequisites, and configuration parameters. " * 10
+    text = (
+        "The article describes Avaya "
+        "Analytics backup procedures "
+        "including step-by-step migration "
+        "instructions, prerequisites, and "
+        "configuration parameters. "
+    ) * 10
     assert detect_thin_content(text) is None
 
 
@@ -60,7 +75,9 @@ def test_non_string_input():
 
 def test_extract_anthropic_text_block():
     body = {
-        "id": "msg_1", "type": "message", "role": "assistant",
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
         "content": [{"type": "text", "text": "hello world"}],
         "model": "claude-haiku",
     }
@@ -96,7 +113,8 @@ def test_extract_anthropic_unexpected_shapes():
 
 def test_extract_openai_message_content():
     body = {
-        "id": "x", "object": "chat.completion",
+        "id": "x",
+        "object": "chat.completion",
         "choices": [{"message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
     }
     assert extract_response_text_openai(body) == "hi"
@@ -132,7 +150,16 @@ def test_header_empty_for_none():
 def test_merge_anthropic_thin_content():
     headers: dict = {"X-Provider": "test"}
     body = {
-        "content": [{"type": "text", "text": "I appreciate the request, but the content provided appears to be only the cookie consent section."}]
+        "content": [
+            {
+                "type": "text",
+                "text": (
+                    "I appreciate the request, but the "
+                    "content provided appears to be only "
+                    "the cookie consent section."
+                ),
+            }
+        ]
     }
     merge_into_headers(headers, body, endpoint="messages")
     assert headers["X-Quality-Hint"] == "thin-content; reason=cookie_banner"
@@ -141,14 +168,32 @@ def test_merge_anthropic_thin_content():
 
 def test_merge_no_hint_for_normal_response():
     headers: dict = {"X-Provider": "test"}
-    body = {"content": [{"type": "text", "text": "The article explains the backup procedure step by step. " * 30}]}
+    body = {
+        "content": [
+            {
+                "type": "text",
+                "text": "The article explains the backup procedure step by step. " * 30,
+            }
+        ]
+    }
     merge_into_headers(headers, body, endpoint="messages")
     assert "X-Quality-Hint" not in headers
 
 
 def test_merge_openai_thin_content():
     headers: dict = {}
-    body = {"choices": [{"message": {"role": "assistant", "content": "I appreciate the request, but the content appears incomplete or corrupted."}}]}
+    body = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": (
+                        "I appreciate the request, but the content appears incomplete or corrupted."
+                    ),
+                }
+            }
+        ]
+    }
     merge_into_headers(headers, body, endpoint="completions")
     assert headers.get("X-Quality-Hint") == "thin-content; reason=incomplete"
 
@@ -179,7 +224,9 @@ def test_412_returns_jsonresponse_with_etag():
     the body). Pre-fix raise HTTPException(412, ...) stripped the
     headers entirely."""
     import inspect
+
     from app.api import llm_models
+
     src = inspect.getsource(llm_models.update_model_identity)
     # The fix returns JSONResponse(status_code=412, ...) instead of raising
     assert "JSONResponse" in src and "status_code=412" in src

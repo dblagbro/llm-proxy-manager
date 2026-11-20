@@ -22,12 +22,12 @@ The fix has three parts (all in ``app/config_runtime.py``):
 
 These tests pin all three behaviours.
 """
+
 from __future__ import annotations
 
 import pytest
 
 from app.config_runtime import _coerce
-
 
 # ── _coerce ──────────────────────────────────────────────────────
 
@@ -78,10 +78,13 @@ def test_coerce_float_unchanged():
 async def test_save_writes_empty_string_for_none(monkeypatch):
     """save() must not write the literal string "None" when val is None."""
     from sqlalchemy.ext.asyncio import (
-        create_async_engine, async_sessionmaker, AsyncSession,
+        AsyncSession,
+        async_sessionmaker,
+        create_async_engine,
     )
+
+    from app.config_runtime import SCHEMA, save
     from app.models.db import Base, SystemSetting
-    from app.config_runtime import save, SCHEMA
 
     # Skip if smtp_to is not in SCHEMA (would mean config_runtime drifted)
     if "smtp_to" not in SCHEMA:
@@ -90,23 +93,19 @@ async def test_save_writes_empty_string_for_none(monkeypatch):
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    Session = async_sessionmaker(engine, class_=AsyncSession,
-                                 expire_on_commit=False)
+    Session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     try:
         async with Session() as db:
             await save(db, {"smtp_to": None})
             from sqlalchemy import select
-            r = await db.execute(
-                select(SystemSetting).where(SystemSetting.key == "smtp_to")
-            )
+
+            r = await db.execute(select(SystemSetting).where(SystemSetting.key == "smtp_to"))
             row = r.scalar_one()
             # The key thing: NOT the literal "None"
-            assert row.value != "None", \
-                f"save() persisted literal 'None' string: {row.value!r}"
+            assert row.value != "None", f"save() persisted literal 'None' string: {row.value!r}"
             # Empty string is the expected representation of None
-            assert row.value == "", \
-                f"save() should write empty string for None, got {row.value!r}"
+            assert row.value == "", f"save() should write empty string for None, got {row.value!r}"
     finally:
         await engine.dispose()
 
@@ -115,10 +114,13 @@ async def test_save_writes_empty_string_for_none(monkeypatch):
 async def test_save_writes_real_string_unchanged(monkeypatch):
     """A legitimate string value still goes in as-is."""
     from sqlalchemy.ext.asyncio import (
-        create_async_engine, async_sessionmaker, AsyncSession,
+        AsyncSession,
+        async_sessionmaker,
+        create_async_engine,
     )
+
+    from app.config_runtime import SCHEMA, save
     from app.models.db import Base, SystemSetting
-    from app.config_runtime import save, SCHEMA
 
     if "smtp_to" not in SCHEMA:
         pytest.skip("smtp_to not registered in SCHEMA")
@@ -126,16 +128,14 @@ async def test_save_writes_real_string_unchanged(monkeypatch):
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    Session = async_sessionmaker(engine, class_=AsyncSession,
-                                 expire_on_commit=False)
+    Session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     try:
         async with Session() as db:
             await save(db, {"smtp_to": "ops@example.com"})
             from sqlalchemy import select
-            r = await db.execute(
-                select(SystemSetting).where(SystemSetting.key == "smtp_to")
-            )
+
+            r = await db.execute(select(SystemSetting).where(SystemSetting.key == "smtp_to"))
             row = r.scalar_one()
             assert row.value == "ops@example.com"
     finally:
@@ -147,39 +147,41 @@ async def test_save_then_load_round_trips_none_correctly(monkeypatch):
     """save(None) → load() must yield Python None on settings.smtp_to,
     NOT the literal "None"."""
     from sqlalchemy.ext.asyncio import (
-        create_async_engine, async_sessionmaker, AsyncSession,
+        AsyncSession,
+        async_sessionmaker,
+        create_async_engine,
     )
-    from app.models.db import Base
+
     from app.config import settings as live_settings
-    from app.config_runtime import save, load, SCHEMA
+    from app.config_runtime import SCHEMA, load, save
+    from app.models.db import Base
 
     if "smtp_to" not in SCHEMA:
         pytest.skip("smtp_to not registered in SCHEMA")
 
     # Reset live settings.smtp_to first
-    monkeypatch.setattr(live_settings, "smtp_to", "starting-value",
-                        raising=False)
+    monkeypatch.setattr(live_settings, "smtp_to", "starting-value", raising=False)
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    Session = async_sessionmaker(engine, class_=AsyncSession,
-                                 expire_on_commit=False)
+    Session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     try:
         async with Session() as db:
             await save(db, {"smtp_to": None})
         # save() applies to the live singleton — should be None now
-        assert getattr(live_settings, "smtp_to", "sentinel") is None, \
+        assert getattr(live_settings, "smtp_to", "sentinel") is None, (
             f"after save(None), live settings.smtp_to is {live_settings.smtp_to!r}"
+        )
 
         # Re-set to something else and ensure load() also yields None
-        monkeypatch.setattr(live_settings, "smtp_to", "reset-value",
-                            raising=False)
+        monkeypatch.setattr(live_settings, "smtp_to", "reset-value", raising=False)
         async with Session() as db:
             await load(db)
-        assert getattr(live_settings, "smtp_to", "sentinel") is None, \
+        assert getattr(live_settings, "smtp_to", "sentinel") is None, (
             f"after load(), live settings.smtp_to is {live_settings.smtp_to!r}"
+        )
     finally:
         await engine.dispose()
 
@@ -187,13 +189,17 @@ async def test_save_then_load_round_trips_none_correctly(monkeypatch):
 @pytest.mark.asyncio
 async def test_load_tolerates_legacy_none_string(monkeypatch):
     """Backward compat: a pre-fix row with value='None' loads as Python None."""
-    from sqlalchemy.ext.asyncio import (
-        create_async_engine, async_sessionmaker, AsyncSession,
-    )
-    from app.models.db import Base, SystemSetting
-    from app.config import settings as live_settings
-    from app.config_runtime import load, SCHEMA
     import time
+
+    from sqlalchemy.ext.asyncio import (
+        AsyncSession,
+        async_sessionmaker,
+        create_async_engine,
+    )
+
+    from app.config import settings as live_settings
+    from app.config_runtime import SCHEMA, load
+    from app.models.db import Base, SystemSetting
 
     if "smtp_to" not in SCHEMA:
         pytest.skip("smtp_to not registered in SCHEMA")
@@ -201,21 +207,21 @@ async def test_load_tolerates_legacy_none_string(monkeypatch):
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    Session = async_sessionmaker(engine, class_=AsyncSession,
-                                 expire_on_commit=False)
+    Session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     try:
         # Directly insert the legacy row shape
         async with Session() as db:
-            db.add(SystemSetting(key="smtp_to", value="None",
-                                 value_type="str", updated_at=time.time()))
+            db.add(
+                SystemSetting(key="smtp_to", value="None", value_type="str", updated_at=time.time())
+            )
             await db.commit()
-        monkeypatch.setattr(live_settings, "smtp_to", "sentinel",
-                            raising=False)
+        monkeypatch.setattr(live_settings, "smtp_to", "sentinel", raising=False)
         async with Session() as db:
             await load(db)
-        assert getattr(live_settings, "smtp_to", "x") is None, \
-            f"legacy 'None' string should load as None, got " \
+        assert getattr(live_settings, "smtp_to", "x") is None, (
+            f"legacy 'None' string should load as None, got "
             f"{getattr(live_settings, 'smtp_to', None)!r}"
+        )
     finally:
         await engine.dispose()

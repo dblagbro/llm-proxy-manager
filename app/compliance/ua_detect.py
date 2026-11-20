@@ -9,10 +9,11 @@ Decision 16 + 22. Case-insensitive matching. Custom companies from
 ``SystemSetting.compliance_custom_companies`` are merged with
 ``KNOWN_COMPANIES`` at detection time.
 """
+
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from app.compliance.company_map import KNOWN_COMPANIES
 
@@ -33,9 +34,9 @@ def _product_label(matched_value: str) -> str:
 
 
 def detect_client_company(
-    user_agent: Optional[str],
-    custom_companies: Optional[Dict[str, Dict[str, Any]]] = None,
-) -> Optional[Tuple[str, str, str]]:
+    user_agent: str | None,
+    custom_companies: dict[str, dict[str, Any]] | None = None,
+) -> tuple[str, str, str] | None:
     """Match a UA against all known + custom UA patterns.
 
     Returns ``(company_id, matched_pattern_value, product_label)`` on the

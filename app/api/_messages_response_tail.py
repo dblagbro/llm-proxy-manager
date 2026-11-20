@@ -38,14 +38,16 @@ that downstream hooks may want to read; (2) accept before (3) echo so
 the echo reflects the effective config after normalization; (4) hooks
 last so they see the final resp_headers state.
 """
+
 from __future__ import annotations
 
+from datetime import UTC
 from typing import Any
 
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api._response_hook_runner import apply_response_hooks, HookContext
+from app.api._response_hook_runner import HookContext, apply_response_hooks
 
 
 async def apply_response_tail(
@@ -80,8 +82,10 @@ async def apply_response_tail(
     try:
         if getattr(key_record, "refusal_detection_enabled", False):
             from app.refusal_detection import (
-                detect_refusal, extract_text_from_anthropic_response,
+                detect_refusal,
+                extract_text_from_anthropic_response,
             )
+
             _text = extract_text_from_anthropic_response(anthropic_result)
             _match = detect_refusal(_text)
             if _match is not None:
@@ -91,31 +95,36 @@ async def apply_response_tail(
                 # Non-blocking; failure to log must not affect the
                 # response.
                 try:
-                    from datetime import datetime, timezone
+                    from datetime import datetime
+
                     from app.models.db import ActivityLog
-                    db.add(ActivityLog(
-                        created_at=datetime.now(timezone.utc).replace(tzinfo=None),
-                        severity="info",
-                        event_type="refusal_detected",
-                        api_key_id=getattr(key_record, "id", None),
-                        provider_id=(
-                            getattr(route.provider, "id", None)
-                            if hasattr(route, "provider") else None
-                        ),
-                        message=(
-                            f"Refusal detected: pattern={_match.pattern_name} "
-                            f"category={_match.category}"
-                        ),
-                        event_meta={
-                            "pattern_name": _match.pattern_name,
-                            "category": _match.category,
-                            "matched_snippet": _match.matched_snippet,
-                            "requested_model": (
-                                body.get("model") if isinstance(body, dict) else None
+
+                    db.add(
+                        ActivityLog(
+                            created_at=datetime.now(UTC).replace(tzinfo=None),
+                            severity="info",
+                            event_type="refusal_detected",
+                            api_key_id=getattr(key_record, "id", None),
+                            provider_id=(
+                                getattr(route.provider, "id", None)
+                                if hasattr(route, "provider")
+                                else None
                             ),
-                            "served_model": getattr(route, "litellm_model", None),
-                        },
-                    ))
+                            message=(
+                                f"Refusal detected: pattern={_match.pattern_name} "
+                                f"category={_match.category}"
+                            ),
+                            event_meta={
+                                "pattern_name": _match.pattern_name,
+                                "category": _match.category,
+                                "matched_snippet": _match.matched_snippet,
+                                "requested_model": (
+                                    body.get("model") if isinstance(body, dict) else None
+                                ),
+                                "served_model": getattr(route, "litellm_model", None),
+                            },
+                        )
+                    )
                     await db.commit()
                 except Exception:
                     pass
@@ -127,6 +136,7 @@ async def apply_response_tail(
     # crosses the threshold.
     try:
         from app.capability_scout.suggestion_emit import apply_suggestion_header
+
         await apply_suggestion_header(db, key_record.id, resp_headers)
     except Exception:
         pass
@@ -134,10 +144,13 @@ async def apply_response_tail(
     # (2) Accept-MCP handler (v5.12.2 Ship 3 + v5.16.0 config blob).
     # Individual header wins over blob per the v5.16.0 precedence rule.
     try:
-        from app.capability_scout.accept_handler import process_accept_header
         from app.api._llmproxy_config_header import read_config_key
+        from app.capability_scout.accept_handler import process_accept_header
+
         _accept_value = read_config_key(
-            request, "accept_mcp", header_fallback="X-Proxy-Accept-MCP",
+            request,
+            "accept_mcp",
+            header_fallback="X-Proxy-Accept-MCP",
         )
         if _accept_value is not None:
             # Blob value may be a list; accept handler wants a
@@ -148,7 +161,10 @@ async def apply_response_tail(
                 _accept_value = str(_accept_value)
             if _accept_value:
                 await process_accept_header(
-                    db, key_record.id, _accept_value, resp_headers,
+                    db,
+                    key_record.id,
+                    _accept_value,
+                    resp_headers,
                 )
     except Exception:
         pass
@@ -157,6 +173,7 @@ async def apply_response_tail(
     # without the blob so most traffic is unaffected.
     try:
         from app.api._llmproxy_config_header import emit_config_applied_header
+
         emit_config_applied_header(resp_headers, request)
     except Exception:
         pass
@@ -175,8 +192,7 @@ async def apply_response_tail(
                 served_model=getattr(route, "litellm_model", None),
                 api_key_id=getattr(key_record, "id", None),
                 provider_id=(
-                    getattr(route.provider, "id", None)
-                    if hasattr(route, "provider") else None
+                    getattr(route.provider, "id", None) if hasattr(route, "provider") else None
                 ),
                 compliance_event_id=getattr(route, "compliance_audit_id", None),
                 substituted=bool(getattr(route, "compliance_substituted", False)),
@@ -184,7 +200,9 @@ async def apply_response_tail(
                 request=request,
                 extra={
                     "substitution_reason": getattr(
-                        route, "compliance_substitution_reason", None,
+                        route,
+                        "compliance_substitution_reason",
+                        None,
                     ),
                 },
             ),

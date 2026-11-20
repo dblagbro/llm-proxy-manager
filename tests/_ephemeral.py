@@ -23,6 +23,7 @@ Deliberately booted at import time rather than from a fixture, because
 That is why this is opt-in per-run rather than automatic — a plain
 ``pytest tests/unit`` must not pay for a boot it never uses.
 """
+
 from __future__ import annotations
 
 import atexit
@@ -87,10 +88,21 @@ class EphemeralDeployment:
 
         with open(self.log_path, "w") as log:
             self.proc = subprocess.Popen(
-                [sys.executable, "-m", "uvicorn", "app.main:app",
-                 "--host", "127.0.0.1", "--port", str(self.port),
-                 "--log-level", "warning"],
-                stdout=log, stderr=subprocess.STDOUT, env=env,
+                [
+                    sys.executable,
+                    "-m",
+                    "uvicorn",
+                    "app.main:app",
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    str(self.port),
+                    "--log-level",
+                    "warning",
+                ],
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                env=env,
             )
         atexit.register(self.stop)
 

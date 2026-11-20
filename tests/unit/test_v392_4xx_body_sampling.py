@@ -10,6 +10,7 @@ Covers ``app.monitoring.helpers._maybe_sample_4xx_body`` in isolation:
 - Doesn't blow up on None request_body
 - Source-level guard: the wire-up call exists in record_outcome's error branch
 """
+
 from __future__ import annotations
 
 import random
@@ -91,9 +92,11 @@ def test_noop_when_sample_rate_zero():
 
 def test_noop_when_sample_rate_missing():
     """Missing config falls back to 0 — safe default."""
+
     class _S:
         activity_log_max_body_chars = 4000
         # activity_log_body_sample_rate_4xx intentionally absent
+
     with patch("app.monitoring.helpers.settings", _S()):
         out = _maybe_sample_4xx_body({}, _body(), "bad_request")
         assert "request_body" not in out
@@ -166,19 +169,21 @@ def test_rate_distribution_roughly_correct():
 def test_wired_into_record_outcome_error_branch():
     """Ensure the sampler is actually called from the error branch."""
     from pathlib import Path
+
     src = Path("app/monitoring/helpers.py").read_text()
     # Error branch attaches bodies then sample
     assert "_attach_bodies(meta, request_body, response_body)" in src
-    assert "_maybe_sample_4xx_body(meta, request_body, meta[\"error_class\"])" in src
+    assert '_maybe_sample_4xx_body(meta, request_body, meta["error_class"])' in src
     # Order matters: _maybe_sample_4xx_body must come AFTER _attach_bodies
     # (so it can detect pre-existing request_body and only tag).
     idx_attach = src.find("_attach_bodies(meta, request_body, response_body)")
-    idx_sample = src.find("_maybe_sample_4xx_body(meta, request_body, meta[\"error_class\"])")
+    idx_sample = src.find('_maybe_sample_4xx_body(meta, request_body, meta["error_class"])')
     assert idx_attach > 0 and idx_sample > idx_attach
 
 
 def test_config_settings_exist():
     from app.config import settings
+
     val = getattr(settings, "activity_log_body_sample_rate_4xx", None)
     assert val is not None
     assert 0.0 <= float(val) <= 1.0
@@ -186,5 +191,6 @@ def test_config_settings_exist():
 
 def test_runtime_schema_exposes_setting():
     from app.config_runtime import SCHEMA
+
     assert "activity_log_body_sample_rate_4xx" in SCHEMA
     assert SCHEMA["activity_log_body_sample_rate_4xx"]["type"] == "float"

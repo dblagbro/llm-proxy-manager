@@ -15,6 +15,7 @@ which offloads to a worker thread. A send failure NEVER propagates to the
 caller's HTTP response — for password reset, telling an anonymous caller whether
 mail delivery worked leaks whether the account exists.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -30,11 +31,13 @@ logger = logging.getLogger(__name__)
 def _cfg() -> dict:
     """Runtime settings first, env/Pydantic defaults second."""
     from app.config import settings
+
     try:
         from app.config_runtime import get_setting
+
         get = get_setting
-    except Exception:                                    # pragma: no cover
-        get = lambda *_a, **_k: None                     # noqa: E731
+    except Exception:  # pragma: no cover
+        get = lambda *_a, **_k: None  # noqa: E731
 
     def pick(key, fallback):
         try:
@@ -49,8 +52,9 @@ def _cfg() -> dict:
         "port": int(pick("smtp_port", settings.smtp_port) or 587),
         "user": pick("smtp_user", settings.smtp_user) or "",
         "password": pick("smtp_pass", settings.smtp_pass) or "",
-        "from_addr": (pick("smtp_from", settings.smtp_from)
-                      or pick("smtp_user", settings.smtp_user) or ""),
+        "from_addr": (
+            pick("smtp_from", settings.smtp_from) or pick("smtp_user", settings.smtp_user) or ""
+        ),
         "helo": pick("smtp_helo", getattr(settings, "smtp_helo", None)) or "",
     }
 
@@ -90,8 +94,13 @@ def send_email(to: str, subject: str, html_body: str) -> bool:
         return True
     except Exception as exc:
         # Log the TYPE and message but never the credentials.
-        logger.warning("mailer.failed to=%s host=%s err=%s: %s",
-                       to, cfg["host"], type(exc).__name__, str(exc)[:200])
+        logger.warning(
+            "mailer.failed to=%s host=%s err=%s: %s",
+            to,
+            cfg["host"],
+            type(exc).__name__,
+            str(exc)[:200],
+        )
         return False
 
 

@@ -9,10 +9,11 @@ table. Default fallback: 128k tokens — matches the spec's "approaching the
 model's limit (≥80% of model.max_context_tokens)" wording where
 ``max_context_tokens`` is per-model not per-provider.
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Iterable, Optional
+from collections.abc import Iterable
 
 import litellm
 from sqlalchemy import select
@@ -23,8 +24,8 @@ from app.models.db import ModelCapability
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONTEXT_LENGTH = 128_000
-COMPACTION_THRESHOLD = 0.80              # spec B.10: "≥80% of model.max_context_tokens"
-COMPACTION_TARGET_RATIO = 0.50           # bring usage back below this after compaction
+COMPACTION_THRESHOLD = 0.80  # spec B.10: "≥80% of model.max_context_tokens"
+COMPACTION_TARGET_RATIO = 0.50  # bring usage back below this after compaction
 
 
 def estimate_message_tokens(model: str, role: str, content) -> int:
@@ -48,9 +49,11 @@ def estimate_message_tokens(model: str, role: str, content) -> int:
                 parts.append(blk.get("text", ""))
             elif t == "tool_use":
                 # Tool name + JSON args — approximate
-                parts.append(f"<tool_use name={blk.get('name','')} input={blk.get('input',{})!r}>")
+                parts.append(
+                    f"<tool_use name={blk.get('name', '')} input={blk.get('input', {})!r}>"
+                )
             elif t == "tool_result":
-                parts.append(f"<tool_result {blk.get('content','')!r}>")
+                parts.append(f"<tool_result {blk.get('content', '')!r}>")
             else:
                 parts.append(str(blk))
         text = "\n".join(parts)
@@ -58,10 +61,12 @@ def estimate_message_tokens(model: str, role: str, content) -> int:
         text = str(content or "")
 
     try:
-        return int(litellm.token_counter(
-            model=model or "gpt-4o",
-            messages=[{"role": role, "content": text}],
-        ))
+        return int(
+            litellm.token_counter(
+                model=model or "gpt-4o",
+                messages=[{"role": role, "content": text}],
+            )
+        )
     except Exception as e:
         # litellm hiccups on some custom model names — fall back to a
         # 4-chars-per-token heuristic so compaction still has data to
@@ -89,9 +94,11 @@ async def model_context_length(db: AsyncSession, model: str) -> int:
     if not model:
         return DEFAULT_CONTEXT_LENGTH
     res = await db.execute(
-        select(ModelCapability.context_length).where(
+        select(ModelCapability.context_length)
+        .where(
             ModelCapability.model_id == model,
-        ).limit(1)
+        )
+        .limit(1)
     )
     val = res.scalar()
     if val and val > 0:

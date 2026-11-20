@@ -19,11 +19,11 @@ info for the model to reason about it:
 The number of replacements is returned so it can be emitted as an
 `X-PII-Masked: <n>` header or activity-log event.
 """
+
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-
 
 # Ordered — credit card before phone, because "4111 1111 1111 1111" can
 # partially match the phone pattern; SSN before phone for the same reason.
@@ -35,25 +35,25 @@ _PATTERNS: list[tuple[str, re.Pattern]] = [
     # uvicorn event loop since mask_text runs synchronously in the async path.
     # Take '.' out of the label class so the bounded `(?:\.LABEL)+` carries the
     # dots — no overlap, every quantifier bounded → linear.
-    ("EMAIL", re.compile(
-        r"(?P<value>[a-zA-Z0-9._%+-]{1,64}@[a-zA-Z0-9-]{1,63}(?:\.[a-zA-Z0-9-]{1,63})+)"
-    )),
+    (
+        "EMAIL",
+        re.compile(
+            r"(?P<value>[a-zA-Z0-9._%+-]{1,64}@[a-zA-Z0-9-]{1,63}(?:\.[a-zA-Z0-9-]{1,63})+)"
+        ),
+    ),
     # Credit card: 13-19 digits with optional spaces/dashes (Luhn-unchecked)
-    ("CC", re.compile(
-        r"(?P<value>\b(?:\d[ -]*?){13,19}\b)"
-    )),
+    ("CC", re.compile(r"(?P<value>\b(?:\d[ -]*?){13,19}\b)")),
     # US SSN: 3-2-4 with dash or space. Require a word boundary.
-    ("SSN", re.compile(
-        r"(?P<value>\b\d{3}[- ]\d{2}[- ]\d{4}\b)"
-    )),
+    ("SSN", re.compile(r"(?P<value>\b\d{3}[- ]\d{2}[- ]\d{4}\b)")),
     # US phone: optional +1, optional (, 3 digits, optional ), dash/space/dot, 3, dash/space/dot, 4
-    ("PHONE", re.compile(
-        r"(?P<value>\b(?:\+?1[-. ]?)?\(?\d{3}\)?[-. ]?\d{3}[-. ]?\d{4}\b)"
-    )),
+    ("PHONE", re.compile(r"(?P<value>\b(?:\+?1[-. ]?)?\(?\d{3}\)?[-. ]?\d{3}[-. ]?\d{4}\b)")),
     # IPv4
-    ("IP", re.compile(
-        r"(?P<value>\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b)"
-    )),
+    (
+        "IP",
+        re.compile(
+            r"(?P<value>\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b)"
+        ),
+    ),
 ]
 
 
@@ -115,4 +115,5 @@ def mask_messages(messages: list[dict]) -> tuple[list[dict], int]:
 
 def is_enabled() -> bool:
     from app.config import settings
+
     return bool(getattr(settings, "pii_masking_enabled", False))

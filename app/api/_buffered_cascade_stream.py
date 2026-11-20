@@ -31,14 +31,18 @@ Opt-in: per-key column ``refusal_retry_streaming_heartbeat`` (bool).
 Default False = v5.21.0 no-heartbeat behavior. True = v5.21.3
 heartbeat behavior.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, AsyncIterator, Optional
+from collections.abc import AsyncIterator
+from typing import Any
 
 from app.cot.sse import (
-    anthropic_text_sse, anthropic_tool_sse, anthropic_tools_sse,
+    anthropic_text_sse,
+    anthropic_tool_sse,
+    anthropic_tools_sse,
     to_anthropic_response,
 )
 from app.routing.retry import acompletion_with_retry
@@ -68,7 +72,7 @@ async def _dispatch_with_cascade(
     key_record: Any,
     messages_list: list,
     extra: dict,
-    system: Optional[Any],
+    system: Any | None,
     max_tokens: int,
     has_images: bool,
     hint: Any,
@@ -141,21 +145,18 @@ async def _result_to_sse(anthropic_result: dict) -> AsyncIterator[bytes]:
     content_blocks = anthropic_result.get("content") or []
     tool_uses = [b for b in content_blocks if b.get("type") == "tool_use"]
     if len(tool_uses) >= 2:
-        async for chunk in anthropic_tools_sse([
-            {"name": t["name"], "input": t.get("input", {})}
-            for t in tool_uses
-        ]):
+        async for chunk in anthropic_tools_sse(
+            [{"name": t["name"], "input": t.get("input", {})} for t in tool_uses]
+        ):
             yield chunk
     elif len(tool_uses) == 1:
         async for chunk in anthropic_tool_sse(
-            tool_uses[0]["name"], tool_uses[0].get("input", {}),
+            tool_uses[0]["name"],
+            tool_uses[0].get("input", {}),
         ):
             yield chunk
     else:
-        text = "".join(
-            b.get("text", "") for b in content_blocks
-            if b.get("type") == "text"
-        )
+        text = "".join(b.get("text", "") for b in content_blocks if b.get("type") == "text")
         async for chunk in anthropic_text_sse(text):
             yield chunk
 
@@ -166,7 +167,7 @@ async def run_buffered_cascade_stream_with_heartbeat(
     key_record: Any,
     messages_list: list,
     extra: dict,
-    system: Optional[Any],
+    system: Any | None,
     max_tokens: int,
     has_images: bool,
     hint: Any,
@@ -186,34 +187,39 @@ async def run_buffered_cascade_stream_with_heartbeat(
     """
     yield _INITIAL_FRAME
 
-    task = asyncio.create_task(_dispatch_with_cascade(
-        route=route,
-        key_record=key_record,
-        messages_list=messages_list,
-        extra=extra,
-        system=system,
-        max_tokens=max_tokens,
-        has_images=has_images,
-        hint=hint,
-        db=db,
-    ))
+    task = asyncio.create_task(
+        _dispatch_with_cascade(
+            route=route,
+            key_record=key_record,
+            messages_list=messages_list,
+            extra=extra,
+            system=system,
+            max_tokens=max_tokens,
+            has_images=has_images,
+            hint=hint,
+            db=db,
+        )
+    )
     while not task.done():
         try:
             # ``asyncio.shield`` prevents the wait_for from cancelling
             # the task on timeout; only the WAIT gets cancelled, the
             # task keeps running toward the next heartbeat check.
             await asyncio.wait_for(asyncio.shield(task), timeout=interval_seconds)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             yield _HEARTBEAT_FRAME
     try:
         anthropic_result = task.result()
     except Exception as exc:
         # Surface as an SSE error frame (Anthropic shape).
         import json as _json
-        err_payload = _json.dumps({
-            "type": "error",
-            "error": {"type": "internal_error", "message": str(exc)},
-        })
+
+        err_payload = _json.dumps(
+            {
+                "type": "error",
+                "error": {"type": "internal_error", "message": str(exc)},
+            }
+        )
         yield f"data: {err_payload}\n\n".encode()
         yield b"data: [DONE]\n\n"
         return

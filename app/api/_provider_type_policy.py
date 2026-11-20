@@ -74,8 +74,7 @@ def validate_provider_type(value: str | None) -> str | None:
         raise ValueError(f"provider_type {value!r} is retired. {_REASON}")
     if value in DEPRECATED_PROVIDER_TYPES:
         raise ValueError(
-            f"provider_type {value!r} is deprecated and closed to new "
-            f"providers. {_REASON}"
+            f"provider_type {value!r} is deprecated and closed to new providers. {_REASON}"
         )
     return value
 

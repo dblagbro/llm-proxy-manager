@@ -1,7 +1,7 @@
 """Unit tests for PII masking (Wave 6)."""
+
 import sys
 import types
-import pytest
 
 _stub = types.ModuleType("litellm")
 _stub.RateLimitError = type("RateLimitError", (Exception,), {})
@@ -9,7 +9,7 @@ sys.modules.setdefault("litellm", _stub)
 if not hasattr(sys.modules["litellm"], "RateLimitError"):
     sys.modules["litellm"].RateLimitError = type("RateLimitError", (Exception,), {})
 
-from app.privacy.pii import mask_text, mask_messages
+from app.privacy.pii import mask_messages, mask_text  # noqa: E402
 
 
 class TestMaskText:
@@ -102,13 +102,15 @@ class TestMaskMessages:
         assert "[EMAIL_REDACTED]" in msgs[0]["content"]
 
     def test_list_content_text_part_masked(self):
-        input_msgs = [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "my SSN is 123-45-6789"},
-                {"type": "image", "source": {"data": "base64..."}},
-            ],
-        }]
+        input_msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "my SSN is 123-45-6789"},
+                    {"type": "image", "source": {"data": "base64..."}},
+                ],
+            }
+        ]
         msgs, n = mask_messages(input_msgs)
         assert n == 1
         assert "[SSN_REDACTED]" in msgs[0]["content"][0]["text"]
@@ -118,12 +120,14 @@ class TestMaskMessages:
 
     def test_image_url_part_untouched(self):
         """image_url parts should not be mutated even if they contain PII-looking strings."""
-        input_msgs = [{
-            "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": {"url": "https://example.com/foo.png"}},
-            ],
-        }]
+        input_msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": "https://example.com/foo.png"}},
+                ],
+            }
+        ]
         msgs, n = mask_messages(input_msgs)
         assert n == 0
         assert msgs[0]["content"][0]["type"] == "image_url"

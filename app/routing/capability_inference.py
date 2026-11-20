@@ -5,6 +5,7 @@ Separate from the LMRH scoring protocol (lmrh.py) because these two concerns evo
 independently: scoring logic changes with the LMRH spec; inference changes with new
 model families. Adding support for a new model family means editing only this file.
 """
+
 from app.routing.lmrh import CapabilityProfile
 
 
@@ -24,7 +25,9 @@ def infer_capability_profile(
     )
 
     # Reasoning / native thinking detection
-    if any(x in m for x in ["opus", "o1", "o3", "o4", "r1", "deepseek-r", "gemini-2.5", "claude-3-7"]):
+    if any(
+        x in m for x in ["opus", "o1", "o3", "o4", "r1", "deepseek-r", "gemini-2.5", "claude-3-7"]
+    ):
         profile.native_reasoning = True
         profile.tasks = ["reasoning", "analysis", "code", "chat"]
         profile.cost_tier = "premium"
@@ -61,7 +64,16 @@ def infer_capability_profile(
     # Provider-specific region defaults
     if provider_type == "google":
         profile.regions = ["us", "eu", "asia"]
-    elif provider_type in ("anthropic", "openai", "grok", "grok-web", "claude-oauth", "ChatGPT-oauth-plan", "cohere", "azure"):
+    elif provider_type in (
+        "anthropic",
+        "openai",
+        "grok",
+        "grok-web",
+        "claude-oauth",
+        "ChatGPT-oauth-plan",
+        "cohere",
+        "azure",
+    ):
         profile.regions = ["us"]
     elif provider_type == "openrouter":
         # v3.1.3: OpenRouter is multi-region — they marketplace across vendors.

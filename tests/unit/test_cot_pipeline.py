@@ -3,10 +3,10 @@ Unit tests for CoT-E pipeline helpers.
 
 These cover the pure functions — no LLM calls are made.
 """
+
 import sys
 import types
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 # Stub litellm and app.cot.session so the module imports without installed deps
 _litellm_stub = types.ModuleType("litellm")
@@ -21,24 +21,29 @@ sys.modules.setdefault("app.cot.session", _session_stub)
 
 # Stub app.routing.retry (pipeline imports it; CB not available in unit test context)
 _retry_stub = types.ModuleType("app.routing.retry")
+
+
 async def _acompletion_with_retry(model, messages, **kwargs):
     import litellm
+
     return await litellm.acompletion(model=model, messages=messages, **kwargs)
+
+
 _retry_stub.acompletion_with_retry = _acompletion_with_retry  # type: ignore
 sys.modules.setdefault("app.routing.retry", _retry_stub)
 
 from app.cot.pipeline import (  # noqa: E402 — must come after stubs
-    _should_verify,
-    _resolve_verify,
-    _parse_score,
-    _parse_gaps,
-    _parse_critique,
     _last_user_text,
+    _parse_critique,
+    _parse_gaps,
+    _parse_score,
+    _resolve_verify,
+    _should_verify,
     parse_cot_request_headers,
 )
 
-
 # ── _should_verify ────────────────────────────────────────────────────────────
+
 
 class TestShouldVerify:
     def test_shell_code_block_bash(self):
@@ -96,6 +101,7 @@ class TestShouldVerify:
 
 # ── _resolve_verify ───────────────────────────────────────────────────────────
 
+
 class TestResolveVerify:
     def _settings(self, enabled=False, auto_detect=True):
         mock = MagicMock()
@@ -142,6 +148,7 @@ class TestResolveVerify:
 
 # ── _parse_score / _parse_gaps ────────────────────────────────────────────────
 
+
 class TestParsers:
     def test_parse_score_found(self):
         assert _parse_score("SCORE: 7\nGAPS: minor wording") == 7
@@ -164,9 +171,12 @@ class TestParsers:
 
 # ── _parse_critique (Wave 2 #7 — structured JSON rubric) ─────────────────────
 
+
 class TestParseCritique:
     def test_clean_json(self):
-        r = _parse_critique('{"factual_issues":[],"missing_coverage":[],"sufficient_for_user":true}')
+        r = _parse_critique(
+            '{"factual_issues":[],"missing_coverage":[],"sufficient_for_user":true}'
+        )
         assert r == {"factual_issues": [], "missing_coverage": [], "sufficient_for_user": True}
 
     def test_json_with_issues(self):
@@ -180,11 +190,18 @@ class TestParseCritique:
         assert r["sufficient_for_user"] is False
 
     def test_json_with_markdown_fences(self):
-        r = _parse_critique('```json\n{"factual_issues":[],"missing_coverage":[],"sufficient_for_user":true}\n```')
+        r = _parse_critique(
+            '```json\n{"factual_issues":[],"missing_coverage":[],"sufficient_for_user":true}\n```'
+        )
         assert r["sufficient_for_user"] is True
 
     def test_json_with_surrounding_prose(self):
-        r = _parse_critique('Here is my review:\n{"factual_issues":["x"],"missing_coverage":[],"sufficient_for_user":false}\nHope that helps!')
+        r = _parse_critique(
+            'Here is my review:\n{"factual_issues'
+            '":["x"],"missing_coverage":[],"suff'
+            'icient_for_user":false}\nHope that '
+            "helps!"
+        )
         assert r["factual_issues"] == ["x"]
         assert r["sufficient_for_user"] is False
 
@@ -213,6 +230,7 @@ class TestParseCritique:
 
 # ── _last_user_text ───────────────────────────────────────────────────────────
 
+
 class TestLastUserText:
     def test_simple_string_content(self):
         msgs = [
@@ -223,10 +241,15 @@ class TestLastUserText:
         assert _last_user_text(msgs) == "what is docker?"
 
     def test_multipart_content(self):
-        msgs = [{"role": "user", "content": [
-            {"type": "text", "text": "explain this"},
-            {"type": "image", "source": {}},
-        ]}]
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "explain this"},
+                    {"type": "image", "source": {}},
+                ],
+            }
+        ]
         assert _last_user_text(msgs) == "explain this"
 
     def test_empty_messages(self):
@@ -237,6 +260,7 @@ class TestLastUserText:
 
 
 # ── parse_cot_request_headers (Wave 2 #10 — self-consistency) ────────────────
+
 
 class TestParseCotHeaders:
     def test_defaults(self):

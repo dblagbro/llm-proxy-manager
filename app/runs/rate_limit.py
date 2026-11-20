@@ -13,6 +13,7 @@ start times. ``acquire()`` checks if a new call would exceed the limit;
 if yes, sleeps for the time-until-oldest-falls-out-of-window plus a
 small jitter, returning the wait+attempt for event emission.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -20,7 +21,6 @@ import logging
 import random
 import time
 from collections import deque
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,7 @@ MAX_BACKOFF_SEC = 30.0
 class _RunBucket:
     """Tracks model_call_start timestamps for one run; trims to the
     rolling 60s window on each check."""
+
     __slots__ = ("_starts",)
 
     def __init__(self) -> None:
@@ -43,7 +44,7 @@ class _RunBucket:
         while self._starts and self._starts[0] < cutoff:
             self._starts.popleft()
 
-    def current_rpm(self, now: Optional[float] = None) -> int:
+    def current_rpm(self, now: float | None = None) -> int:
         now = now if now is not None else time.monotonic()
         self._trim(now)
         return len(self._starts)
@@ -55,7 +56,7 @@ class _RunBucket:
         # Oldest in-window timestamp; slot frees once it ages out
         return max(0.0, self._starts[0] + WINDOW_SEC - now)
 
-    def record(self, now: Optional[float] = None) -> None:
+    def record(self, now: float | None = None) -> None:
         self._starts.append(now if now is not None else time.monotonic())
 
 
@@ -75,6 +76,7 @@ def _resolve_limit() -> int:
     restart. Falls back to DEFAULT_LIMIT_RPM when unset/invalid."""
     try:
         from app.config import settings
+
         v = getattr(settings, "runs_max_model_calls_per_minute", None)
         if v is None:
             return DEFAULT_LIMIT_RPM
@@ -126,12 +128,14 @@ async def acquire(
 
         if emit_callback is not None and attempt == 1:
             try:
-                await emit_callback({
-                    "retry_after_ms": int(wait * 1000),
-                    "attempt": attempt,
-                    "current_rpm": rpm,
-                    "limit_rpm": limit,
-                })
+                await emit_callback(
+                    {
+                        "retry_after_ms": int(wait * 1000),
+                        "attempt": attempt,
+                        "current_rpm": rpm,
+                        "limit_rpm": limit,
+                    }
+                )
             except Exception as e:
                 logger.info("runs.rate_limit.emit_skip run=%s err=%s", run_id, e)
 

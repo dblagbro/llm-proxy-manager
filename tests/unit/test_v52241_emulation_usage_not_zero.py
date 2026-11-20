@@ -26,6 +26,7 @@ So: any key with tool injection enabled, talking to a provider without native
 tool support, on either ``/v1/messages`` or ``/v1/chat/completions``, reported
 zero tokens and zero cost.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -52,8 +53,7 @@ def test_builder_accepts_usage(name, args):
     """Every emulated-response builder must be able to carry real usage."""
     fn = getattr(sse, name)
     assert "usage" in inspect.signature(fn).parameters, (
-        f"{name} cannot accept usage, so anything it builds will report zero "
-        f"tokens and zero cost"
+        f"{name} cannot accept usage, so anything it builds will report zero tokens and zero cost"
     )
     fn(*args, usage=USAGE)  # must not raise
 
@@ -118,9 +118,9 @@ def test_endpoint_threads_usage_into_its_builders(endpoint):
     the end-to-end behaviour is verified against the mock provider in the
     integration suite (tests/integration/test_routing_mock.py).
     """
-    from pathlib import Path
+    from tests.unit._handler_surface import handler_source
 
-    src = Path(endpoint).read_text()
+    src = handler_source(endpoint)
     assert "usage_out=_emul_usage" in src, (
         f"{endpoint} does not capture the emulated upstream's usage"
     )

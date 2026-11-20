@@ -12,19 +12,20 @@ Functions:
 Behavior is unchanged from the pre-extraction version; this file is a
 pure move with import adjustments.
 """
+
 from __future__ import annotations
 
 import json
 import time
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.cot.pipeline import run_cot_pipeline
-from app.routing.retry import acompletion_with_retry
-from app.monitoring.helpers import record_outcome
-from app.cache.middleware import maybe_store
 from app.api.webhook import post_webhook
+from app.cache.middleware import maybe_store
+from app.cot.pipeline import run_cot_pipeline
+from app.monitoring.helpers import record_outcome
+from app.routing.retry import acompletion_with_retry
 
 
 async def _stream_cot_openai(
@@ -67,9 +68,16 @@ async def _stream_cot_openai(
     reset_cot_usage()
     try:
         async for raw in run_cot_pipeline(
-            model, messages, session_id, extra, max_iterations, force_verify,
-            critique_model=critique_model, critique_kwargs=critique_kwargs,
-            samples=samples, task_branch=task_branch,
+            model,
+            messages,
+            session_id,
+            extra,
+            max_iterations,
+            force_verify,
+            critique_model=critique_model,
+            critique_kwargs=critique_kwargs,
+            samples=samples,
+            task_branch=task_branch,
         ):
             line = raw.decode(errors="ignore").strip()
             if not line.startswith("data: "):
@@ -105,7 +113,8 @@ async def _stream_cot_openai(
         answer_text = "".join(text_buf).strip()
         full_text = (
             f"<thinking>\n{thinking_text}\n</thinking>\n\n{answer_text}"
-            if thinking_text else answer_text
+            if thinking_text
+            else answer_text
         )
 
         msg_id = "chatcmpl-cot"
@@ -116,11 +125,12 @@ async def _stream_cot_openai(
         }
         if compliance_disclosure and accept_compliance_events:
             from app.compliance import sse_prelude_openai_inject
+
             sse_prelude_openai_inject(_first_frame, compliance_disclosure)
         yield f"data: {json.dumps(_first_frame)}\n\n".encode()
         chunk_size = 50
         for i in range(0, len(full_text), chunk_size):
-            piece = json.dumps(full_text[i:i + chunk_size])[1:-1]
+            piece = json.dumps(full_text[i : i + chunk_size])[1:-1]
             yield (
                 f'data: {{"id":"{msg_id}","object":"chat.completion.chunk",'
                 f'"choices":[{{"index":0,"delta":{{"content":"{piece}"}},"finish_reason":null}}]}}\n\n'
@@ -133,19 +143,41 @@ async def _stream_cot_openai(
 
         # v5.22.51 — fold internal CoT call tokens in before recording.
         in_tok, out_tok = fold_cot_usage(in_tok, out_tok, provider_id)
-        await record_outcome(db, provider_id, model, endpoint="completions", success=True,
-                             in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id)
+        await record_outcome(
+            db,
+            provider_id,
+            model,
+            endpoint="completions",
+            success=True,
+            in_tok=in_tok,
+            out_tok=out_tok,
+            t0=t0,
+            key_record_id=key_record_id,
+        )
 
     except Exception as e:
-        await record_outcome(db, provider_id, model, endpoint="completions", success=False,
-                             key_record_id=key_record_id, error_str=str(e))
-        yield (b'data: ' + json.dumps({"error": str(e)}).encode() + b'\n\n')
-        yield b'data: [DONE]\n\n'
+        await record_outcome(
+            db,
+            provider_id,
+            model,
+            endpoint="completions",
+            success=False,
+            key_record_id=key_record_id,
+            error_str=str(e),
+        )
+        yield (b"data: " + json.dumps({"error": str(e)}).encode() + b"\n\n")
+        yield b"data: [DONE]\n\n"
 
 
 async def _stream_openai(
-    model: str, messages: list, extra: dict, provider_id: str,
-    db: AsyncSession, key_record_id: str, t0: float, budget_total: int = 0,
+    model: str,
+    messages: list,
+    extra: dict,
+    provider_id: str,
+    db: AsyncSession,
+    key_record_id: str,
+    t0: float,
+    budget_total: int = 0,
     cache_decision=None,
     # v5.0.0 — compliance substitution disclosure (decision 15 + 28).
     # When both are set, inject ``compliance_substitution`` as a top-level
@@ -176,7 +208,9 @@ async def _stream_openai(
     prev_chunk = None
     last_finish: str | None = None
     try:
-        response = await acompletion_with_retry(model=model, messages=messages, stream=True, **extra)
+        response = await acompletion_with_retry(
+            model=model, messages=messages, stream=True, **extra
+        )
         async for chunk in response:
             if first_chunk:
                 ttft_ms = (time.monotonic() - t0) * 1000
@@ -200,6 +234,7 @@ async def _stream_openai(
                 _payload = prev_chunk.model_dump_json()
                 if _need_compliance_inject:
                     from app.compliance import sse_prelude_openai_inject
+
                     try:
                         _dict = json.loads(_payload)
                         sse_prelude_openai_inject(_dict, compliance_disclosure)
@@ -223,6 +258,7 @@ async def _stream_openai(
                 # Edge case: only one chunk total. Inject on this last
                 # emission instead.
                 from app.compliance import sse_prelude_openai_inject
+
                 try:
                     _dict = json.loads(_payload)
                     sse_prelude_openai_inject(_dict, compliance_disclosure)
@@ -237,19 +273,35 @@ async def _stream_openai(
         # crashed them on invalid_union. Budget info still on the
         # ``X-Token-Budget-Remaining`` response header (set pre-stream).
         yield b"data: [DONE]\n\n"
-        await record_outcome(db, provider_id, model, endpoint="completions", success=True,
-                             in_tok=in_tok, out_tok=out_tok, t0=t0,
-                             key_record_id=key_record_id, ttft_ms=ttft_ms)
+        await record_outcome(
+            db,
+            provider_id,
+            model,
+            endpoint="completions",
+            success=True,
+            in_tok=in_tok,
+            out_tok=out_tok,
+            t0=t0,
+            key_record_id=key_record_id,
+            ttft_ms=ttft_ms,
+        )
         if cache_decision is not None and cache_decision.eligible:
             try:
                 await maybe_store(cache_decision, "".join(full_text_buf))
             except Exception:
                 pass
     except Exception as e:
-        await record_outcome(db, provider_id, model, endpoint="completions", success=False,
-                             key_record_id=key_record_id, error_str=str(e))
-        yield (b'data: ' + json.dumps({"error": str(e)}).encode() + b'\n\n')
-        yield b'data: [DONE]\n\n'
+        await record_outcome(
+            db,
+            provider_id,
+            model,
+            endpoint="completions",
+            success=False,
+            key_record_id=key_record_id,
+            error_str=str(e),
+        )
+        yield (b"data: " + json.dumps({"error": str(e)}).encode() + b"\n\n")
+        yield b"data: [DONE]\n\n"
 
 
 async def _webhook_completion_openai(
@@ -267,14 +319,33 @@ async def _webhook_completion_openai(
         result = await acompletion_with_retry(model=model, messages=messages, stream=False, **extra)
         in_tok = getattr(result.usage, "prompt_tokens", 0)
         out_tok = getattr(result.usage, "completion_tokens", 0)
-        await record_outcome(db, provider_id, model, endpoint="completions", success=True,
-                             in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id)
-        await post_webhook(webhook_url, {
-            "provider": provider_id,
-            "model": model,
-            "response": result.model_dump(),
-        })
+        await record_outcome(
+            db,
+            provider_id,
+            model,
+            endpoint="completions",
+            success=True,
+            in_tok=in_tok,
+            out_tok=out_tok,
+            t0=t0,
+            key_record_id=key_record_id,
+        )
+        await post_webhook(
+            webhook_url,
+            {
+                "provider": provider_id,
+                "model": model,
+                "response": result.model_dump(),
+            },
+        )
     except Exception as exc:
-        await record_outcome(db, provider_id, model, endpoint="completions", success=False,
-                             key_record_id=key_record_id, error_str=str(exc))
+        await record_outcome(
+            db,
+            provider_id,
+            model,
+            endpoint="completions",
+            success=False,
+            key_record_id=key_record_id,
+            error_str=str(exc),
+        )
         await post_webhook(webhook_url, {"error": str(exc), "model": model})

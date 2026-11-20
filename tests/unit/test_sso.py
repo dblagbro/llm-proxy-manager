@@ -1,8 +1,10 @@
 """Unit tests for SSO (OIDC) helpers (Wave 6)."""
-import sys
-import types
+
 import base64
 import json
+import sys
+import types
+
 import pytest
 
 _stub = types.ModuleType("litellm")
@@ -11,10 +13,14 @@ sys.modules.setdefault("litellm", _stub)
 if not hasattr(sys.modules["litellm"], "RateLimitError"):
     sys.modules["litellm"].RateLimitError = type("RateLimitError", (Exception,), {})
 
-from app.auth.sso import (
-    generate_pkce_pair, generate_state, generate_nonce,
-    parse_id_token_claims, extract_identity, role_from_groups,
+from app.auth.sso import (  # noqa: E402
     _parse_saml_assertion,
+    extract_identity,
+    generate_nonce,
+    generate_pkce_pair,
+    generate_state,
+    parse_id_token_claims,
+    role_from_groups,
 )
 
 
@@ -35,8 +41,11 @@ class TestPKCE:
 
     def test_challenge_is_sha256_of_verifier(self):
         import hashlib
+
         v, c = generate_pkce_pair()
-        expected = base64.urlsafe_b64encode(hashlib.sha256(v.encode()).digest()).rstrip(b"=").decode()
+        expected = (
+            base64.urlsafe_b64encode(hashlib.sha256(v.encode()).digest()).rstrip(b"=").decode()
+        )
         assert c == expected
 
     def test_each_call_different(self):

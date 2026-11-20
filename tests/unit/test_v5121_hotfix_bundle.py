@@ -10,10 +10,10 @@ source-of-truth.
 This test file pins the structural pieces; the live install is
 verified via systemctl status on tmrwww02.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-
 
 # ── #483 — silencer setting key already exists (v5.7.11) ─────────────
 
@@ -45,9 +45,9 @@ def test_compliance_audit_worker_honors_zero_row_warning_enabled_flag():
     )
 
     fn = next(
-        n for n in ast.walk(ast.parse(src))
-        if isinstance(n, ast.AsyncFunctionDef)
-        and n.name == "_emit_zero_row_warning_if_threshold"
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "_emit_zero_row_warning_if_threshold"
     )
     lines = src.splitlines()
     gate = "\n".join(lines[fn.lineno - 1 : fn.end_lineno])
@@ -85,7 +85,7 @@ def test_cert_hook_deploy_script_writes_to_correct_marker_path():
     bind-mounted path so the host-side watcher can see it."""
     script = Path("ops-scripts/tmrwww02-cert-hook/touch-nginx-restart-marker.sh").read_text()
     assert "MARKER=/etc/letsencrypt/.nginx-restart-needed" in script
-    assert "touch \"$MARKER\"" in script
+    assert 'touch "$MARKER"' in script
 
 
 def test_cert_hook_watcher_uses_marker_then_deletes_it():
@@ -95,7 +95,7 @@ def test_cert_hook_watcher_uses_marker_then_deletes_it():
     assert "/home/dblagbro/docker/config/certbot/conf/.nginx-restart-needed" in script
     assert "docker restart nginx" in script
     # Delete the marker AFTER successful restart.
-    assert "rm -f \"$MARKER\"" in script
+    assert 'rm -f "$MARKER"' in script
 
 
 def test_cert_hook_systemd_unit_restart_policy():
@@ -113,6 +113,7 @@ def test_version_bumped():
     """v5.12.x line; exact patch pin lives in the next ship's test file."""
     import re
     from pathlib import Path
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m and (int(m[1]), int(m[2]), int(m[3])) >= (5, 12, 0), "expected >= 5.12.0"

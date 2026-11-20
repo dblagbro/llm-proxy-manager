@@ -13,12 +13,11 @@ pins that config so the historical "bump the pool to fix exhaustion" reflex
 Static source assertions (hermetic, no engine/DB import) in the repo's
 existing [WIRE]/[VER] guard style.
 """
+
 import re
 from pathlib import Path
 
-_DB_SRC = (
-    Path(__file__).resolve().parents[2] / "app" / "models" / "database.py"
-).read_text()
+_DB_SRC = (Path(__file__).resolve().parents[2] / "app" / "models" / "database.py").read_text()
 
 
 def _int_kwarg(name: str) -> int:
@@ -47,8 +46,7 @@ def test_self_heal_disabled_by_default():
     v5.22.0's mistake was leaving it on with a small pool that saturated
     constantly. Re-enabling it needs aiosqlite-thread-safe teardown first."""
     src = (
-        Path(__file__).resolve().parents[2]
-        / "app" / "monitoring" / "pool_leak_watcher.py"
+        Path(__file__).resolve().parents[2] / "app" / "monitoring" / "pool_leak_watcher.py"
     ).read_text()
     m = re.search(r'POOL_SELF_HEAL_ENABLED",\s*"([^"]*)"', src)
     assert m, "POOL_SELF_HEAL_ENABLED default not found"
@@ -80,8 +78,7 @@ def test_thread_leak_detection_wired():
     """The thread-count detection control (the metric that was missing when
     a node silently reached 232 threads) must remain wired in the watcher."""
     src = (
-        Path(__file__).resolve().parents[2]
-        / "app" / "monitoring" / "pool_leak_watcher.py"
+        Path(__file__).resolve().parents[2] / "app" / "monitoring" / "pool_leak_watcher.py"
     ).read_text()
     assert "THREAD_LEAK_CRITICAL" in src and "_thread_count" in src, (
         "pool_leak_watcher must monitor OS-thread count (the true aiosqlite "

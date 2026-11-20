@@ -13,12 +13,12 @@ pre-flip decisions in test form so a future contributor can't
 reintroduce one of the rejected approaches without first deleting a
 named test.
 """
+
 from __future__ import annotations
 
 from unittest.mock import patch
 
 from app.memory.inject import _inject_anthropic, _inject_openai
-
 
 PREFIX = "[Persistent caller memory — applies across providers]\nfoo\n"
 
@@ -41,8 +41,10 @@ async def test_q1_no_conversation_id_means_no_inject():
         body = {"messages": [{"role": "user", "content": "hi"}]}
         out_body, injected = await maybe_inject_memory(
             db=None,  # unused on this short-circuit path
-            body=body, api_key_id="key1",
-            conversation_id=None, memory_tag=None,
+            body=body,
+            api_key_id="key1",
+            conversation_id=None,
+            memory_tag=None,
             endpoint="messages",
         )
     assert injected is False
@@ -143,6 +145,7 @@ def test_q3_openai_inject_does_not_create_new_top_level_field():
 def test_inject_module_documents_resolved_decisions():
     """Future contributors must see the decisions are locked."""
     from pathlib import Path
+
     src = Path("app/memory/inject.py").read_text()
     assert "RESOLVED 2026-05-14" in src
     assert "Q1" in src and "Q2" in src and "Q3" in src
@@ -153,6 +156,7 @@ def test_inject_module_documents_resolved_decisions():
 
 def test_rfc_documents_resolved_decisions():
     from pathlib import Path
+
     rfc = Path("docs/rfc/2026-05-proxy-memory-store.md").read_text()
     assert "locked 2026-05-14" in rfc
     assert "system-prompt prefix" in rfc

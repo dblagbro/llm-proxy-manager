@@ -38,13 +38,14 @@ Kill switches:
 - ``callbacks_fail_closed=False`` in the registry → transport
   failures degrade silently instead of hitting the ``dropped`` write.
 """
+
 from __future__ import annotations
 
 import asyncio
-import json
+import json as json
 import logging
-import time
-from typing import Any, Optional
+import time as time
+from typing import Any
 
 import httpx
 
@@ -56,7 +57,7 @@ _RETRY_BACKOFF_SEC = 1.0
 _HTTPX_TIMEOUT_SEC = 2.0
 
 
-def _api_key_alias(key_record: Any) -> Optional[str]:
+def _api_key_alias(key_record: Any) -> str | None:
     """Preferred display alias for the API key. Matches what shows up
     in the frontend key list."""
     if key_record is None:
@@ -91,8 +92,11 @@ def _build_event(context: HookContext) -> dict:
 
 
 async def _post_once(
-    client: httpx.AsyncClient, url: str, body: dict, headers: dict,
-) -> tuple[bool, Optional[int], Optional[str]]:
+    client: httpx.AsyncClient,
+    url: str,
+    body: dict,
+    headers: dict,
+) -> tuple[bool, int | None, str | None]:
     """One POST attempt. Returns ``(ok, status_code, error_class)``.
     ``ok`` is True on any 2xx. Never raises."""
     try:
@@ -112,23 +116,27 @@ async def _log_dropped_event(context: HookContext, reason: str) -> None:
     try:
         from app.models.database import AsyncSessionLocal
         from app.models.db import ActivityLog
+
         async with AsyncSessionLocal() as db:
-            db.add(ActivityLog(
-                severity="warning",
-                event_type="substitution_callback.dropped",
-                api_key_id=context.api_key_id,
-                provider_id=context.provider_id,
-                message=(
-                    f"Substitution callback POST failed after retry — "
-                    f"requested={context.requested_model!r} "
-                    f"served={context.served_model!r} "
-                    f"reason={reason!r}"
-                ),
-            ))
+            db.add(
+                ActivityLog(
+                    severity="warning",
+                    event_type="substitution_callback.dropped",
+                    api_key_id=context.api_key_id,
+                    provider_id=context.provider_id,
+                    message=(
+                        f"Substitution callback POST failed after retry — "
+                        f"requested={context.requested_model!r} "
+                        f"served={context.served_model!r} "
+                        f"reason={reason!r}"
+                    ),
+                )
+            )
             await db.commit()
     except Exception as e:
         logger.debug(
-            "substitution_callback.dropped_log_failed err=%s", e,
+            "substitution_callback.dropped_log_failed err=%s",
+            e,
         )
 
 
@@ -137,13 +145,14 @@ async def compliance_substitution_callback_hook(
     handler_id: str,
     resp_headers: dict,
     context: HookContext,
-) -> Optional[dict]:
+) -> dict | None:
     """POST to the configured hub callback URL when a substitution
     actually happened. No-op on all other paths."""
     if not context.substituted:
         return None
 
     from app.config import settings
+
     url = getattr(settings, "substitution_callback_url", "") or ""
     if not url.strip():
         return None
@@ -167,7 +176,8 @@ async def compliance_substitution_callback_hook(
             # counter goes silently wrong.
             logger.warning(
                 "substitution_callback.posted status=%d id=%r attempt=1",
-                code, body.get("id"),
+                code,
+                body.get("id"),
             )
             return None
         # Retry once with 1s back-off. Same body — hub dedups on ``id``.
@@ -175,9 +185,10 @@ async def compliance_substitution_callback_hook(
         ok2, code2, err2 = await _post_once(client, url, body, headers)
         if ok2:
             logger.warning(
-                "substitution_callback.posted status=%d id=%r attempt=2 "
-                "first_err=%r",
-                code2, body.get("id"), err,
+                "substitution_callback.posted status=%d id=%r attempt=2 first_err=%r",
+                code2,
+                body.get("id"),
+                err,
             )
             return None
 
@@ -185,7 +196,9 @@ async def compliance_substitution_callback_hook(
     # the operator can see this happening from the dashboard.
     reason = f"first={err} second={err2}"
     logger.warning(
-        "substitution_callback.dropped reason=%r url=%s", reason, url,
+        "substitution_callback.dropped reason=%r url=%s",
+        reason,
+        url,
     )
     # Fire-and-forget the drop-log so this hook doesn't block the
     # response return path on a DB write.

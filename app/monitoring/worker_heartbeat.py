@@ -23,12 +23,13 @@ Design notes:
 - Intentionally NOT cached. Heartbeats are written ~once/interval
   (interval ≥ 60s in practice); cache complexity outweighs the win.
 """
+
 from __future__ import annotations
 
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from sqlalchemy import select
 
@@ -58,17 +59,17 @@ class WorkerHeartbeat:
     """
 
     name: str
-    expected_interval_sec: Optional[float] = None
+    expected_interval_sec: float | None = None
 
     async def tick(
         self,
         status: str = "ok",
-        note: Optional[str] = None,
+        note: str | None = None,
     ) -> None:
         """Write the heartbeat row triplet. Failures are logged and
         swallowed — a heartbeat failure must NEVER crash its caller."""
         from app.models.database import AsyncSessionLocal
-        from app.models.db import SystemSetting
+
         try:
             now_ts = time.time()
             async with AsyncSessionLocal() as db:
@@ -80,20 +81,25 @@ class WorkerHeartbeat:
         except Exception as exc:
             logger.warning(
                 "worker_heartbeat.write_failed worker=%s err=%r",
-                self.name, exc,
+                self.name,
+                exc,
             )
 
 
 async def _upsert(db, key: str, value: str) -> None:
     from app.models.db import SystemSetting
-    rs = await db.execute(
-        select(SystemSetting).where(SystemSetting.key == key)
-    )
+
+    rs = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
     row = rs.scalar_one_or_none()
     if row is None:
-        db.add(SystemSetting(
-            key=key, value=value, value_type="str", updated_at=time.time(),
-        ))
+        db.add(
+            SystemSetting(
+                key=key,
+                value=value,
+                value_type="str",
+                updated_at=time.time(),
+            )
+        )
     else:
         row.value = value
         row.updated_at = time.time()
@@ -124,9 +130,7 @@ async def snapshot_all() -> list[dict[str, Any]]:
     try:
         async with AsyncSessionLocal() as db:
             rs = await db.execute(
-                select(SystemSetting).where(
-                    SystemSetting.key.like(f"{_KEY_PREFIX}%")
-                )
+                select(SystemSetting).where(SystemSetting.key.like(f"{_KEY_PREFIX}%"))
             )
             for row in rs.scalars().all():
                 # key shape: worker.<name>.<field>

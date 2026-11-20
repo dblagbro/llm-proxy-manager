@@ -3,12 +3,16 @@
 Handles the insert-if-missing / update-if-changed strategy for users, API keys,
 providers, and settings received from peer nodes during cluster synchronisation.
 """
+
 import logging
 import time
 from datetime import datetime
 
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.db import ApiKey as ApiKey
+from app.models.db import Provider, SystemSetting, User
 
 
 def _parse_iso_or_none(v):
@@ -23,7 +27,6 @@ def _parse_iso_or_none(v):
             return None
     return v
 
-from app.models.db import User, ApiKey, Provider, SystemSetting
 
 logger = logging.getLogger(__name__)
 
@@ -57,13 +60,15 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
     everything rolls back"; we deliberately accept partial sync on
     error in exchange for short locks).
     """
+
     async def _section_commit(label: str) -> None:
         try:
             await db.commit()
         except Exception as exc:
             logger.warning(
                 "cluster_sync.section_commit_failed label=%s err=%s",
-                label, exc,
+                label,
+                exc,
             )
             try:
                 await db.rollback()
@@ -82,19 +87,23 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
     # Lookup by id (canonical) AND by username (collision recovery
     # for cases where peers disagree on id but agree on username).
     from datetime import datetime as _dt
+
     def _parse_iso(s):
-        if not s: return None
-        if isinstance(s, _dt): return s
-        try: return _dt.fromisoformat(s.replace("Z", ""))
-        except Exception: return None
+        if not s:
+            return None
+        if isinstance(s, _dt):
+            return s
+        try:
+            return _dt.fromisoformat(s.replace("Z", ""))
+        except Exception:
+            return None
+
     for u_data in payload.get("users", []):
         # Prefer id-based lookup; fall back to username if no row by id.
         rs = await db.execute(select(User).where(User.id == u_data["id"]))
         existing = rs.scalar_one_or_none()
         if existing is None:
-            rs = await db.execute(
-                select(User).where(User.username == u_data["username"])
-            )
+            rs = await db.execute(select(User).where(User.username == u_data["username"]))
             existing = rs.scalar_one_or_none()
         incoming_edit = u_data.get("last_user_edit_at") or 0.0
         incoming_deleted = _parse_iso(u_data.get("deleted_at"))
@@ -102,14 +111,16 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
             # Only insert if peer's row is alive; if it's already
             # tombstoned, there's nothing to merge.
             if incoming_deleted is None:
-                db.add(User(
-                    id=u_data["id"],
-                    username=u_data["username"],
-                    password_hash=u_data["password_hash"],
-                    role=u_data.get("role", "user"),
-                    email=u_data.get("email"),          # v5.22.11
-                    last_user_edit_at=incoming_edit or None,
-                ))
+                db.add(
+                    User(
+                        id=u_data["id"],
+                        username=u_data["username"],
+                        password_hash=u_data["password_hash"],
+                        role=u_data.get("role", "user"),
+                        email=u_data.get("email"),  # v5.22.11
+                        last_user_edit_at=incoming_edit or None,
+                    )
+                )
         else:
             local_edit = existing.last_user_edit_at or 0.0
             if incoming_edit > local_edit:
@@ -148,6 +159,7 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
 
     # Merge settings — last-write-wins by updated_at timestamp
     from app import config_runtime
+
     settings_to_apply: dict = {}
     for s_data in payload.get("settings", []):
         key = s_data.get("key", "")
@@ -163,19 +175,24 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
             existing.value_type = s_data.get("value_type", "str")
             existing.updated_at = incoming_ts
         else:
-            db.add(SystemSetting(
-                key=key,
-                value=s_data["value"],
-                value_type=s_data.get("value_type", "str"),
-                updated_at=incoming_ts,
-            ))
-        settings_to_apply[key] = config_runtime._coerce(s_data["value"], s_data.get("value_type", "str"))
+            db.add(
+                SystemSetting(
+                    key=key,
+                    value=s_data["value"],
+                    value_type=s_data.get("value_type", "str"),
+                    updated_at=incoming_ts,
+                )
+            )
+        settings_to_apply[key] = config_runtime._coerce(
+            s_data["value"], s_data.get("value_type", "str")
+        )
 
     # v2.8.2: normalize any priority ties introduced by the merge so every
     # node converges on the same strict total order. Deterministic by
     # (priority, created_at, id) — all peers arrive at the same answer.
     try:
         from app.api.providers import normalize_priority_ties
+
         bumped = await normalize_priority_ties(db)
         if bumped:
             logger.info("cluster_sync_normalized_ties count=%s", bumped)
@@ -190,6 +207,7 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
     # ownership changes via /v1/runs/<id>/adopt that endpoint handles
     # the spawn explicitly.
     from app.models.db import Run
+
     for r_data in payload.get("runs", []):
         rid = r_data.get("id")
         if not rid:
@@ -201,49 +219,69 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
             if (existing.updated_at or 0) >= incoming_ts:
                 continue  # ours is newer — keep it
             for col in (
-                "api_key_id", "owner_node_id", "status", "current_step",
-                "deadline_ts", "max_turns", "model_preference",
-                "compaction_model", "system_prompt", "tools_spec",
-                "metadata_json", "trace_id", "model_calls", "tool_calls",
-                "tokens_in", "tokens_out", "last_provider_id",
-                "context_summarized_at_turn", "current_tool_use_id",
-                "current_tool_name", "current_tool_input",
-                "result_text", "error_kind", "error_message",
-                "created_at", "updated_at", "completed_at",
+                "api_key_id",
+                "owner_node_id",
+                "status",
+                "current_step",
+                "deadline_ts",
+                "max_turns",
+                "model_preference",
+                "compaction_model",
+                "system_prompt",
+                "tools_spec",
+                "metadata_json",
+                "trace_id",
+                "model_calls",
+                "tool_calls",
+                "tokens_in",
+                "tokens_out",
+                "last_provider_id",
+                "context_summarized_at_turn",
+                "current_tool_use_id",
+                "current_tool_name",
+                "current_tool_input",
+                "result_text",
+                "error_kind",
+                "error_message",
+                "created_at",
+                "updated_at",
+                "completed_at",
             ):
                 if col in r_data:
                     setattr(existing, col, r_data[col])
         else:
-            db.add(Run(
-                id=rid,
-                api_key_id=r_data.get("api_key_id", ""),
-                owner_node_id=r_data.get("owner_node_id", ""),
-                status=r_data.get("status", "queued"),
-                current_step=r_data.get("current_step"),
-                deadline_ts=r_data.get("deadline_ts", 0.0),
-                max_turns=r_data.get("max_turns", 30),
-                model_preference=r_data.get("model_preference") or [],
-                compaction_model=r_data.get("compaction_model"),
-                system_prompt=r_data.get("system_prompt"),
-                tools_spec=r_data.get("tools_spec") or [],
-                metadata_json=r_data.get("metadata_json") or {},
-                trace_id=r_data.get("trace_id"),
-                model_calls=r_data.get("model_calls", 0),
-                tool_calls=r_data.get("tool_calls", 0),
-                tokens_in=r_data.get("tokens_in", 0),
-                tokens_out=r_data.get("tokens_out", 0),
-                last_provider_id=r_data.get("last_provider_id"),
-                context_summarized_at_turn=r_data.get("context_summarized_at_turn"),
-                current_tool_use_id=r_data.get("current_tool_use_id"),
-                current_tool_name=r_data.get("current_tool_name"),
-                current_tool_input=r_data.get("current_tool_input"),
-                result_text=r_data.get("result_text"),
-                error_kind=r_data.get("error_kind"),
-                error_message=r_data.get("error_message"),
-                created_at=r_data.get("created_at", time.time()),
-                updated_at=incoming_ts or time.time(),
-                completed_at=r_data.get("completed_at"),
-            ))
+            db.add(
+                Run(
+                    id=rid,
+                    api_key_id=r_data.get("api_key_id", ""),
+                    owner_node_id=r_data.get("owner_node_id", ""),
+                    status=r_data.get("status", "queued"),
+                    current_step=r_data.get("current_step"),
+                    deadline_ts=r_data.get("deadline_ts", 0.0),
+                    max_turns=r_data.get("max_turns", 30),
+                    model_preference=r_data.get("model_preference") or [],
+                    compaction_model=r_data.get("compaction_model"),
+                    system_prompt=r_data.get("system_prompt"),
+                    tools_spec=r_data.get("tools_spec") or [],
+                    metadata_json=r_data.get("metadata_json") or {},
+                    trace_id=r_data.get("trace_id"),
+                    model_calls=r_data.get("model_calls", 0),
+                    tool_calls=r_data.get("tool_calls", 0),
+                    tokens_in=r_data.get("tokens_in", 0),
+                    tokens_out=r_data.get("tokens_out", 0),
+                    last_provider_id=r_data.get("last_provider_id"),
+                    context_summarized_at_turn=r_data.get("context_summarized_at_turn"),
+                    current_tool_use_id=r_data.get("current_tool_use_id"),
+                    current_tool_name=r_data.get("current_tool_name"),
+                    current_tool_input=r_data.get("current_tool_input"),
+                    result_text=r_data.get("result_text"),
+                    error_kind=r_data.get("error_kind"),
+                    error_message=r_data.get("error_message"),
+                    created_at=r_data.get("created_at", time.time()),
+                    updated_at=incoming_ts or time.time(),
+                    completed_at=r_data.get("completed_at"),
+                )
+            )
 
     # v5.0.5 — commit runs before lmrh.
     await _section_commit("runs")
@@ -256,6 +294,7 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
     # (status changes during operator review) and merge LWW on proposed_at
     # plus operator-touched columns.
     from app.models.db import LmrhDim, LmrhProposal
+
     for d_data in payload.get("lmrh_dims", []):
         name = d_data.get("name")
         if not name:
@@ -269,18 +308,20 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
             # Don't materialize a peer's tombstone — just skip.
             if peer_deleted_f is not None:
                 continue
-            db.add(LmrhDim(
-                name=name,
-                owner_app=d_data.get("owner_app"),
-                owner_key_id=d_data.get("owner_key_id"),
-                semantics=d_data.get("semantics"),
-                value_type=d_data.get("value_type"),
-                kind=d_data.get("kind", "advisory"),
-                examples=d_data.get("examples") or [],
-                requested_name=d_data.get("requested_name"),
-                registered_at=float(d_data.get("registered_at") or time.time()),
-                registered_by_node=d_data.get("registered_by_node"),
-            ))
+            db.add(
+                LmrhDim(
+                    name=name,
+                    owner_app=d_data.get("owner_app"),
+                    owner_key_id=d_data.get("owner_key_id"),
+                    semantics=d_data.get("semantics"),
+                    value_type=d_data.get("value_type"),
+                    kind=d_data.get("kind", "advisory"),
+                    examples=d_data.get("examples") or [],
+                    requested_name=d_data.get("requested_name"),
+                    registered_at=float(d_data.get("registered_at") or time.time()),
+                    registered_by_node=d_data.get("registered_by_node"),
+                )
+            )
         else:
             # Tombstone propagation: peer reports a delete and ours is newer
             # OR we don't have one → adopt it.
@@ -328,15 +369,17 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
         if existing is None:
             if peer_deleted_f is not None:
                 continue
-            db.add(LmrhProposal(
-                proposed_name=proposed_name,
-                rationale=pr_data.get("rationale"),
-                proposer_app=pr_data.get("proposer_app"),
-                proposer_key_id=pr_data.get("proposer_key_id"),
-                proposed_at=float(proposed_at),
-                status=pr_data.get("status", "pending"),
-                review_note=pr_data.get("review_note"),
-            ))
+            db.add(
+                LmrhProposal(
+                    proposed_name=proposed_name,
+                    rationale=pr_data.get("rationale"),
+                    proposer_app=pr_data.get("proposer_app"),
+                    proposer_key_id=pr_data.get("proposer_key_id"),
+                    proposed_at=float(proposed_at),
+                    status=pr_data.get("status", "pending"),
+                    review_note=pr_data.get("review_note"),
+                )
+            )
         else:
             if peer_deleted_f is not None and (
                 existing.deleted_at is None or peer_deleted_f >= existing.deleted_at
@@ -354,7 +397,7 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
 
     # v3.0.96: replicate operator-configured catalog tables. Apply
     # AFTER providers (above) so FK references to providers.id resolve.
-    from app.models.db import ModelCapability, ModelAlias, OAuthCaptureProfile
+    from app.models.db import ModelAlias, ModelCapability, OAuthCaptureProfile
 
     # ── ModelCapability ─────────────────────────────────────────────────
     # v3.1.2: bulk fetch + in-memory diff replaces the per-row SELECT loop.
@@ -375,9 +418,7 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
     if cap_rows:
         # FK pre-filter — skip rows whose referenced provider hasn't
         # replicated yet. Defer to next sync cycle.
-        known_provider_ids = {
-            pid for (pid,) in (await db.execute(select(Provider.id))).all()
-        }
+        known_provider_ids = {pid for (pid,) in (await db.execute(select(Provider.id))).all()}
         # Filter + collect incoming keys for the bulk fetch
         valid_data: list[dict] = []
         incoming_keys: set[tuple[str, str]] = set()
@@ -397,6 +438,7 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
             # `WHERE (provider_id, model_id) IN ((...), (...), ...)` on
             # SQLite, evaluated as a single planned query.
             from sqlalchemy import tuple_
+
             existing_q = await db.execute(
                 select(ModelCapability).where(
                     tuple_(
@@ -406,8 +448,7 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
                 )
             )
             existing_by_key: dict[tuple[str, str], ModelCapability] = {
-                (r.provider_id, r.model_id): r
-                for r in existing_q.scalars().all()
+                (r.provider_id, r.model_id): r for r in existing_q.scalars().all()
             }
 
             # Now apply each row using the pre-fetched index. This loop is
@@ -419,31 +460,35 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
                 peer_updated = _parse_iso_naive_utc(c_data.get("updated_at"))
                 existing = existing_by_key.get((prov_id, model_id))
                 if existing is None:
-                    db.add(ModelCapability(
-                        provider_id=prov_id,
-                        model_id=model_id,
-                        tasks=c_data.get("tasks") or [],
-                        latency=c_data.get("latency") or "medium",
-                        cost_tier=c_data.get("cost_tier") or "standard",
-                        safety=c_data.get("safety") or 3,
-                        context_length=c_data.get("context_length") or 128000,
-                        regions=c_data.get("regions") or [],
-                        modalities=c_data.get("modalities") or [],
-                        native_reasoning=bool(c_data.get("native_reasoning")),
-                        native_tools=(
-                            bool(c_data.get("native_tools"))
-                            if c_data.get("native_tools") is not None else True
-                        ),
-                        native_vision=(
-                            bool(c_data.get("native_vision"))
-                            if c_data.get("native_vision") is not None else False
-                        ),
-                        source=c_data.get("source") or "inferred",
-                        # v3.6.0 — replicate identity fields on insert
-                        aliases=c_data.get("aliases") or [],
-                        model_family=c_data.get("model_family"),
-                        model_variant=c_data.get("model_variant"),
-                    ))
+                    db.add(
+                        ModelCapability(
+                            provider_id=prov_id,
+                            model_id=model_id,
+                            tasks=c_data.get("tasks") or [],
+                            latency=c_data.get("latency") or "medium",
+                            cost_tier=c_data.get("cost_tier") or "standard",
+                            safety=c_data.get("safety") or 3,
+                            context_length=c_data.get("context_length") or 128000,
+                            regions=c_data.get("regions") or [],
+                            modalities=c_data.get("modalities") or [],
+                            native_reasoning=bool(c_data.get("native_reasoning")),
+                            native_tools=(
+                                bool(c_data.get("native_tools"))
+                                if c_data.get("native_tools") is not None
+                                else True
+                            ),
+                            native_vision=(
+                                bool(c_data.get("native_vision"))
+                                if c_data.get("native_vision") is not None
+                                else False
+                            ),
+                            source=c_data.get("source") or "inferred",
+                            # v3.6.0 — replicate identity fields on insert
+                            aliases=c_data.get("aliases") or [],
+                            model_family=c_data.get("model_family"),
+                            model_variant=c_data.get("model_variant"),
+                        )
+                    )
                     continue
                 # LWW: skip if local is newer or equal
                 local_updated = existing.updated_at
@@ -487,20 +532,22 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
         # FK guard
         prov_id = a_data.get("provider_id")
         if prov_id:
-            prov_check = (await db.execute(
-                select(Provider.id).where(Provider.id == prov_id)
-            )).scalar_one_or_none()
+            prov_check = (
+                await db.execute(select(Provider.id).where(Provider.id == prov_id))
+            ).scalar_one_or_none()
             if prov_check is None:
                 continue  # defer until provider syncs
         result = await db.execute(select(ModelAlias).where(ModelAlias.alias == alias))
         existing = result.scalar_one_or_none()
         if existing is None:
-            db.add(ModelAlias(
-                alias=alias,
-                provider_id=prov_id,
-                model_id=a_data.get("model_id") or "",
-                description=a_data.get("description"),
-            ))
+            db.add(
+                ModelAlias(
+                    alias=alias,
+                    provider_id=prov_id,
+                    model_id=a_data.get("model_id") or "",
+                    description=a_data.get("description"),
+                )
+            )
         else:
             # Apply only fields that differ (avoid no-op writes)
             if a_data.get("provider_id") != existing.provider_id:
@@ -523,14 +570,16 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
         )
         existing = result.scalar_one_or_none()
         if existing is None:
-            db.add(OAuthCaptureProfile(
-                name=name,
-                preset=p_data.get("preset"),
-                upstream_urls=p_data.get("upstream_urls") or [],
-                secret=p_data.get("secret"),
-                enabled=bool(p_data.get("enabled")),
-                notes=p_data.get("notes"),
-            ))
+            db.add(
+                OAuthCaptureProfile(
+                    name=name,
+                    preset=p_data.get("preset"),
+                    upstream_urls=p_data.get("upstream_urls") or [],
+                    secret=p_data.get("secret"),
+                    enabled=bool(p_data.get("enabled")),
+                    notes=p_data.get("notes"),
+                )
+            )
         else:
             if p_data.get("preset") != existing.preset:
                 existing.preset = p_data.get("preset")
@@ -591,6 +640,7 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
     if blocked_ips_changed:
         try:
             from app.middleware.ip_block import _clear_cache_for_tests
+
             _clear_cache_for_tests()
             logger.info("cluster_ip_block_cache_invalidated")
         except Exception as exc:
@@ -598,27 +648,30 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
 
     if settings_to_apply:
         config_runtime.apply(settings_to_apply)
-        logger.info("cluster_settings_applied count=%s keys=%s", len(settings_to_apply), list(settings_to_apply))
-
+        logger.info(
+            "cluster_settings_applied count=%s keys=%s",
+            len(settings_to_apply),
+            list(settings_to_apply),
+        )
 
 
 # v3.9.8 (P5 refactor) — per-table handlers live in sync_handlers.py.
 # Re-import here so this module's public surface is unchanged.
 from app.cluster.sync_handlers import (  # noqa: E402,F401
-    _apply_blocked_ips,
     _apply_ai_reviews,
-    _apply_provider_ai_reviews,
+    # v5.0.10 — extracted from inline apply_sync
+    _apply_api_keys,
+    _apply_blocked_ips,
     _apply_caller_memory,
     _apply_caller_memory_markers,
-    _apply_external_usage_snapshots,
-    _apply_provider_node_auth_states,
+    # v5.0.18 — UI-configurable cluster peer list
+    _apply_cluster_peers,
     # v5.0.0 — compliance audit trail
     _apply_compliance_events,
     _apply_compliance_policy_changes,
-    # v5.0.10 — extracted from inline apply_sync
-    _apply_api_keys,
+    _apply_external_usage_snapshots,
+    _apply_provider_ai_reviews,
+    _apply_provider_node_auth_states,
     _apply_providers,
     _parse_iso_naive_utc,
-    # v5.0.18 — UI-configurable cluster peer list
-    _apply_cluster_peers,
 )

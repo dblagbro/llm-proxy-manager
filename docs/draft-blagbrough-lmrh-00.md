@@ -12,7 +12,6 @@ author:
   -
     name: D. Blagbrough
     organization: VoIP Guru
-    email: dblagbro@voipguru.org
 
 normative:
   RFC2119:

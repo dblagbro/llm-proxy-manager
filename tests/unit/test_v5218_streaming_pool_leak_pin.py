@@ -28,7 +28,9 @@ Recognized reasons:
 Any handler matching (1)+(2) WITHOUT a matching comment fails this
 test. Runs at CI time.
 """
+
 from __future__ import annotations
+
 import re
 from pathlib import Path
 

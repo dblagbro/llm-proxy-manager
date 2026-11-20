@@ -21,6 +21,7 @@ M-4 (CB-sync exemption):
     node_local_session providers — the per-node auth_state table is
     the authoritative signal instead.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -28,25 +29,30 @@ from unittest.mock import patch
 
 import pytest
 
-from app.routing.node_auth_state import is_local_node_routable
 from app.models.db import Provider, ProviderNodeAuthState
-
+from app.routing.node_auth_state import is_local_node_routable
 
 # ── M-4 routing filter logic ─────────────────────────────────────
 
 
 def test_is_local_node_routable_ok_only():
-    assert is_local_node_routable(
-        ProviderNodeAuthState(provider_id="x", node_id="n",
-                              auth_state="ok",
-                              last_check_at=datetime.utcnow())
-    ) is True
+    assert (
+        is_local_node_routable(
+            ProviderNodeAuthState(
+                provider_id="x", node_id="n", auth_state="ok", last_check_at=datetime.utcnow()
+            )
+        )
+        is True
+    )
     for s in ("expired", "needs_reauth", "never_authed", "bridge_down"):
-        assert is_local_node_routable(
-            ProviderNodeAuthState(provider_id="x", node_id="n",
-                                  auth_state=s,
-                                  last_check_at=datetime.utcnow())
-        ) is False
+        assert (
+            is_local_node_routable(
+                ProviderNodeAuthState(
+                    provider_id="x", node_id="n", auth_state=s, last_check_at=datetime.utcnow()
+                )
+            )
+            is False
+        )
     assert is_local_node_routable(None) is False  # fail-safe
 
 
@@ -57,6 +63,7 @@ def test_router_filter_skips_node_local_session_when_not_routable():
     the contract (full integration test lives in select_provider's
     own test file, runs against a live DB)."""
     from pathlib import Path
+
     src = Path("app/routing/router.py").read_text()
     # The filter block has these unique marker strings
     assert "v4.4 M-4 (Path A)" in src
@@ -70,6 +77,7 @@ def test_router_filter_noop_for_providers_without_flag():
     body uses .get("node_local_session") which falls through cleanly
     for missing key / False / None / explicit-False."""
     from pathlib import Path
+
     src = Path("app/routing/router.py").read_text()
     # The continue-when-flag-absent path
     assert 'if not _ec.get("node_local_session"):' in src
@@ -85,31 +93,45 @@ async def test_persist_auto_skip_exempts_node_local_session():
     get its Provider.auto_skip_until stamped by the persistent-
     auth-failure path. The per-node auth_state table is the
     authoritative cluster-visible signal instead."""
-    from app.routing.circuit_breaker import _persist_auto_skip
     from sqlalchemy.ext.asyncio import (
-        create_async_engine, async_sessionmaker, AsyncSession,
+        AsyncSession,
+        async_sessionmaker,
+        create_async_engine,
     )
+
     from app.models.db import Base
+    from app.routing.circuit_breaker import _persist_auto_skip
+
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    Session = async_sessionmaker(engine, class_=AsyncSession,
-                                 expire_on_commit=False)
+    Session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     async with Session() as db:
-        db.add(Provider(
-            id="grok-prov-tagged", name="grok-web-tagged",
-            provider_type="grok-web", priority=1, enabled=True,
-            extra_config={"node_local_session": True, "bridge_url": "x"},
-        ))
-        db.add(Provider(
-            id="grok-prov-untagged", name="grok-web-untagged",
-            provider_type="grok-web", priority=2, enabled=True,
-            extra_config={"bridge_url": "y"},
-        ))
+        db.add(
+            Provider(
+                id="grok-prov-tagged",
+                name="grok-web-tagged",
+                provider_type="grok-web",
+                priority=1,
+                enabled=True,
+                extra_config={"node_local_session": True, "bridge_url": "x"},
+            )
+        )
+        db.add(
+            Provider(
+                id="grok-prov-untagged",
+                name="grok-web-untagged",
+                provider_type="grok-web",
+                priority=2,
+                enabled=True,
+                extra_config={"bridge_url": "y"},
+            )
+        )
         await db.commit()
 
     # Patch AsyncSessionLocal where _persist_auto_skip imports it from.
     import app.models.database as db_mod
+
     with patch.object(db_mod, "AsyncSessionLocal", Session):
         await _persist_auto_skip("grok-prov-tagged", "invalid x-api-key")
         await _persist_auto_skip("grok-prov-untagged", "invalid x-api-key")
@@ -117,17 +139,20 @@ async def test_persist_auto_skip_exempts_node_local_session():
     # Tagged provider: auto_skip_until should remain None.
     # Untagged: should be set ~24h out.
     from sqlalchemy import select
+
     async with Session() as db:
-        tagged = (await db.execute(
-            select(Provider).where(Provider.id == "grok-prov-tagged")
-        )).scalar_one()
-        untagged = (await db.execute(
-            select(Provider).where(Provider.id == "grok-prov-untagged")
-        )).scalar_one()
-        assert tagged.auto_skip_until is None, \
+        tagged = (
+            await db.execute(select(Provider).where(Provider.id == "grok-prov-tagged"))
+        ).scalar_one()
+        untagged = (
+            await db.execute(select(Provider).where(Provider.id == "grok-prov-untagged"))
+        ).scalar_one()
+        assert tagged.auto_skip_until is None, (
             "node_local_session provider should NOT receive auto_skip_until"
-        assert untagged.auto_skip_until is not None, \
+        )
+        assert untagged.auto_skip_until is not None, (
             "normal provider should receive auto_skip_until on persistent-auth-failure"
+        )
         assert untagged.auto_skip_reason == "persistent_auth_failure"
     await engine.dispose()
 
@@ -142,6 +167,7 @@ def test_probe_outcome_mapping_matches_classifier_buckets():
     cases (auth→needs_reauth; network/timeout/5xx/rate_limit→
     bridge_down; else→needs_reauth)."""
     from pathlib import Path
+
     src = Path("app/monitoring/keepalive.py").read_text()
     # The hook block has these unique markers
     assert "v4.4 M-3" in src
@@ -163,6 +189,7 @@ def test_bug051_rate_limit_maps_to_bridge_down():
     future Path A activation) would semi-permanently gate the
     node out of routing."""
     from app.routing.circuit_breaker import classify_error
+
     # The classifier returns "rate_limit" for these strings:
     samples = [
         'grok-web bridge 429: {"detail":"grok.com 429 (cached, cool-off 24s remaining)..."}',
@@ -171,14 +198,14 @@ def test_bug051_rate_limit_maps_to_bridge_down():
         "ratelimit hit; throttled",
     ]
     for s in samples:
-        assert classify_error(s) == "rate_limit", \
-            f"classifier should bucket {s!r} as rate_limit"
+        assert classify_error(s) == "rate_limit", f"classifier should bucket {s!r} as rate_limit"
 
     # And the M-3 mapping branches rate_limit into bridge_down (not
     # needs_reauth). We assert the source contains the explicit
     # branch because the hook itself is buried in record_outcome's
     # try-block and is hard to call directly without a probe context.
     from pathlib import Path
+
     src = Path("app/monitoring/keepalive.py").read_text()
     # The new branch line — rate_limit appended to the transient set.
     assert 'in ("network", "timeout", "upstream_5xx", "rate_limit")' in src
@@ -193,18 +220,20 @@ def test_bug051_billing_and_bad_request_still_needs_reauth():
     design. Source-level guard so a future refactor doesn't
     accidentally widen the fix into a regression."""
     from app.routing.circuit_breaker import classify_error
+
     # billing/bad_request bucketing is unchanged:
     assert classify_error("HTTP 402 Payment Required") == "billing"
     assert classify_error("HTTP 400 bad json") == "bad_request"
     # And the else-branch comment in keepalive.py still names them:
     from pathlib import Path
+
     src = Path("app/monitoring/keepalive.py").read_text()
     # Source comment names billing and bad_request as needs_reauth.
     assert "bad_request" in src and "billing" in src
     # The else: branch must still set needs_reauth.
     # Locate the M-3 mapping block and assert the else branch lands.
     block_start = src.index("# Classify the probe error into an auth_state")
-    block = src[block_start: block_start + 1500]
+    block = src[block_start : block_start + 1500]
     assert "else:" in block and '_new_state = "needs_reauth"' in block
 
 
@@ -214,6 +243,7 @@ def test_probe_hook_writes_local_state_best_effort_swallow():
     record_outcome flow. Source-level check for the
     try/except/.debug-log shape."""
     from pathlib import Path
+
     src = Path("app/monitoring/keepalive.py").read_text()
     assert "keepalive.m3_node_auth_state_write_failed" in src
     # except Exception means everything swallowed

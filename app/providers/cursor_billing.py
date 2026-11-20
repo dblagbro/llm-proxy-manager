@@ -66,13 +66,14 @@ artifacts but the SEMANTICS (utilization % + reset timestamp) generalize
 across vendors. Renaming to ``current_utilization`` / ``period_resets_at``
 would be a deferred follow-up.
 """
+
 from __future__ import annotations
 
 import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -105,15 +106,16 @@ _BROWSER_HEADERS = {
 class FetchResult:
     """Mirror of anthropic_billing.FetchResult shape so the upstream
     snapshot-writer can stay vendor-agnostic."""
+
     ok: bool
-    http_status: Optional[int]
-    auth_state: Optional[str]  # "ok" | "session_expired" | "network_error" | "parse_error"
-    error: Optional[str]
-    raw_body: Optional[str]    # JSON-encoded merge of all 3 endpoint bodies on success
-    parsed: Optional[dict]     # the merged dict for parse_usage_response()
+    http_status: int | None
+    auth_state: str | None  # "ok" | "session_expired" | "network_error" | "parse_error"
+    error: str | None
+    raw_body: str | None  # JSON-encoded merge of all 3 endpoint bodies on success
+    parsed: dict | None  # the merged dict for parse_usage_response()
 
 
-def _parse_iso(s: Any) -> Optional[datetime]:
+def _parse_iso(s: Any) -> datetime | None:
     if not isinstance(s, str):
         return None
     try:
@@ -177,9 +179,9 @@ async def fetch_usage(*, cookie_value: str, timeout: float = 15.0) -> FetchResul
     headers["Cookie"] = f"WorkosCursorSessionToken={cookie_value}"
 
     merged: dict = {"auth_me": None, "usage_summary": None, "aggregated_events": None}
-    last_status: Optional[int] = None
+    last_status: int | None = None
     auth_failed = False
-    network_error: Optional[str] = None
+    network_error: str | None = None
 
     async def _get_one(client, path: str, key: str):
         nonlocal last_status, auth_failed, network_error
@@ -219,26 +221,32 @@ async def fetch_usage(*, cookie_value: str, timeout: float = 15.0) -> FetchResul
                 await _get_one(client, AGGREGATED_EVENTS_PATH, "aggregated_events")
     except httpx.HTTPError as e:
         return FetchResult(
-            ok=False, http_status=last_status,
+            ok=False,
+            http_status=last_status,
             auth_state="network_error",
             error=f"{type(e).__name__}: {e}",
-            raw_body=None, parsed=None,
+            raw_body=None,
+            parsed=None,
         )
 
     if network_error:
         return FetchResult(
-            ok=False, http_status=last_status,
+            ok=False,
+            http_status=last_status,
             auth_state="network_error",
             error=network_error,
-            raw_body=None, parsed=None,
+            raw_body=None,
+            parsed=None,
         )
     if auth_failed:
         return FetchResult(
-            ok=False, http_status=last_status,
+            ok=False,
+            http_status=last_status,
             auth_state="session_expired",
             error="Cursor returned 401/403 — the stored WorkosCursorSessionToken "
-                  "is no longer valid. Operator: re-authorize the provider.",
-            raw_body=None, parsed=None,
+            "is no longer valid. Operator: re-authorize the provider.",
+            raw_body=None,
+            parsed=None,
         )
 
     # We need at LEAST usage_summary for the routing signal; the other
@@ -248,14 +256,17 @@ async def fetch_usage(*, cookie_value: str, timeout: float = 15.0) -> FetchResul
     # operator sees something happened.
     if merged.get("usage_summary") is None:
         return FetchResult(
-            ok=False, http_status=last_status,
+            ok=False,
+            http_status=last_status,
             auth_state="parse_error",
             error="usage-summary endpoint returned no JSON",
-            raw_body=json.dumps(merged), parsed=merged,
+            raw_body=json.dumps(merged),
+            parsed=merged,
         )
 
     return FetchResult(
-        ok=True, http_status=200,
+        ok=True,
+        http_status=200,
         auth_state="ok",
         error=None,
         raw_body=json.dumps(merged),
@@ -282,8 +293,9 @@ async def scrape_provider_into_snapshot(db, provider) -> dict:
     scrapes ONE account per sweep and rotates through them across
     sweeps — cheap step toward per-account independence.
     """
-    from app.models.db import ExternalUsageSnapshot, ProviderOAuthAccount
     from sqlalchemy import select, update
+
+    from app.models.db import ExternalUsageSnapshot, ProviderOAuthAccount
 
     # Pick the least-recently-scraped enabled account on this provider,
     # if any exist. Falls back to legacy Provider.api_key when none.
@@ -308,7 +320,10 @@ async def scrape_provider_into_snapshot(db, provider) -> dict:
         _account_id_for_writeback = None
 
     if not scrape_token:
-        return {"ok": False, "reason": "cursor-oauth provider has no api_key (stored cookie) configured"}
+        return {
+            "ok": False,
+            "reason": "cursor-oauth provider has no api_key (stored cookie) configured",
+        }
 
     result = await fetch_usage(cookie_value=scrape_token)
 
@@ -333,11 +348,13 @@ async def scrape_provider_into_snapshot(db, provider) -> dict:
     # for 24h so the next requests don't silently hit empty-content
     # responses. On Free→Pro upgrade, clear the auto-skip if the
     # current skip reason matches our downgrade marker.
-    membership_event: Optional[str] = None
+    membership_event: str | None = None
     new_tier = snap_kwargs.get("membership_tier")
     if result.ok and new_tier:
-        from sqlalchemy import select, desc
         from datetime import datetime, timedelta
+
+        from sqlalchemy import desc, select
+
         prev_q = await db.execute(
             select(ExternalUsageSnapshot)
             .where(ExternalUsageSnapshot.provider_id == provider.id)
@@ -359,23 +376,29 @@ async def scrape_provider_into_snapshot(db, provider) -> dict:
                 membership_event = f"downgrade_{prev_tier}_to_free"
                 logger.warning(
                     "cursor_billing.membership_downgrade",
-                    extra={"provider_id": provider.id,
-                           "prev_tier": prev_tier, "new_tier": new_tier,
-                           "auto_skip_until": str(provider.auto_skip_until)},
+                    extra={
+                        "provider_id": provider.id,
+                        "prev_tier": prev_tier,
+                        "new_tier": new_tier,
+                        "auto_skip_until": str(provider.auto_skip_until),
+                    },
                 )
             elif prev_tier == "free" and new_tier != "free":
                 # Free → Pro/Business upgrade. Clear any auto-skip
                 # whose reason looks like the downgrade marker.
-                if (provider.auto_skip_until is not None
-                        and (provider.auto_skip_reason or "").startswith(
-                            "cursor membership downgraded")):
+                if provider.auto_skip_until is not None and (
+                    provider.auto_skip_reason or ""
+                ).startswith("cursor membership downgraded"):
                     provider.auto_skip_until = None
                     provider.auto_skip_reason = None
                     membership_event = f"upgrade_free_to_{new_tier}"
                     logger.info(
                         "cursor_billing.membership_upgrade_cleared_skip",
-                        extra={"provider_id": provider.id,
-                               "prev_tier": prev_tier, "new_tier": new_tier},
+                        extra={
+                            "provider_id": provider.id,
+                            "prev_tier": prev_tier,
+                            "new_tier": new_tier,
+                        },
                     )
 
     # v5.17.0 (#508 P1-4) — propagate this scrape's utilization to the
@@ -394,15 +417,19 @@ async def scrape_provider_into_snapshot(db, provider) -> dict:
             except Exception as _write_e:
                 logger.debug(
                     "cursor_billing.per_account_util_writeback_failed account=%s err=%s",
-                    _account_id_for_writeback, _write_e,
+                    _account_id_for_writeback,
+                    _write_e,
                 )
 
     rotation_decision: dict = {}
     if result.ok:
         try:
             from app.routing.external_rotation import evaluate_rules_for_provider
+
             rotation_decision = await evaluate_rules_for_provider(
-                db, provider, snapshot=snap,
+                db,
+                provider,
+                snapshot=snap,
             )
         except Exception as exc:
             logger.warning(

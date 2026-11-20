@@ -9,6 +9,7 @@ Single GET returns everything the dashboard needs:
 
 Read-only; admin-gated.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -19,7 +20,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.admin import AdminUser, require_admin
 from app.models.database import get_db
-
 
 router = APIRouter(prefix="/api/admin/mcp", tags=["admin", "mcp"])
 
@@ -42,15 +42,14 @@ async def mcp_summary(
     # ── Live tool inventory (from FastMCP root) ─────────────────────
     try:
         from app.main import _mcp_sub_app  # type: ignore
+
         if _mcp_sub_app is not None:
             mcp = _mcp_sub_app.state.mcp
             tools = await mcp.list_tools()
             out["tools_live"] = [
                 {
                     "name": getattr(t, "name", ""),
-                    "description": (
-                        getattr(t, "description", "") or ""
-                    )[:200],
+                    "description": (getattr(t, "description", "") or "")[:200],
                 }
                 for t in tools
             ]
@@ -60,13 +59,15 @@ async def mcp_summary(
     # ── Aggregations from mcp_tool_calls (last 24h) ────────────────
     try:
         # Total counts
-        row = (await db.execute(
-            text(
-                "SELECT COUNT(*), SUM(CASE WHEN ok=0 THEN 1 ELSE 0 END) "
-                "FROM mcp_tool_calls "
-                "WHERE created_at >= datetime('now','-24 hours')"
+        row = (
+            await db.execute(
+                text(
+                    "SELECT COUNT(*), SUM(CASE WHEN ok=0 THEN 1 ELSE 0 END) "
+                    "FROM mcp_tool_calls "
+                    "WHERE created_at >= datetime('now','-24 hours')"
+                )
             )
-        )).first()
+        ).first()
         if row:
             out["total_calls_24h"] = int(row[0] or 0)
             out["total_errors_24h"] = int(row[1] or 0)
@@ -82,8 +83,7 @@ async def mcp_summary(
             )
         )
         out["calls_by_tool_24h"] = [
-            {"tool_name": r[0], "count": int(r[1]), "errors": int(r[2] or 0)}
-            for r in rs.fetchall()
+            {"tool_name": r[0], "count": int(r[1]), "errors": int(r[2] or 0)} for r in rs.fetchall()
         ]
 
         # By key
@@ -96,9 +96,7 @@ async def mcp_summary(
                 "GROUP BY api_key_id ORDER BY n DESC LIMIT 20"
             )
         )
-        out["calls_by_key_24h"] = [
-            {"api_key_id": r[0], "count": int(r[1])} for r in rs.fetchall()
-        ]
+        out["calls_by_key_24h"] = [{"api_key_id": r[0], "count": int(r[1])} for r in rs.fetchall()]
 
         # Latency by tool — SQLite percentile_disc would be nice but
         # not available; sort + index manually.
@@ -120,14 +118,18 @@ async def mcp_summary(
                 continue
             p50 = lats[len(lats) // 2]
             p95 = lats[max(0, int(len(lats) * 0.95) - 1)]
-            latency_rows.append({
-                "tool_name": name,
-                "p50_ms": p50,
-                "p95_ms": p95,
-                "n": len(lats),
-            })
+            latency_rows.append(
+                {
+                    "tool_name": name,
+                    "p50_ms": p50,
+                    "p95_ms": p95,
+                    "n": len(lats),
+                }
+            )
         out["latency_by_tool_24h"] = sorted(
-            latency_rows, key=lambda r: r["n"], reverse=True,
+            latency_rows,
+            key=lambda r: r["n"],
+            reverse=True,
         )
     except Exception as exc:
         out["agg_error"] = repr(exc)

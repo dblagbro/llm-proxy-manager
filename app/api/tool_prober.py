@@ -4,6 +4,7 @@ Two endpoints:
 - POST /api/providers/{id}/tool-prober-trigger  — fire one probe now
 - GET  /api/providers/{id}/tool-probe-history   — last N probes for inspection
 """
+
 from __future__ import annotations
 
 import logging
@@ -23,7 +24,9 @@ router = APIRouter(prefix="/api/providers", tags=["tool-prober"])
 @router.post("/{provider_id}/tool-prober-trigger")
 async def trigger_probe_now(
     provider_id: str,
-    model_id: str | None = Query(default=None, description="Override model (defaults to provider.default_model)"),
+    model_id: str | None = Query(
+        default=None, description="Override model (defaults to provider.default_model)"
+    ),
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(require_admin),
 ):
@@ -45,7 +48,11 @@ async def trigger_probe_now(
     model = model_id or provider.default_model
     if not model:
         raise HTTPException(400, "provider has no default_model and no model_id override given")
-    from app.monitoring.tool_capability_prober import probe_one_model, update_native_tools_from_rolling
+    from app.monitoring.tool_capability_prober import (
+        probe_one_model,
+        update_native_tools_from_rolling,
+    )
+
     result = await probe_one_model(db, provider, model)
     new_val = await update_native_tools_from_rolling(db, provider.id, model)
     return {
@@ -68,12 +75,18 @@ async def probe_history(
     provider = rs.scalar_one_or_none()
     if not provider or provider.deleted_at is not None:
         raise HTTPException(404, "Provider not found")
-    rows = (await db.execute(
-        select(ModelToolProbe)
-        .where(ModelToolProbe.provider_id == provider_id)
-        .order_by(desc(ModelToolProbe.captured_at))
-        .limit(limit)
-    )).scalars().all()
+    rows = (
+        (
+            await db.execute(
+                select(ModelToolProbe)
+                .where(ModelToolProbe.provider_id == provider_id)
+                .order_by(desc(ModelToolProbe.captured_at))
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
     return [
         {
             "id": r.id,

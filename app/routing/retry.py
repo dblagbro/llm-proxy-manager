@@ -9,10 +9,10 @@ v3.0.14: also catches NotFoundError when the failing model is in our
 deprecation registry, persists the replacement on providers.default_model,
 and retries once with the new model on the same upstream.
 """
+
 import asyncio
 import logging
 import random
-from typing import Optional
 
 import litellm
 from litellm import RateLimitError
@@ -20,12 +20,10 @@ from litellm import RateLimitError
 # v3.0.14: NotFoundError isn't always present on the litellm stub used by
 # unit tests; resolve it defensively so importing retry.py doesn't blow up
 # in test envs that pre-stub litellm with only RateLimitError.
-NotFoundError = getattr(litellm, "NotFoundError", None) or type(
-    "NotFoundError", (Exception,), {}
-)
-
-from app.routing.circuit_breaker import is_billing_error
 from app.providers.deprecations import MODEL_DEPRECATIONS
+from app.routing.circuit_breaker import is_billing_error
+
+NotFoundError = getattr(litellm, "NotFoundError", None) or type("NotFoundError", (Exception,), {})
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +37,7 @@ def _strip_prefix(model: str) -> str:
     return model
 
 
-def _replacement_for(model: str) -> Optional[str]:
+def _replacement_for(model: str) -> str | None:
     """Return the replacement model id for ``model`` if it (or its
     prefix-stripped form) is in MODEL_DEPRECATIONS.
 
@@ -67,9 +65,10 @@ async def _persist_default_model_bump(old_model: str, new_model: str) -> int:
     ``old_model`` (prefix-stripped) to ``new_model`` (prefix-stripped).
     Returns the number of rows updated.
     """
+    from sqlalchemy import select
+
     from app.models.database import AsyncSessionLocal
     from app.models.db import Provider
-    from sqlalchemy import select
 
     bare_old = _strip_prefix(old_model)
     bare_new = _strip_prefix(new_model)
@@ -103,8 +102,10 @@ async def acompletion_with_retry(
     # whether to mark a run as failed vs. requeue. The TTL cache
     # shared with the API path means most calls don't touch the DB.
     from app.monitoring.llm_emergency_stop import (
-        is_llm_stopped_session_less, LLMEmergencyStopError,
+        LLMEmergencyStopError,
+        is_llm_stopped_session_less,
     )
+
     if await is_llm_stopped_session_less():
         raise LLMEmergencyStopError()
 
@@ -122,6 +123,7 @@ async def acompletion_with_retry(
     api_base = kwargs.get("api_base") or ""
     if "cursor-bridge" in api_base:
         from app.providers.cursor_oauth import normalize_messages_for_bridge
+
         messages = normalize_messages_for_bridge(messages)
 
     deprecation_retry_done = False
@@ -144,12 +146,16 @@ async def acompletion_with_retry(
             except Exception as bump_exc:
                 logger.warning(
                     "deprecation.runtime_bump_persist_failed model=%s err=%s",
-                    current_model, bump_exc,
+                    current_model,
+                    bump_exc,
                 )
                 bumped = 0
             logger.warning(
                 "deprecation.runtime_bump model=%s -> %s persisted_rows=%d cause=%s",
-                current_model, replacement, bumped, str(exc)[:200],
+                current_model,
+                replacement,
+                bumped,
+                str(exc)[:200],
             )
             current_model = replacement
             deprecation_retry_done = True
@@ -182,6 +188,6 @@ def _parse_retry_after(exc: RateLimitError) -> float:
 
 
 def _backoff(attempt: int, retry_after: float) -> float:
-    exp = min(retry_after, (2 ** attempt) * 2.0)
+    exp = min(retry_after, (2**attempt) * 2.0)
     jitter = random.uniform(0, exp * 0.25)
     return min(exp + jitter, _MAX_WAIT_SEC)

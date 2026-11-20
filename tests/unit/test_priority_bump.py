@@ -1,11 +1,10 @@
 """v2.8.2: priority auto-bump on insert/update — chain-reaction shifts."""
+
 from __future__ import annotations
 
-import asyncio
 import sys
 import types
-from datetime import datetime, timezone
-UTC = timezone.utc
+from datetime import UTC, datetime
 
 import pytest
 
@@ -17,26 +16,44 @@ def _stub():
         m.RateLimitError = type("RateLimitError", (Exception,), {})
         sys.modules["litellm"] = m
     if "prometheus_client" not in sys.modules:
+
         class _Noop:
-            def __init__(self, *a, **kw): pass
-            def __call__(self, *a, **kw): return self
-            def labels(self, *a, **kw): return self
-            def inc(self, *a, **kw): pass
-            def observe(self, *a, **kw): pass
-            def set(self, *a, **kw): pass
-            def info(self, *a, **kw): pass
+            def __init__(self, *a, **kw):
+                pass
+
+            def __call__(self, *a, **kw):
+                return self
+
+            def labels(self, *a, **kw):
+                return self
+
+            def inc(self, *a, **kw):
+                pass
+
+            def observe(self, *a, **kw):
+                pass
+
+            def set(self, *a, **kw):
+                pass
+
+            def info(self, *a, **kw):
+                pass
+
         m = types.ModuleType("prometheus_client")
         m.CONTENT_TYPE_LATEST = "text/plain"
         m.Counter = m.Gauge = m.Histogram = m.Info = _Noop
         m.generate_latest = lambda: b""
         sys.modules["prometheus_client"] = m
+
+
 _stub()
 
 
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
-from sqlalchemy import select
-from app.models.db import Base, Provider
-from app.api.providers import _bump_priority_conflicts
+from sqlalchemy import select  # noqa: E402
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine  # noqa: E402
+
+from app.api.providers import _bump_priority_conflicts  # noqa: E402
+from app.models.db import Base, Provider  # noqa: E402
 
 
 @pytest.fixture
@@ -61,9 +78,9 @@ def _make(name: str, priority: int, *, created_offset_s: int = 0) -> Provider:
         timeout_sec=30,
         exclude_from_tool_requests=False,
         extra_config={},
-        created_at=datetime.now(UTC).replace(microsecond=0).fromtimestamp(
-            1000000 + created_offset_s, UTC
-        ),
+        created_at=datetime.now(UTC)
+        .replace(microsecond=0)
+        .fromtimestamp(1000000 + created_offset_s, UTC),
     )
 
 
@@ -86,8 +103,7 @@ class TestBumpPriorityConflicts:
         n = await _bump_priority_conflicts(db, 2)
         await db.commit()
         assert n == 1
-        by_name = {r.name: r.priority for r in
-                    (await db.execute(select(Provider))).scalars().all()}
+        by_name = {r.name: r.priority for r in (await db.execute(select(Provider))).scalars().all()}
         assert by_name == {"a": 1, "b": 3}
 
     @pytest.mark.asyncio
@@ -99,8 +115,7 @@ class TestBumpPriorityConflicts:
         n = await _bump_priority_conflicts(db, 2)
         await db.commit()
         assert n == 5  # b, c, d, e, f all bumped
-        by_name = {r.name: r.priority for r in
-                    (await db.execute(select(Provider))).scalars().all()}
+        by_name = {r.name: r.priority for r in (await db.execute(select(Provider))).scalars().all()}
         # The new row would slot into 2 — caller does that. Bumping leaves
         # priorities {a:1, b:3, c:4, d:5, e:6, f:7} with slot 2 unoccupied.
         assert by_name == {"a": 1, "b": 3, "c": 4, "d": 5, "e": 6, "f": 7}
@@ -114,8 +129,7 @@ class TestBumpPriorityConflicts:
         n = await _bump_priority_conflicts(db, 3)
         await db.commit()
         assert n == 2  # b → 4, c → 5
-        by_name = {r.name: r.priority for r in
-                    (await db.execute(select(Provider))).scalars().all()}
+        by_name = {r.name: r.priority for r in (await db.execute(select(Provider))).scalars().all()}
         # b bumped to 4, c bumped to 5; d stays at 7 (no chain-reaction past 5)
         assert by_name == {"a": 1, "b": 4, "c": 5, "d": 7}
 
@@ -128,8 +142,7 @@ class TestBumpPriorityConflicts:
         n = await _bump_priority_conflicts(db, 2, exclude_id="b")
         await db.commit()
         assert n == 1  # only c
-        by_name = {r.name: r.priority for r in
-                    (await db.execute(select(Provider))).scalars().all()}
+        by_name = {r.name: r.priority for r in (await db.execute(select(Provider))).scalars().all()}
         # c bumped 2→3; b unchanged here (caller will then set b.priority=2)
         assert by_name == {"a": 1, "b": 5, "c": 3}
 
@@ -138,15 +151,16 @@ class TestBumpPriorityConflicts:
         # Defensive: pre-existing duplicates at the same priority both bump
         # (and chain-react). a=1, b=2, c=2 (duplicate). New asks 2 → both b
         # and c bump to 3 in one sweep.
-        db.add_all([
-            _make("a", 1),
-            _make("b", 2, created_offset_s=10),
-            _make("c", 2, created_offset_s=20),
-        ])
+        db.add_all(
+            [
+                _make("a", 1),
+                _make("b", 2, created_offset_s=10),
+                _make("c", 2, created_offset_s=20),
+            ]
+        )
         await db.commit()
         n = await _bump_priority_conflicts(db, 2)
         await db.commit()
         assert n == 2
-        by_name = {r.name: r.priority for r in
-                    (await db.execute(select(Provider))).scalars().all()}
+        by_name = {r.name: r.priority for r in (await db.execute(select(Provider))).scalars().all()}
         assert by_name == {"a": 1, "b": 3, "c": 3}

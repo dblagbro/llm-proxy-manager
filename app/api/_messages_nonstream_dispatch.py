@@ -18,15 +18,18 @@ and it reached inside the function to reorder the local imports and delete
 ``grade_answer`` from one of them — breaking byte-identity and 14 tests. The
 function-local imports here are part of the moved code, not header hygiene.
 """
+
 from __future__ import annotations
 
-from app.api._messages_response_dispatch import MessagesDispatchCtx
 import logging
 import time
+
 from fastapi.responses import JSONResponse, StreamingResponse
+
 from app.api._messages_dispatch import (
     try_cascade_dispatch,
 )
+from app.api._messages_response_dispatch import MessagesDispatchCtx
 from app.cache.middleware import maybe_store
 from app.config import settings
 from app.cot.sse import (
@@ -72,9 +75,10 @@ async def dispatch_non_streaming(ctx: MessagesDispatchCtx):
 
     t0 = time.monotonic()
     # Wave 3 #17 — ordered fallback across ranked providers
-    from app.routing.fallback import try_ranked_non_streaming
     # Wave 3 #14 — cascade routing (cheap → grade → escalate)
-    from app.routing.cascade import cascade_requested, grade_answer
+    from app.routing.cascade import cascade_requested
+    from app.routing.fallback import try_ranked_non_streaming
+
     lmrh_cascade = hint.get("cascade").value if (hint and hint.get("cascade")) else None
     do_cascade = cascade_requested(lmrh_cascade, x_cot_cascade)
 
@@ -99,8 +103,11 @@ async def dispatch_non_streaming(ctx: MessagesDispatchCtx):
         # codex-oauth + claude-oauth same code path once operator
         # seeds accounts). No-op for non-OAuth providers.
         from app.providers.oauth_account_selector import apply_fanout_to_kwargs
+
         _oauth_account_id = await apply_fanout_to_kwargs(
-            local_extra, r.provider, db,
+            local_extra,
+            r.provider,
+            db,
         )
         if _oauth_account_id:
             resp_headers["X-OAuth-Account"] = _oauth_account_id
@@ -111,8 +118,10 @@ async def dispatch_non_streaming(ctx: MessagesDispatchCtx):
         except Exception:
             pass
         return await acompletion_with_retry(
-            model=r.litellm_model, messages=messages_list,
-            stream=False, **local_extra,
+            model=r.litellm_model,
+            messages=messages_list,
+            stream=False,
+            **local_extra,
         )
 
     # Cascade: cheap first, grade, escalate only on reject.
@@ -124,10 +133,15 @@ async def dispatch_non_streaming(ctx: MessagesDispatchCtx):
     if do_cascade and not has_tools and not route.cot_engaged:
         cascade_resp = await try_cascade_dispatch(
             route,
-            db=db, key_record=key_record, hint=hint,
-            has_images=has_images, messages_list=messages_list,
-            cache_decision=cache_decision, resp_headers=resp_headers,
-            max_tokens=max_tokens, t0=t0,
+            db=db,
+            key_record=key_record,
+            hint=hint,
+            has_images=has_images,
+            messages_list=messages_list,
+            cache_decision=cache_decision,
+            resp_headers=resp_headers,
+            max_tokens=max_tokens,
+            t0=t0,
             call_with_route=_call_with_route,
         )
         if cascade_resp is not None:
@@ -135,12 +149,15 @@ async def dispatch_non_streaming(ctx: MessagesDispatchCtx):
 
     if settings.fallback_enabled:
         result, final_route, chain = await try_ranked_non_streaming(
-            db, hint,
-            has_tools=has_tools, has_images=has_images,
+            db,
+            hint,
+            has_tools=has_tools,
+            has_images=has_images,
             key_type=key_record.key_type,
             pinned_provider_id=alias.provider_id if alias else None,
             model_override=alias.model_id if alias else None,
-            primary_route=route, call_fn=_call_with_route,
+            primary_route=route,
+            call_fn=_call_with_route,
         )
         if len(chain.attempts) > 1:
             resp_headers["X-Fallback-Chain"] = chain.as_header()
@@ -157,12 +174,19 @@ async def dispatch_non_streaming(ctx: MessagesDispatchCtx):
     in_tok = getattr(result.usage, "prompt_tokens", 0)
     out_tok = getattr(result.usage, "completion_tokens", 0)
     from app.cot.sse import extract_cache_tokens
+
     cache_creation, cache_read = extract_cache_tokens(result.usage)
     await record_outcome(
-        db, route.provider.id, route.litellm_model, success=True,
-        in_tok=in_tok, out_tok=out_tok, t0=t0,
+        db,
+        route.provider.id,
+        route.litellm_model,
+        success=True,
+        in_tok=in_tok,
+        out_tok=out_tok,
+        t0=t0,
         key_record_id=key_record.id,
-        cache_creation=cache_creation, cache_read=cache_read,
+        cache_creation=cache_creation,
+        cache_read=cache_read,
         provider_name=route.provider.name,
         # v3.0.35: body capture + diagnostic fields. Anthropic-shape
         # response is converted via to_anthropic_response for activity
@@ -185,13 +209,17 @@ async def dispatch_non_streaming(ctx: MessagesDispatchCtx):
         pass
 
     # Wave 3 #16 — shadow traffic (sampled, fire-and-forget)
-    if (settings.shadow_traffic_rate > 0
+    if (
+        settings.shadow_traffic_rate > 0
         and settings.shadow_candidate_provider_id
         and settings.shadow_candidate_provider_id != route.provider.id
-        and not has_tools):
-        from app.routing.shadow import should_shadow, run_shadow_compare
+        and not has_tools
+    ):
+        from app.routing.shadow import run_shadow_compare, should_shadow
+
         if should_shadow(settings.shadow_traffic_rate):
             from app.models.database import AsyncSessionLocal
+
             background_tasks.add_task(
                 run_shadow_compare,
                 AsyncSessionLocal,
@@ -199,8 +227,7 @@ async def dispatch_non_streaming(ctx: MessagesDispatchCtx):
                 messages_list,
                 answer_text,
                 route.litellm_model,
-                {"max_tokens": max_tokens,
-                 **({"system": system} if system else {})},
+                {"max_tokens": max_tokens, **({"system": system} if system else {})},
                 settings.semantic_cache_embedding_model,
                 settings.semantic_cache_embedding_dims,
                 key_record.id,
@@ -223,13 +250,14 @@ async def dispatch_non_streaming(ctx: MessagesDispatchCtx):
     # tools are recognized.
     if _proxy_tools_injected:
         from app.proxy_tools import (
-            find_proxy_tool_use_async, run_tool, build_tool_result_message,
+            build_tool_result_message,
+            find_proxy_tool_use_async,
+            run_tool,
         )
+
         _proxy_hops = 0
         while _proxy_hops < 3:
-            match = await find_proxy_tool_use_async(
-                anthropic_result.get("content") or []
-            )
+            match = await find_proxy_tool_use_async(anthropic_result.get("content") or [])
             if not match:
                 break
             _proxy_hops += 1
@@ -252,8 +280,10 @@ async def dispatch_non_streaming(ctx: MessagesDispatchCtx):
         resp_headers["X-Proxy-Tool-Hops"] = str(_proxy_hops)
     # v3.9.0 (#267) Phase 5 — memory-tool write-back on litellm path.
     from app.memory.extract import maybe_extract_memory_writes
+
     mem_writes = await maybe_extract_memory_writes(
-        db, response_dict=anthropic_result,
+        db,
+        response_dict=anthropic_result,
         api_key_id=key_record.id,
         conversation_id=x_conversation_id,
         memory_tag_default=x_memory_tag,
@@ -318,6 +348,7 @@ async def dispatch_non_streaming(ctx: MessagesDispatchCtx):
     # forget; never blocks the response.
     try:
         from app.capability_scout.scout import scan_and_emit_for_response
+
         _n = await scan_and_emit_for_response(
             db=db,
             api_key_id=key_record.id,
@@ -342,6 +373,7 @@ async def dispatch_non_streaming(ctx: MessagesDispatchCtx):
     # ships that add more tail blocks don't need to re-derive the
     # wiring in-place.
     from app.api._messages_response_tail import apply_response_tail
+
     await apply_response_tail(
         request=request,
         route=route,
@@ -370,22 +402,20 @@ async def dispatch_non_streaming(ctx: MessagesDispatchCtx):
             content_blocks = anthropic_result.get("content") or []
             tool_uses = [b for b in content_blocks if b.get("type") == "tool_use"]
             if len(tool_uses) >= 2:
-                gen = anthropic_tools_sse([
-                    {"name": t["name"], "input": t.get("input", {})}
-                    for t in tool_uses
-                ])
+                gen = anthropic_tools_sse(
+                    [{"name": t["name"], "input": t.get("input", {})} for t in tool_uses]
+                )
             elif len(tool_uses) == 1:
                 gen = anthropic_tool_sse(
-                    tool_uses[0]["name"], tool_uses[0].get("input", {}),
+                    tool_uses[0]["name"],
+                    tool_uses[0].get("input", {}),
                 )
             else:
-                text = "".join(
-                    b.get("text", "") for b in content_blocks
-                    if b.get("type") == "text"
-                )
+                text = "".join(b.get("text", "") for b in content_blocks if b.get("type") == "text")
                 gen = anthropic_text_sse(text)
             return StreamingResponse(
-                gen, media_type="text/event-stream",
+                gen,
+                media_type="text/event-stream",
                 headers=resp_headers,
             )
         except Exception:
@@ -403,6 +433,7 @@ async def dispatch_non_streaming(ctx: MessagesDispatchCtx):
     # ``return`` (not ``raise``) so the ``except`` below doesn't
     # reclassify it.
     from app.api._messages_dispatch import _is_empty_completion
+
     if _is_empty_completion(anthropic_result):
         logger.warning(
             "provider %s returned an EMPTY completion on the litellm "
@@ -411,10 +442,13 @@ async def dispatch_non_streaming(ctx: MessagesDispatchCtx):
         )
         return JSONResponse(
             status_code=502,
-            content={"type": "error", "error": {
-                "type": "api_error",
-                "message": "Upstream provider returned an empty completion",
-            }},
+            content={
+                "type": "error",
+                "error": {
+                    "type": "api_error",
+                    "message": "Upstream provider returned an empty completion",
+                },
+            },
             headers=resp_headers,
         )
     return JSONResponse(

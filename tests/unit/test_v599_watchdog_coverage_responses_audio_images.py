@@ -18,6 +18,7 @@ cancel from interrupting session.close() and leaking a pool slot. The
 original v5.7.17 "arm before checkout" order was itself the leak — see
 cluster.py v5.21.12 and the v5.21.14 changelog.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -43,9 +44,9 @@ def test_module_imports_watchdog(path: str):
 @pytest.mark.parametrize(
     "path,n_handlers",
     [
-        ("app/api/responses.py", 1),       # /v1/responses
-        ("app/api/audio.py", 2),           # speech + transcriptions
-        ("app/api/images.py", 1),          # generations
+        ("app/api/responses.py", 1),  # /v1/responses
+        ("app/api/audio.py", 2),  # speech + transcriptions
+        ("app/api/images.py", 1),  # generations
     ],
 )
 def test_each_handler_wires_watchdog_before_db(path: str, n_handlers: int):
@@ -63,12 +64,10 @@ def test_each_handler_wires_watchdog_before_db(path: str, n_handlers: int):
     wd_positions = _all_positions(src, "Depends(watch_for_disconnect)")
 
     assert len(db_positions) == n_handlers, (
-        f"{path}: expected {n_handlers} handlers using get_db, "
-        f"found {len(db_positions)}"
+        f"{path}: expected {n_handlers} handlers using get_db, found {len(db_positions)}"
     )
     assert len(wd_positions) >= n_handlers, (
-        f"{path}: expected at least {n_handlers} watchdog deps, "
-        f"found {len(wd_positions)}"
+        f"{path}: expected at least {n_handlers} watchdog deps, found {len(wd_positions)}"
     )
 
     # Pair each db usage with the nearest watchdog dep that FOLLOWS it

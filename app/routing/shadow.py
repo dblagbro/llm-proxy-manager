@@ -12,12 +12,13 @@ Settings:
 Because this is pure observability work, failures are logged and
 swallowed — a shadow error never impacts the primary response.
 """
+
 from __future__ import annotations
 
 import logging
 import random
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession as AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +51,15 @@ async def run_shadow_compare(
         # Load candidate provider in its own session to avoid coupling with
         # the primary request's DB transaction.
         from sqlalchemy import select
+
         from app.models.db import Provider
-        from app.routing.router import build_litellm_model, build_litellm_kwargs
         from app.routing.retry import acompletion_with_retry
+        from app.routing.router import build_litellm_kwargs, build_litellm_model
 
         async with db_factory() as db:
-            p = (await db.execute(select(Provider).where(Provider.id == candidate_provider_id))).scalar_one_or_none()
+            p = (
+                await db.execute(select(Provider).where(Provider.id == candidate_provider_id))
+            ).scalar_one_or_none()
 
         if not p or not p.enabled:
             return
@@ -73,7 +77,10 @@ async def run_shadow_compare(
             call_kwargs["system"] = request_kwargs["system"]
 
         resp = await acompletion_with_retry(
-            model=cand_model, messages=messages, stream=False, **call_kwargs,
+            model=cand_model,
+            messages=messages,
+            stream=False,
+            **call_kwargs,
         )
         cand_text = resp.choices[0].message.content or ""
 
@@ -85,8 +92,11 @@ async def run_shadow_compare(
         # Prometheus histogram
         try:
             from app.observability.prometheus import observe_shadow_similarity
+
             observe_shadow_similarity(
-                primary_model_id, cand_model, similarity,
+                primary_model_id,
+                cand_model,
+                similarity,
             )
         except Exception:
             pass
@@ -94,6 +104,7 @@ async def run_shadow_compare(
         # Activity event
         try:
             from app.monitoring.activity import log_event
+
             async with db_factory() as db2:
                 await log_event(
                     db2,
@@ -115,27 +126,35 @@ async def run_shadow_compare(
 
 
 async def _embed_cosine(
-    text_a: str, text_b: str, model: str, dims: int,
+    text_a: str,
+    text_b: str,
+    model: str,
+    dims: int,
 ) -> float | None:
     if not text_a or not text_b:
         return None
     try:
-        import litellm
         import math
+
+        import litellm
+
         # v3.0.67: honor semantic_cache_provider_id pin for shadow-compare
         # embeddings too. Same plumbing as semantic.py — when a provider
         # is pinned, route through its api_key + base_url + litellm prefix
         # so embeddings respect operator priority intent.
         from app.config import settings as _settings
+
         kwargs: dict = {"model": model, "input": [text_a, text_b], "dimensions": dims}
         provider_id = (_settings.semantic_cache_provider_id or "").strip()
         if provider_id:
             from app.models.database import AsyncSessionLocal
             from app.models.db import Provider
+
             async with AsyncSessionLocal() as _db:
                 _p = await _db.get(Provider, provider_id)
             if _p is not None and _p.enabled and _p.deleted_at is None:
-                from app.routing.router import build_litellm_model, build_litellm_kwargs
+                from app.routing.router import build_litellm_kwargs, build_litellm_model
+
                 kwargs["model"] = build_litellm_model(_p, model_override=model)
                 _pkw = build_litellm_kwargs(_p)
                 for k in ("api_key", "api_base", "api_version"):
@@ -143,7 +162,9 @@ async def _embed_cosine(
                         kwargs[k] = _pkw[k]
         resp = await litellm.aembedding(**kwargs)
         data = resp.data if isinstance(resp.data, list) else resp.data
-        vecs = [list(d.embedding) if hasattr(d, "embedding") else list(d["embedding"]) for d in data]
+        vecs = [
+            list(d.embedding) if hasattr(d, "embedding") else list(d["embedding"]) for d in data
+        ]
         if len(vecs) != 2:
             return None
         a, b = vecs

@@ -8,15 +8,12 @@ Covers:
 - snapshot.LmrhSnapshot.for_caller — scope filter unit
 - rate limit — hits 429 after default budget exhausted
 """
-from __future__ import annotations
 
-import asyncio
-from datetime import datetime, timezone
+from __future__ import annotations
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
-
 
 # ── Fixtures ──────────────────────────────────────────────────────
 
@@ -25,45 +22,67 @@ from sqlalchemy import delete, select
 async def fixture_db():
     """Seed two providers (one shared, one owned by another key) and
     one ApiKey (the test caller). Yield AsyncSessionLocal."""
-    from app.models.database import engine, AsyncSessionLocal
+    from app.models.database import AsyncSessionLocal, engine
     from app.models.db import ApiKey, Base, Provider
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     async with AsyncSessionLocal() as cleanup:
         await cleanup.execute(delete(ApiKey).where(ApiKey.id.in_(["lv2-key", "lv2-other"])))
-        await cleanup.execute(delete(Provider).where(Provider.id.in_(["lv2-shared", "lv2-private"])))
+        await cleanup.execute(
+            delete(Provider).where(Provider.id.in_(["lv2-shared", "lv2-private"]))
+        )
         await cleanup.commit()
     async with AsyncSessionLocal() as db:
-        db.add(ApiKey(
-            id="lv2-key", name="lv2-test",
-            key_prefix="llmp-lv2t",
-            key_hash="hash-lv2",
-            enabled=True,
-        ))
-        db.add(ApiKey(
-            id="lv2-other", name="lv2-other",
-            key_prefix="llmp-other",
-            key_hash="hash-other",
-            enabled=True,
-        ))
-        db.add(Provider(
-            id="lv2-shared", name="lv2-Shared", provider_type="openai",
-            priority=10, enabled=True, default_model="gpt-4o",
-        ))
+        db.add(
+            ApiKey(
+                id="lv2-key",
+                name="lv2-test",
+                key_prefix="llmp-lv2t",
+                key_hash="hash-lv2",
+                enabled=True,
+            )
+        )
+        db.add(
+            ApiKey(
+                id="lv2-other",
+                name="lv2-other",
+                key_prefix="llmp-other",
+                key_hash="hash-other",
+                enabled=True,
+            )
+        )
+        db.add(
+            Provider(
+                id="lv2-shared",
+                name="lv2-Shared",
+                provider_type="openai",
+                priority=10,
+                enabled=True,
+                default_model="gpt-4o",
+            )
+        )
         # Private to a different key — shouldn't appear in lv2-key's view
-        db.add(Provider(
-            id="lv2-private", name="lv2-Private", provider_type="anthropic",
-            priority=11, enabled=True, default_model="claude-sonnet-4-6",
-            owned_by_key_id="lv2-other",
-        ))
+        db.add(
+            Provider(
+                id="lv2-private",
+                name="lv2-Private",
+                provider_type="anthropic",
+                priority=11,
+                enabled=True,
+                default_model="claude-sonnet-4-6",
+                owned_by_key_id="lv2-other",
+            )
+        )
         await db.commit()
 
     yield AsyncSessionLocal
 
     async with AsyncSessionLocal() as cleanup:
         await cleanup.execute(delete(ApiKey).where(ApiKey.id.in_(["lv2-key", "lv2-other"])))
-        await cleanup.execute(delete(Provider).where(Provider.id.in_(["lv2-shared", "lv2-private"])))
+        await cleanup.execute(
+            delete(Provider).where(Provider.id.in_(["lv2-shared", "lv2-private"]))
+        )
         await cleanup.commit()
 
 
@@ -75,6 +94,7 @@ async def test_snapshot_scope_filter_excludes_other_keys_private(fixture_db):
     """Operator decision #1: providers owned by a different key must
     be invisible in a caller's snapshot view."""
     from app.routing.lmrh import snapshot as snap_mod
+
     AsyncSessionLocal = fixture_db
     async with AsyncSessionLocal() as db:
         snap = await snap_mod._build_snapshot(db)
@@ -82,8 +102,7 @@ async def test_snapshot_scope_filter_excludes_other_keys_private(fixture_db):
     visible = snap.for_caller("lv2-key")
     visible_ids = {p.id for p in visible}
     assert "lv2-shared" in visible_ids, "shared providers must be visible"
-    assert "lv2-private" not in visible_ids, \
-        "providers owned by other keys must be hidden"
+    assert "lv2-private" not in visible_ids, "providers owned by other keys must be hidden"
 
     # The owner of the private provider sees both
     owner_view = snap.for_caller("lv2-other")
@@ -97,6 +116,7 @@ async def test_snapshot_etag_stable_across_rebuilds(fixture_db):
     """Two snapshots with identical underlying data must produce the
     same ETag (lets clients 304 between background refreshes)."""
     from app.routing.lmrh import snapshot as snap_mod
+
     AsyncSessionLocal = fixture_db
     async with AsyncSessionLocal() as db:
         s1 = await snap_mod._build_snapshot(db)
@@ -111,8 +131,10 @@ async def test_snapshot_etag_stable_across_rebuilds(fixture_db):
 async def test_well_known_returns_v1_only_when_v2_disabled(monkeypatch):
     """Public endpoint always responds; advertises v1 only when v2 is off."""
     from app.config import settings
+
     monkeypatch.setattr(settings, "lmrh_v2_enabled", False)
     from app.api.lmrh_v2 import well_known_config
+
     out = await well_known_config()
     assert "1.2" in out["supported_versions"]
     assert "2.0" not in out["supported_versions"]
@@ -122,8 +144,10 @@ async def test_well_known_returns_v1_only_when_v2_disabled(monkeypatch):
 @pytest.mark.asyncio
 async def test_well_known_advertises_v2_when_enabled(monkeypatch):
     from app.config import settings
+
     monkeypatch.setattr(settings, "lmrh_v2_enabled", True)
     from app.api.lmrh_v2 import well_known_config
+
     out = await well_known_config()
     assert "2.0" in out["supported_versions"]
     assert "providers" in out["endpoints"]
@@ -134,9 +158,11 @@ async def test_well_known_advertises_v2_when_enabled(monkeypatch):
 async def test_providers_endpoint_404_when_disabled(monkeypatch):
     """Operator decision #6: when flag is off, endpoints behave as if
     they don't exist (404 not 503) so v1.x callers can't probe."""
-    from app.config import settings
-    from app.api.lmrh_v2 import _ensure_enabled
     from fastapi import HTTPException
+
+    from app.api.lmrh_v2 import _ensure_enabled
+    from app.config import settings
+
     monkeypatch.setattr(settings, "lmrh_v2_enabled", False)
     with pytest.raises(HTTPException) as ex:
         _ensure_enabled()
@@ -150,12 +176,15 @@ async def test_providers_endpoint_404_when_disabled(monkeypatch):
 async def test_rate_limit_enforced(fixture_db, monkeypatch):
     """Default 4/min for /lmrh/providers — 5th call inside the window
     raises 429 with Retry-After header."""
+    from fastapi import HTTPException
+
     from app.api import lmrh_v2 as lv2
     from app.auth.keys import ApiKeyRecord
-    from fastapi import HTTPException
+
     AsyncSessionLocal = fixture_db
     # Fresh state for this test
     from collections import defaultdict
+
     monkeypatch.setattr(lv2, "_rate_state", defaultdict(list))
     key = ApiKeyRecord(id="lv2-key", name="lv2-test", key_type="standard")
     async with AsyncSessionLocal() as db:
@@ -171,12 +200,14 @@ async def test_rate_limit_enforced(fixture_db, monkeypatch):
 @pytest.mark.asyncio
 async def test_rate_limit_respects_per_key_override(fixture_db, monkeypatch):
     """ApiKey.lmrh_polling_rpm column overrides the default."""
+
     from app.api import lmrh_v2 as lv2
     from app.auth.keys import ApiKeyRecord
     from app.models.db import ApiKey
-    from fastapi import HTTPException
+
     AsyncSessionLocal = fixture_db
     from collections import defaultdict
+
     monkeypatch.setattr(lv2, "_rate_state", defaultdict(list))
 
     # Bump test key's override to 100/min
@@ -201,15 +232,15 @@ async def test_render_provider_strips_owned_by_key_id(fixture_db):
     """The internal owned_by_key_id field MUST NOT ride the wire — it
     would leak which keys can route where. The scope filter ran
     upstream; the render layer hides the field unconditionally."""
-    from app.routing.lmrh import snapshot as snap_mod
     from app.api.lmrh_v2 import _render_provider
+    from app.routing.lmrh import snapshot as snap_mod
+
     AsyncSessionLocal = fixture_db
     async with AsyncSessionLocal() as db:
         snap = await snap_mod._build_snapshot(db)
     p = next(p for p in snap.providers if p.id == "lv2-shared")
     rendered = _render_provider(p)
-    assert "owned_by_key_id" not in rendered, \
-        "internal-only field must not appear in wire response"
+    assert "owned_by_key_id" not in rendered, "internal-only field must not appear in wire response"
 
 
 # ── Health endpoint ──────────────────────────────────────────────
@@ -223,14 +254,16 @@ async def test_select_provider_dry_run_returns_ranked_list(fixture_db, monkeypat
     """Phase 2 foundation: select_provider(dry_run=True) returns the
     ranked candidate list without dispatching. Each entry is a dict
     with provider/profile/unmet/score keys."""
-    from app.routing.router import select_provider
     from app.routing import tenant
+    from app.routing.router import select_provider
+
     AsyncSessionLocal = fixture_db
     tok = tenant.current_api_key_id.set("lv2-key")
     try:
         async with AsyncSessionLocal() as db:
             ranked = await select_provider(
-                db, hint=None,
+                db,
+                hint=None,
                 model_override="gpt-4o",
                 api_key_id="lv2-key",
                 dry_run=True,
@@ -255,24 +288,32 @@ async def test_quotes_endpoint_returns_ranked_candidates(fixture_db, monkeypatch
     """End-to-end: /lmrh/quotes endpoint returns the candidate list
     enriched with predicted metrics from the snapshot."""
     from app.config import settings
+
     monkeypatch.setattr(settings, "lmrh_v2_enabled", True)
-    from app.api import lmrh_v2 as lv2
     from collections import defaultdict
+
+    from app.api import lmrh_v2 as lv2
+
     monkeypatch.setattr(lv2, "_rate_state", defaultdict(list))
 
     # Force-rebuild snapshot so it sees fixture providers
     from app.routing.lmrh import snapshot as snap_mod
+
     AsyncSessionLocal = fixture_db
     async with AsyncSessionLocal() as db:
         await snap_mod.rebuild_now(db)
 
     from app.auth.keys import ApiKeyRecord
+
     key = ApiKeyRecord(id="lv2-key", name="lv2-test", key_type="standard")
     async with AsyncSessionLocal() as db:
         out = await lv2.get_quotes(
-            request=None, response=None,
-            model="gpt-4o", hint=None,
-            db=db, key=key,
+            request=None,
+            response=None,
+            model="gpt-4o",
+            hint=None,
+            db=db,
+            key=key,
         )
     assert out["version"] == "2.0"
     assert out["requested"]["model"] == "gpt-4o"
@@ -280,10 +321,19 @@ async def test_quotes_endpoint_returns_ranked_candidates(fixture_db, monkeypatch
     assert len(out["candidates"]) >= 1
     c = out["candidates"][0]
     # Required fields per design §4.4
-    for f in ("rank", "provider_id", "provider_name", "model_id",
-              "score", "unmet_hints", "cost_class", "circuit",
-              "predicted_latency_p50_ms", "predicted_cost_per_1m_input_usd",
-              "samples"):
+    for f in (
+        "rank",
+        "provider_id",
+        "provider_name",
+        "model_id",
+        "score",
+        "unmet_hints",
+        "cost_class",
+        "circuit",
+        "predicted_latency_p50_ms",
+        "predicted_cost_per_1m_input_usd",
+        "samples",
+    ):
         assert f in c, f"missing field {f}"
 
 
@@ -291,18 +341,23 @@ async def test_quotes_endpoint_returns_ranked_candidates(fixture_db, monkeypatch
 async def test_quotes_endpoint_404_when_v2_disabled(fixture_db, monkeypatch):
     """Same gate as /lmrh/providers — when flag is off, /quotes 404s."""
     from app.config import settings
+
     monkeypatch.setattr(settings, "lmrh_v2_enabled", False)
+    from fastapi import HTTPException
+
     from app.api import lmrh_v2 as lv2
     from app.auth.keys import ApiKeyRecord
-    from fastapi import HTTPException
+
     AsyncSessionLocal = fixture_db
     key = ApiKeyRecord(id="lv2-key", name="lv2-test", key_type="standard")
     async with AsyncSessionLocal() as db:
         with pytest.raises(HTTPException) as ex:
             await lv2.get_quotes(
-                request=None, response=None,
+                request=None,
+                response=None,
                 model="gpt-4o",
-                db=db, key=key,
+                db=db,
+                key=key,
             )
     assert ex.value.status_code == 404
 
@@ -312,20 +367,27 @@ async def test_quotes_endpoint_requires_model(fixture_db, monkeypatch):
     """Without ``model`` query param the endpoint can't score —
     400 Bad Request, not 500."""
     from app.config import settings
+
     monkeypatch.setattr(settings, "lmrh_v2_enabled", True)
-    from app.api import lmrh_v2 as lv2
     from collections import defaultdict
+
+    from app.api import lmrh_v2 as lv2
+
     monkeypatch.setattr(lv2, "_rate_state", defaultdict(list))
-    from app.auth.keys import ApiKeyRecord
     from fastapi import HTTPException
+
+    from app.auth.keys import ApiKeyRecord
+
     AsyncSessionLocal = fixture_db
     key = ApiKeyRecord(id="lv2-key", name="lv2-test", key_type="standard")
     async with AsyncSessionLocal() as db:
         with pytest.raises(HTTPException) as ex:
             await lv2.get_quotes(
-                request=None, response=None,
+                request=None,
+                response=None,
                 model="",
-                db=db, key=key,
+                db=db,
+                key=key,
             )
     assert ex.value.status_code == 400
 
@@ -335,15 +397,19 @@ async def test_health_aggregate_counts_visible_only(fixture_db, monkeypatch):
     """/lmrh/health returns aggregate counters — must reflect only the
     caller-visible providers, not the global fleet."""
     from app.config import settings
+
     monkeypatch.setattr(settings, "lmrh_v2_enabled", True)
     from app.api import lmrh_v2 as lv2
     from app.auth.keys import ApiKeyRecord
+
     AsyncSessionLocal = fixture_db
     from collections import defaultdict
+
     monkeypatch.setattr(lv2, "_rate_state", defaultdict(list))
 
     # Force-rebuild snapshot so it reflects fresh fixture data
     from app.routing.lmrh import snapshot as snap_mod
+
     async with AsyncSessionLocal() as db:
         await snap_mod.rebuild_now(db)
 

@@ -5,11 +5,10 @@ Split out from ``db.py`` in v4.4.11. Owns:
 - ``ApiKey`` — the main API key row (auth surface for /v1/* calls).
 - ``ApiKeyAiReview`` — the v3.7.10 proactive rate-limiter verdicts.
 """
+
 import secrets
 
-from sqlalchemy import (
-    Column, String, Integer, Boolean, Float, DateTime, Text, JSON, ForeignKey
-)
+from sqlalchemy import JSON, Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.sql import func
 
 from app.models.db_base import Base
@@ -22,20 +21,25 @@ class ApiKey(Base):
     name = Column(String, nullable=False)
     key_hash = Column(String, nullable=False, unique=True)
     key_prefix = Column(String, nullable=False)  # first 8 chars for display
-    encrypted_key = Column(String, nullable=True)  # Fernet-encrypted full key; NULL for legacy pre-encryption keys
-    key_type = Column(String, default="standard")  # standard|claude-code|admin|admin-readonly-catalog
+    encrypted_key = Column(
+        String, nullable=True
+    )  # Fernet-encrypted full key; NULL for legacy pre-encryption keys
+    key_type = Column(
+        String, default="standard"
+    )  # standard|claude-code|admin|admin-readonly-catalog
     enabled = Column(Boolean, default=True)
     total_requests = Column(Integer, default=0)
     total_tokens = Column(Integer, default=0)
     total_cost_usd = Column(Float, default=0.0)
     spending_cap_usd = Column(Float, nullable=True)  # lifetime hard cap; None = unlimited
-    rate_limit_rpm = Column(Integer, nullable=True)   # None = unlimited (explicit override)
-    rate_limit_tier = Column(String, nullable=True)   # Wave 6: named tier (free/starter/pro/enterprise/unlimited). None = custom/rate_limit_rpm only.
+    rate_limit_rpm = Column(Integer, nullable=True)  # None = unlimited (explicit override)
+    # Named tier (free/starter/pro/enterprise/unlimited); None uses custom rate_limit_rpm.
+    rate_limit_tier = Column(String, nullable=True)
     semantic_cache_enabled = Column(Boolean, default=False)  # Wave 1 #3 opt-in
     # Wave 1 #5 — tiered budget caps (None = unlimited at that tier)
     daily_soft_cap_usd = Column(Float, nullable=True)  # warning only; X-Budget-Warning header
     daily_hard_cap_usd = Column(Float, nullable=True)  # 402 Payment Required
-    hourly_cap_usd = Column(Float, nullable=True)      # burst control; 429
+    hourly_cap_usd = Column(Float, nullable=True)  # burst control; 429
     # v3.9.13 (#267 follow-up) — per-key caller_memory retention. Operator
     # sets days; background sweeper tombstones CallerMemory rows whose
     # ``updated_at < now - caller_memory_ttl_days * 86400``. Null = no TTL
@@ -213,6 +217,7 @@ class ApiKeyAiReview(Base):
     auto). ``prior_rate_limit_rpm`` lets us revert to the operator-set
     value when the throttle is lifted.
     """
+
     __tablename__ = "api_key_ai_review"
     id = Column(Integer, primary_key=True, autoincrement=True)
     api_key_id = Column(String, ForeignKey("api_keys.id"), nullable=False, index=True)

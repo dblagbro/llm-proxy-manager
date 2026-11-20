@@ -16,14 +16,17 @@ This test verifies:
   - ``_verify_oauth_access_token`` exists and returns a bool (the
     contract the refresh path relies on after peer-adopt).
 """
+
 from __future__ import annotations
 
 import asyncio
+
 import pytest
 
 
 def test_refresh_lock_is_per_provider_singleton():
     from app.providers.codex_oauth_flow import _get_refresh_lock
+
     lock_a1 = _get_refresh_lock("prov-A")
     lock_a2 = _get_refresh_lock("prov-A")
     lock_b1 = _get_refresh_lock("prov-B")
@@ -40,11 +43,12 @@ def test_refresh_lock_is_per_provider_singleton():
 
 
 def test_verify_helper_exists_and_is_async():
-    from app.providers.codex_oauth_flow import _verify_oauth_access_token
     import inspect
+
+    from app.providers.codex_oauth_flow import _verify_oauth_access_token
+
     assert inspect.iscoroutinefunction(_verify_oauth_access_token), (
-        "_verify_oauth_access_token must be async — the refresh path "
-        "awaits it after peer-adopt."
+        "_verify_oauth_access_token must be async — the refresh path awaits it after peer-adopt."
     )
 
 
@@ -61,13 +65,21 @@ async def test_verify_returns_true_on_network_error():
     # Stub the import inside the function so we don't actually hit the
     # network. The function catches any exception and returns True.
     import httpx
+
     orig_client = httpx.AsyncClient
 
     class _NoNetClient:
-        def __init__(self, *a, **kw): pass
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): return None
-        async def get(self, *a, **kw): raise RuntimeError("no net")
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+        async def get(self, *a, **kw):
+            raise RuntimeError("no net")
 
     httpx.AsyncClient = _NoNetClient
     try:

@@ -123,9 +123,9 @@ async def _run_one_sweep() -> None:
         provider_ids = [r[0] for r in id_rows.all()]
 
         for pid in provider_ids:
-            p = (await db.execute(
-                select(Provider).where(Provider.id == pid).limit(1)
-            )).scalar_one_or_none()
+            p = (
+                await db.execute(select(Provider).where(Provider.id == pid).limit(1))
+            ).scalar_one_or_none()
             if p is None or not p.oauth_refresh_token:
                 # Nothing this worker can do; the UI already shows
                 # "Needs re-auth" for this state.

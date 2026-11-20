@@ -11,23 +11,23 @@ Pins:
 - Non-cursor-oauth providers are ignored.
 - Malformed/missing tokens don't break the sweep.
 """
+
 import base64
 import json
 import time
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 from app.models.database import AsyncSessionLocal
 from app.models.db import Provider
 from app.monitoring.cursor_oauth_expiry_monitor import (
-    _decode_jwt_exp,
     _days_until,
+    _decode_jwt_exp,
     _run_one_sweep,
     get_last_sweep,
 )
-
 
 pytestmark = pytest.mark.asyncio
 
@@ -125,10 +125,16 @@ async def test_run_one_sweep_backfills_oauth_expires_at_when_null():
     exp_ts = time.time() + 86400 * 30  # 30 days out
     jwt = _make_jwt({"exp": int(exp_ts), "scope": "offline_access"})
     async with AsyncSessionLocal() as db:
-        db.add(Provider(
-            id="cur1", name="Cursor", provider_type="cursor-oauth",
-            enabled=True, priority=10, api_key=f"user_1::{jwt}",
-        ))
+        db.add(
+            Provider(
+                id="cur1",
+                name="Cursor",
+                provider_type="cursor-oauth",
+                enabled=True,
+                priority=10,
+                api_key=f"user_1::{jwt}",
+            )
+        )
         await db.commit()
 
     snapshots = await _run_one_sweep()
@@ -150,10 +156,16 @@ async def test_run_one_sweep_warn_when_under_threshold():
     exp_ts = time.time() + 86400 * 7  # 7 days out
     jwt = _make_jwt({"exp": int(exp_ts)})
     async with AsyncSessionLocal() as db:
-        db.add(Provider(
-            id="cur1", name="Cursor", provider_type="cursor-oauth",
-            enabled=True, priority=10, api_key=f"user_1::{jwt}",
-        ))
+        db.add(
+            Provider(
+                id="cur1",
+                name="Cursor",
+                provider_type="cursor-oauth",
+                enabled=True,
+                priority=10,
+                api_key=f"user_1::{jwt}",
+            )
+        )
         await db.commit()
 
     snapshots = await _run_one_sweep(warn_threshold_days=14)
@@ -166,10 +178,16 @@ async def test_run_one_sweep_warn_when_under_threshold():
 async def test_run_one_sweep_ignores_non_cursor_oauth_providers():
     await _reset_providers()
     async with AsyncSessionLocal() as db:
-        db.add(Provider(
-            id="oai1", name="OpenAI", provider_type="openai",
-            enabled=True, priority=10, api_key="sk-not-a-jwt",
-        ))
+        db.add(
+            Provider(
+                id="oai1",
+                name="OpenAI",
+                provider_type="openai",
+                enabled=True,
+                priority=10,
+                api_key="sk-not-a-jwt",
+            )
+        )
         await db.commit()
     snapshots = await _run_one_sweep()
     # The sweep returns only cursor-oauth providers — our added 'oai1'
@@ -180,10 +198,16 @@ async def test_run_one_sweep_ignores_non_cursor_oauth_providers():
 async def test_run_one_sweep_handles_malformed_token():
     await _reset_providers()
     async with AsyncSessionLocal() as db:
-        db.add(Provider(
-            id="cur1", name="Cursor-broken", provider_type="cursor-oauth",
-            enabled=True, priority=10, api_key="this-is-not-a-jwt-at-all",
-        ))
+        db.add(
+            Provider(
+                id="cur1",
+                name="Cursor-broken",
+                provider_type="cursor-oauth",
+                enabled=True,
+                priority=10,
+                api_key="this-is-not-a-jwt-at-all",
+            )
+        )
         await db.commit()
     snapshots = await _run_one_sweep()
     cur1 = next((s for s in snapshots if s["provider_id"] == "cur1"), None)
@@ -200,10 +224,16 @@ async def test_get_last_sweep_returns_snapshot():
     exp_ts = time.time() + 86400 * 30
     jwt = _make_jwt({"exp": int(exp_ts)})
     async with AsyncSessionLocal() as db:
-        db.add(Provider(
-            id="cur1", name="Cursor", provider_type="cursor-oauth",
-            enabled=True, priority=10, api_key=f"user_1::{jwt}",
-        ))
+        db.add(
+            Provider(
+                id="cur1",
+                name="Cursor",
+                provider_type="cursor-oauth",
+                enabled=True,
+                priority=10,
+                api_key=f"user_1::{jwt}",
+            )
+        )
         await db.commit()
     await _run_one_sweep()
     snap = get_last_sweep()

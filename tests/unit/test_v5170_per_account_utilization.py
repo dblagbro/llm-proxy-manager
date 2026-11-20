@@ -6,7 +6,9 @@ account for its scrape token and (b) write the resulting
 ``seven_day_utilization`` back to that account's ``utilization_pct`` so
 the v5.15.1 ``least_utilized`` picker has real signal to sort on.
 """
+
 from __future__ import annotations
+
 from pathlib import Path
 
 
@@ -48,10 +50,9 @@ def test_writeback_is_best_effort():
 
 def test_version_bumped():
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m
     major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    assert (major, minor, patch) >= (5, 17, 0), (
-        f"expected >= 5.17.0, got {major}.{minor}.{patch}"
-    )
+    assert (major, minor, patch) >= (5, 17, 0), f"expected >= 5.17.0, got {major}.{minor}.{patch}"

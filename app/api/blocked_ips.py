@@ -9,15 +9,19 @@ Adds/removes propagate to peer nodes via cluster sync of the
 cache picks up the change on the next 30s refresh (or instantly if
 admin code calls ``_clear_cache_for_tests`` — not exposed to API).
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC
+from datetime import datetime as _dt
+from datetime import datetime as datetime
+from datetime import timezone as timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select, update
-from datetime import datetime as _dt, timezone as _tz
+from sqlalchemy import delete as delete
+from sqlalchemy import select
+from sqlalchemy import update as update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.admin import AdminUser, require_admin
@@ -29,7 +33,7 @@ router = APIRouter(prefix="/api/admin", tags=["ip-block"])
 
 class BlockedIpAdd(BaseModel):
     ip: str = Field(min_length=1, max_length=128)
-    reason: Optional[str] = Field(default=None, max_length=512)
+    reason: str | None = Field(default=None, max_length=512)
 
 
 def _serialize(b: BlockedIp) -> dict:
@@ -48,9 +52,7 @@ async def list_blocked_ips(
 ):
     # v3.7.15 — filter tombstoned rows; the admin UI shows only live blocks.
     rs = await db.execute(
-        select(BlockedIp)
-        .where(BlockedIp.deleted_at.is_(None))
-        .order_by(BlockedIp.added_at.desc())
+        select(BlockedIp).where(BlockedIp.deleted_at.is_(None)).order_by(BlockedIp.added_at.desc())
     )
     return [_serialize(b) for b in rs.scalars().all()]
 
@@ -75,7 +77,7 @@ async def add_blocked_ip(
         # deleted_at + bumping added_at + recording the new actor.
         if existing.deleted_at is not None:
             existing.deleted_at = None
-            existing.added_at = _dt.now(_tz.utc)
+            existing.added_at = _dt.now(UTC)
             existing.added_by = admin.username
             if body.reason:
                 existing.reason = body.reason
@@ -85,6 +87,7 @@ async def add_blocked_ip(
         await db.commit()
         # Force cache invalidation for this node
         from app.middleware.ip_block import _clear_cache_for_tests
+
         _clear_cache_for_tests()
         return {"ok": True, "already_blocked": True, "block": _serialize(existing)}
     block = BlockedIp(
@@ -96,6 +99,7 @@ async def add_blocked_ip(
     await db.commit()
     # Force cache invalidation for this node so the next request hits the block
     from app.middleware.ip_block import _clear_cache_for_tests
+
     _clear_cache_for_tests()
     return {"ok": True, "block": _serialize(block)}
 
@@ -114,15 +118,14 @@ async def remove_blocked_ip(
     Hard-delete remains available via the cluster janitor for old
     tombstones."""
     rs = await db.execute(
-        select(BlockedIp)
-        .where(BlockedIp.ip == ip)
-        .where(BlockedIp.deleted_at.is_(None))
+        select(BlockedIp).where(BlockedIp.ip == ip).where(BlockedIp.deleted_at.is_(None))
     )
     existing = rs.scalar_one_or_none()
     if existing is None:
         raise HTTPException(404, "IP not in block list")
-    existing.deleted_at = _dt.now(_tz.utc)
+    existing.deleted_at = _dt.now(UTC)
     await db.commit()
     from app.middleware.ip_block import _clear_cache_for_tests
+
     _clear_cache_for_tests()
     return {"ok": True, "removed": ip}

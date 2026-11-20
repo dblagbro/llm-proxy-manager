@@ -1,4 +1,5 @@
 """AIRI v4.0 milestone 1 — read-only chat. Tests for the tools + agent loop."""
+
 from __future__ import annotations
 
 import pytest
@@ -6,10 +7,10 @@ import pytest_asyncio
 from sqlalchemy import delete
 
 import app.airi.agent as agent
-from app.airi.tools import run_tool, _clamp_int, READ_ONLY_TOOLS
-
+from app.airi.tools import READ_ONLY_TOOLS, _clamp_int, run_tool
 
 # ── tools ────────────────────────────────────────────────────────────────────
+
 
 def test_clamp_int():
     assert _clamp_int("5", 20, 1, 100) == 5
@@ -48,8 +49,9 @@ async def test_get_routing_config_shape():
 
 @pytest_asyncio.fixture
 async def db_ready():
-    from app.models.database import engine, AsyncSessionLocal
+    from app.models.database import AsyncSessionLocal, engine
     from app.models.db import Base, Provider
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     async with AsyncSessionLocal() as cleanup:
@@ -61,9 +63,9 @@ async def db_ready():
 @pytest.mark.asyncio
 async def test_get_provider_health_lists_providers(db_ready):
     from app.models.db import Provider
+
     async with db_ready() as db:
-        db.add(Provider(name="airi-m1-prov", provider_type="openai",
-                         priority=5, enabled=True))
+        db.add(Provider(name="airi-m1-prov", provider_type="openai", priority=5, enabled=True))
         await db.commit()
     out = await run_tool("get_provider_health", {})
     assert out["provider_count"] >= 1
@@ -71,6 +73,7 @@ async def test_get_provider_health_lists_providers(db_ready):
 
 
 # ── agent loop ───────────────────────────────────────────────────────────────
+
 
 async def _collect(messages):
     return [ev async for ev in agent.run_airi_turn(messages)]
@@ -93,8 +96,11 @@ async def test_agent_returns_final_answer(monkeypatch):
     # 'error' event -- so the test failed on a missing 'proposal'/'message'
     # event rather than on the real cause.
     async def fake_llm(api_key, model, messages, *, llm_hint=None):
-        return {"content": [{"type": "text", "text": "Routing looks healthy."}],
-                "stop_reason": "end_turn"}
+        return {
+            "content": [{"type": "text", "text": "Routing looks healthy."}],
+            "stop_reason": "end_turn",
+        }
+
     monkeypatch.setattr(agent, "_call_llm", fake_llm)
 
     events = await _collect([{"role": "user", "content": "status?"}])
@@ -109,12 +115,18 @@ async def test_agent_runs_a_tool_then_answers(monkeypatch):
     async def fake_llm(api_key, model, messages, *, llm_hint=None):
         calls.append(messages)
         if len(calls) == 1:
-            return {"content": [{"type": "tool_use", "id": "t1",
-                                 "name": "get_supervisor_state", "input": {}}],
-                    "stop_reason": "tool_use"}
+            return {
+                "content": [
+                    {"type": "tool_use", "id": "t1", "name": "get_supervisor_state", "input": {}}
+                ],
+                "stop_reason": "tool_use",
+            }
         # second call sees the tool_result appended
-        return {"content": [{"type": "text", "text": "The supervisor is configured."}],
-                "stop_reason": "end_turn"}
+        return {
+            "content": [{"type": "text", "text": "The supervisor is configured."}],
+            "stop_reason": "end_turn",
+        }
+
     monkeypatch.setattr(agent, "_call_llm", fake_llm)
 
     events = await _collect([{"role": "user", "content": "is the supervisor on?"}])
@@ -139,19 +151,32 @@ async def test_agent_rejects_non_readonly_tool(monkeypatch):
     async def fake_llm(api_key, model, messages, *, llm_hint=None):
         calls.append(messages)
         if len(calls) == 1:
-            return {"content": [{"type": "tool_use", "id": "t1",
-                                 "name": "set_provider_priority",
-                                 "input": {"provider_id": "x", "priority": 1}}],
-                    "stop_reason": "tool_use"}
-        return {"content": [{"type": "text", "text": "I cannot change anything yet."}],
-                "stop_reason": "end_turn"}
+            return {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "t1",
+                        "name": "set_provider_priority",
+                        "input": {"provider_id": "x", "priority": 1},
+                    }
+                ],
+                "stop_reason": "tool_use",
+            }
+        return {
+            "content": [{"type": "text", "text": "I cannot change anything yet."}],
+            "stop_reason": "end_turn",
+        }
+
     monkeypatch.setattr(agent, "_call_llm", fake_llm)
 
     await _collect([{"role": "user", "content": "raise provider x priority"}])
     # the tool_result fed back must be a refusal, not an execution
     tool_results = [
-        b for m in calls[1] if isinstance(m.get("content"), list)
-        for b in m["content"] if b.get("type") == "tool_result"
+        b
+        for m in calls[1]
+        if isinstance(m.get("content"), list)
+        for b in m["content"]
+        if b.get("type") == "tool_result"
     ]
     assert tool_results and "not available" in tool_results[0]["content"]
 
@@ -162,6 +187,7 @@ async def test_agent_surfaces_llm_failure(monkeypatch):
 
     async def boom(api_key, model, messages):
         raise RuntimeError("upstream down")
+
     monkeypatch.setattr(agent, "_call_llm", boom)
 
     events = await _collect([{"role": "user", "content": "hi"}])

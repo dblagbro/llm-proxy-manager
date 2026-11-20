@@ -2,7 +2,7 @@
 
 24h activity-log audit on v3.0.39 found cache_control adoption at exactly
 0% across 16k events — including 3,005 Anthropic Pro Max OAuth calls with
-50–80k-token contexts. Coordinator-hub bot daemons send the same large
+50–80k-token contexts. Integration client bot daemons send the same large
 system prompt repeatedly without `cache_control` blocks because their
 callers don't know about Anthropic's prompt caching feature.
 
@@ -30,15 +30,20 @@ Estimated savings on current volume (per the v3.0.39 audit):
   3,005 claude-oauth events × ~50k avg input × $3/M input × 90% cache
   discount × ~50% cache-hit rate ≈ $200/day saved.
 """
+
 from __future__ import annotations
 
 from typing import Any
 
-
 # Provider types that speak Anthropic Messages format and honor cache_control.
-_ANTHROPIC_SHAPE_TYPES = frozenset({
-    "anthropic", "anthropic-direct", "anthropic-oauth", "claude-oauth",
-})
+_ANTHROPIC_SHAPE_TYPES = frozenset(
+    {
+        "anthropic",
+        "anthropic-direct",
+        "anthropic-oauth",
+        "claude-oauth",
+    }
+)
 
 
 def _has_cache_control(blk: Any) -> bool:
@@ -63,7 +68,9 @@ def _string_to_text_block(s: str) -> dict:
 
 
 def inject_cache_control(
-    body: dict, provider_type: str, min_chars: int = 4000,
+    body: dict,
+    provider_type: str,
+    min_chars: int = 4000,
 ) -> tuple[dict, bool]:
     """Auto-wrap stable prefix blocks with cache_control: ephemeral.
 
@@ -98,11 +105,13 @@ def inject_cache_control(
     if isinstance(sys_field, str):
         if len(sys_field) >= min_chars:
             # Convert to array form so we can attach cache_control
-            out["system"] = [{
-                "type": "text",
-                "text": sys_field,
-                "cache_control": {"type": "ephemeral"},
-            }]
+            out["system"] = [
+                {
+                    "type": "text",
+                    "text": sys_field,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
             injected = True
     elif isinstance(sys_field, list) and sys_field:
         # Skip if any block already has cache_control — caller knows better
@@ -130,6 +139,7 @@ def inject_cache_control(
             # Tool-definition caching threshold is roughly the same — only
             # bother if total tool spec is large.
             import json as _json
+
             try:
                 total_chars = sum(len(_json.dumps(t)) for t in tools if isinstance(t, dict))
             except (TypeError, ValueError):
@@ -159,6 +169,7 @@ def caller_opted_out(lmrh_hint: str | None) -> bool:
 # v3.0.69: full LMRH 1.2 §E2 cache-mode dim. Spec at
 # docs/lmrh-1.2-cache-mode-dim.md. Replaces the v3.0.42 substring-only check.
 
+
 class CacheModeDecision:
     """Resolved cache-mode intent from LLM-Hint.
 
@@ -176,7 +187,7 @@ class CacheModeDecision:
     def __init__(self, mode: str = "auto", required: bool = False) -> None:
         self.mode = mode
         self.required = required
-        self.force_below_threshold = (mode == "ephemeral")
+        self.force_below_threshold = mode == "ephemeral"
 
 
 # Synonyms per LMRH 1.2 §E2 table. Anything outside this set falls back to
@@ -236,10 +247,11 @@ def resolve_min_chars(decision: CacheModeDecision, default: int = 4000) -> int:
 # served provider is non-Anthropic-shape, the dim cannot be honored —
 # emit cache=ignored to inform the caller their hint was a no-op.
 
+
 def build_cache_disclosure(
     *,
     llm_hint: str | None,
-    cache_decision: "CacheModeDecision",
+    cache_decision: CacheModeDecision,
     cache_injected: bool,
     served_provider_type: str,
     usage: dict | None = None,
@@ -272,9 +284,7 @@ def build_cache_disclosure(
       reports them >0.
     """
     parts: list[str] = []
-    caller_sent_cache_dim = bool(
-        llm_hint and "cache=" in (llm_hint or "").lower()
-    )
+    caller_sent_cache_dim = bool(llm_hint and "cache=" in (llm_hint or "").lower())
     is_anthropic_shape = served_provider_type in _ANTHROPIC_SHAPE_TYPES
 
     if caller_sent_cache_dim:
@@ -304,7 +314,4 @@ def append_cache_disclosure(headers: dict, parts: list[str]) -> None:
     if not parts:
         return
     existing = headers.get("LLM-Capability", "")
-    headers["LLM-Capability"] = (
-        existing + ", " + ", ".join(parts)
-        if existing else ", ".join(parts)
-    )
+    headers["LLM-Capability"] = existing + ", " + ", ".join(parts) if existing else ", ".join(parts)

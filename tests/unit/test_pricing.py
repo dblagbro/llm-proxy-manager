@@ -1,5 +1,5 @@
 """Unit tests for cost estimation."""
-import pytest
+
 from app.monitoring.pricing import estimate_cost, format_cost
 
 

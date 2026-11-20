@@ -7,6 +7,7 @@ giving an unauthenticated arbitrary file read that reached the on-disk SQLite
 credential store (``/x/assets/../../../data/llmproxy.db``). The confinement
 helper must reject any path that escapes the static root.
 """
+
 from __future__ import annotations
 
 import os

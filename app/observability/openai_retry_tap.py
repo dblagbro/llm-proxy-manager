@@ -25,11 +25,11 @@ covered the SQLAlchemy-pool + ASGI cases with the same pattern
 (2026-04-23 BUG-032). Same "logging handlers must never raise"
 discipline.
 """
+
 from __future__ import annotations
 
 import logging
 import re
-
 
 # Matches openai-python 1.x's message template:
 #   "Retrying request to /chat/completions in 0.381504 seconds"
@@ -54,15 +54,17 @@ class _OpenAIRetryTap(logging.Handler):
             m = _RETRY_PATTERN.search(text)
             endpoint = m.group(1) if m else None
             from app.observability.prometheus import observe_openai_retry
+
             observe_openai_retry(endpoint or "other")
             # v5.4.0 (BUG-072): also write to activity_log so the retry
             # is visible from SQL probes. Pre-v5.4.0 the QA sweep found
-            # zero ``%retry%`` event_type rows in 24h on tmrwww01 because
+            # zero ``%retry%`` event_type rows in 24h on the first gateway because
             # we only incremented Prometheus. Now the row exists too.
             # Best-effort: a Postgres pool exhaustion on this hot path
             # MUST NOT crash the logging handler.
             try:
                 import asyncio
+
                 asyncio.get_event_loop().create_task(
                     _emit_retry_event_async(endpoint or "other", text[:240])
                 )
@@ -77,16 +79,20 @@ async def _emit_retry_event_async(endpoint: str, msg: str) -> None:
     """Background write of the retry event to activity_log. Failures
     swallowed; the Prometheus counter remains the source-of-truth."""
     try:
+        from datetime import datetime
+
         from app.models.database import AsyncSessionLocal
         from app.models.db import ActivityLog
-        from datetime import datetime
+
         async with AsyncSessionLocal() as db:
-            db.add(ActivityLog(
-                created_at=datetime.utcnow(),
-                severity="info",
-                event_type="openai_client_retry",
-                message=f"openai-python transparent retry endpoint={endpoint} msg={msg}",
-            ))
+            db.add(
+                ActivityLog(
+                    created_at=datetime.utcnow(),
+                    severity="info",
+                    event_type="openai_client_retry",
+                    message=f"openai-python transparent retry endpoint={endpoint} msg={msg}",
+                )
+            )
             await db.commit()
     except Exception:
         pass

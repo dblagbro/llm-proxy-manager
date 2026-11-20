@@ -33,14 +33,14 @@ Security:
 - No openpyxl macro execution: ``load_workbook(data_only=True)``
   bypasses formulas; cell values come from the cached eval result.
 """
+
 from __future__ import annotations
 
 import base64
 import io
-from typing import Any, Dict
+from typing import Any
 
 from app.proxy_tools import ProxyTool
-
 
 _MAX_BYTES = 5 * 1024 * 1024  # 5 MB
 _DEFAULT_MAX_ROWS = 200
@@ -80,9 +80,7 @@ _ANTHROPIC_SCHEMA: dict = {
             },
             "sheet": {
                 "type": "string",
-                "description": (
-                    "If set, render only this sheet. Otherwise all sheets."
-                ),
+                "description": ("If set, render only this sheet. Otherwise all sheets."),
             },
             "max_rows": {
                 "type": "integer",
@@ -107,7 +105,7 @@ _OPENAI_SCHEMA: dict = {
 }
 
 
-async def _fetch_bytes(input_obj: Dict[str, Any]) -> bytes:
+async def _fetch_bytes(input_obj: dict[str, Any]) -> bytes:
     """Resolve the input into bytes. Raises ValueError on bad input."""
     if isinstance(input_obj.get("file_b64"), str) and input_obj["file_b64"]:
         try:
@@ -115,26 +113,20 @@ async def _fetch_bytes(input_obj: Dict[str, Any]) -> bytes:
         except Exception as exc:
             raise ValueError(f"file_b64 is not valid base64: {exc}")
         if len(raw) > _MAX_BYTES:
-            raise ValueError(
-                f"file_b64 too large: {len(raw)} bytes > {_MAX_BYTES} cap"
-            )
+            raise ValueError(f"file_b64 too large: {len(raw)} bytes > {_MAX_BYTES} cap")
         return raw
 
     url = input_obj.get("url")
     if isinstance(url, str) and url:
         if not (url.startswith("https://") or url.startswith("http://")):
-            raise ValueError(
-                "url must use http:// or https://; got "
-                f"{url.split(':', 1)[0]}://"
-            )
+            raise ValueError(f"url must use http:// or https://; got {url.split(':', 1)[0]}://")
         import httpx
+
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             resp = await client.get(url)
             resp.raise_for_status()
         if len(resp.content) > _MAX_BYTES:
-            raise ValueError(
-                f"url body too large: {len(resp.content)} bytes > {_MAX_BYTES} cap"
-            )
+            raise ValueError(f"url body too large: {len(resp.content)} bytes > {_MAX_BYTES} cap")
         return resp.content
 
     raise ValueError("must supply either file_b64 or url")
@@ -148,17 +140,17 @@ def _render_workbook(
 ) -> str:
     """Render bytes as markdown. Pure function — no I/O."""
     import openpyxl
+
     wb = openpyxl.load_workbook(
-        io.BytesIO(data), data_only=True, read_only=True,
+        io.BytesIO(data),
+        data_only=True,
+        read_only=True,
     )
     out: list[str] = []
     sheet_names = wb.sheetnames
     if sheet_filter:
         if sheet_filter not in sheet_names:
-            return (
-                f"error: sheet {sheet_filter!r} not found; "
-                f"available: {sheet_names}"
-            )
+            return f"error: sheet {sheet_filter!r} not found; available: {sheet_names}"
         sheet_names = [sheet_filter]
 
     for sname in sheet_names:
@@ -168,16 +160,10 @@ def _render_workbook(
         body_rows: list[list[str]] = []
         for row in ws.iter_rows(values_only=True):
             if rows_yielded >= max_rows:
-                out.append(
-                    f"_(truncated at row cap {max_rows}; "
-                    f"sheet has more rows)_"
-                )
+                out.append(f"_(truncated at row cap {max_rows}; sheet has more rows)_")
                 break
             trimmed = list(row)[:max_cols]
-            body_rows.append([
-                "" if v is None else str(v).replace("|", r"\|")
-                for v in trimmed
-            ])
+            body_rows.append(["" if v is None else str(v).replace("|", r"\|") for v in trimmed])
             rows_yielded += 1
         if body_rows:
             ncols = max(len(r) for r in body_rows)

@@ -24,12 +24,12 @@ Operators can add custom companies via
 ``SystemSetting.compliance_custom_companies`` (JSON list); they merge with
 ``KNOWN_COMPANIES`` at lookup time (see ``policy.get_merged_companies``).
 """
+
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any
 
-
-KNOWN_COMPANIES: Dict[str, Dict[str, Any]] = {
+KNOWN_COMPANIES: dict[str, dict[str, Any]] = {
     "anthropic": {
         "display_name": "Anthropic",
         # Bedrock-style ``anthropic.claude-*`` is intentionally included here
@@ -61,8 +61,14 @@ KNOWN_COMPANIES: Dict[str, Dict[str, Any]] = {
     "openai": {
         "display_name": "OpenAI",
         "model_prefixes": [
-            "gpt-", "o1-", "o3-", "o4-", "codex-",
-            "text-embedding-", "whisper-", "dall-e-",
+            "gpt-",
+            "o1-",
+            "o3-",
+            "o4-",
+            "codex-",
+            "text-embedding-",
+            "whisper-",
+            "dall-e-",
         ],
         "provider_types": ["openai", "ChatGPT-oauth-plan"],
         "ua_patterns": [
@@ -77,8 +83,11 @@ KNOWN_COMPANIES: Dict[str, Dict[str, Any]] = {
     "google": {
         "display_name": "Google",
         "model_prefixes": [
-            "gemini-", "bison", "palm-",
-            "text-bison", "chat-bison",
+            "gemini-",
+            "bison",
+            "palm-",
+            "text-bison",
+            "chat-bison",
         ],
         "provider_types": ["google", "vertex"],
         "ua_patterns": [
@@ -120,7 +129,10 @@ KNOWN_COMPANIES: Dict[str, Dict[str, Any]] = {
     "mistral": {
         "display_name": "Mistral",
         "model_prefixes": [
-            "mistral-", "mixtral-", "codestral-", "magistral-",
+            "mistral-",
+            "mixtral-",
+            "codestral-",
+            "magistral-",
         ],
         "provider_types": [],  # Mistral via OpenRouter / self-hosted
         "ua_patterns": [
@@ -132,9 +144,13 @@ KNOWN_COMPANIES: Dict[str, Dict[str, Any]] = {
     "aws": {
         "display_name": "AWS",
         "model_prefixes": [
-            "anthropic.claude-", "ai21.j2-", "cohere.command-",
-            "meta.llama-", "mistral.mistral-",
-            "amazon.titan-", "stability.sd-",
+            "anthropic.claude-",
+            "ai21.j2-",
+            "cohere.command-",
+            "meta.llama-",
+            "mistral.mistral-",
+            "amazon.titan-",
+            "stability.sd-",
         ],
         "provider_types": ["bedrock"],
         "ua_patterns": [
@@ -167,7 +183,7 @@ KNOWN_COMPANIES: Dict[str, Dict[str, Any]] = {
 # Aggregator/relay provider types that don't map to one of the 10 KNOWN
 # companies but should still get a stable ``owner_company`` label so
 # operators can ban an aggregator wholesale if they need to.
-_AGGREGATOR_COMPANIES: Dict[str, str] = {
+_AGGREGATOR_COMPANIES: dict[str, str] = {
     "openrouter": "openrouter",
     "cursor-oauth": "cursor",
     "openai-compatible": "compatible",
@@ -176,7 +192,7 @@ _AGGREGATOR_COMPANIES: Dict[str, str] = {
 }
 
 
-def provider_type_to_company(provider_type: Optional[str]) -> Optional[str]:
+def provider_type_to_company(provider_type: str | None) -> str | None:
     """Decision 17 — derive ``Provider.owner_company`` from ``provider_type``.
 
     Called at create/update time in ``app/api/providers.py``. The result is
@@ -196,7 +212,7 @@ def provider_type_to_company(provider_type: Optional[str]) -> Optional[str]:
     return None
 
 
-def model_family_to_company(model: Optional[str]) -> Optional[str]:
+def model_family_to_company(model: str | None) -> str | None:
     """Return the FIRST company whose ``model_prefix`` matches ``model``.
 
     For policy decisions that care about a single label (disclosure
@@ -218,7 +234,7 @@ def model_family_to_company(model: Optional[str]) -> Optional[str]:
     return None
 
 
-def model_family_companies(model: Optional[str]) -> set:
+def model_family_companies(model: str | None) -> set:
     """Decision 11 — return EVERY company whose ``model_prefix`` matches.
 
     Bedrock-served Anthropic models like ``anthropic.claude-3-haiku-v1:0``

@@ -23,6 +23,7 @@ by an unpacking prologue. That was deliberate: a 500-line move is risky enough
 without also rewriting the code, so each function starts by restoring exactly
 the local names the original block ran under.
 """
+
 from __future__ import annotations
 
 import logging
@@ -64,8 +65,6 @@ router = APIRouter()
 # LLM streams are bounded by upstream provider timeouts (~60s max).
 # See v5.7.17 and CHANGELOG v5.21.8.
 @router.post("/v1/messages")
-
-
 @dataclass(frozen=True)
 class MessagesDispatchCtx:
     """Everything the two dispatch arms read from the handler's scope.
@@ -133,17 +132,17 @@ async def dispatch_streaming(ctx: MessagesDispatchCtx):
     x_memory_tag = ctx.x_memory_tag
 
     lmrh_hedge = hint.get("hedge").value if (hint and hint.get("hedge")) else None
-    wants_hedge = (
-        settings.hedge_enabled
-        and should_hedge_header(x_hedge, lmrh_hedge)
-    )
+    wants_hedge = settings.hedge_enabled and should_hedge_header(x_hedge, lmrh_hedge)
     wait_ms = wait_budget_ms(route.provider.id) if wants_hedge else None
 
     if wait_ms is not None and await try_acquire_hedge():
         # Pick a backup provider (different from primary)
         try:
             backup_route = await select_provider(
-                db, hint, has_tools=has_tools, has_images=has_images,
+                db,
+                hint,
+                has_tools=has_tools,
+                has_images=has_images,
                 key_type=key_record.key_type,
                 exclude_provider_id=route.provider.id,
                 excluded_provider_types={"claude-oauth"},
@@ -164,8 +163,14 @@ async def dispatch_streaming(ctx: MessagesDispatchCtx):
 
             def _primary():
                 return _stream_anthropic(
-                    route.litellm_model, messages_list, extra, route.provider.id,
-                    db, key_record.id, time.monotonic(), max_tokens,
+                    route.litellm_model,
+                    messages_list,
+                    extra,
+                    route.provider.id,
+                    db,
+                    key_record.id,
+                    time.monotonic(),
+                    max_tokens,
                     cache_decision=cache_decision,
                     llm_hint=llm_hint,
                     api_key_id=key_record.id,
@@ -177,16 +182,23 @@ async def dispatch_streaming(ctx: MessagesDispatchCtx):
 
             def _backup():
                 b_extra = {**backup_route.litellm_kwargs, "max_tokens": max_tokens}
-                if system: b_extra["system"] = system
-                if litellm_tools: b_extra["tools"] = litellm_tools
+                if system:
+                    b_extra["system"] = system
+                if litellm_tools:
+                    b_extra["tools"] = litellm_tools
                 if backup_route.native_thinking_params:
                     b_extra.update(backup_route.native_thinking_params)
                     # v5.3.7 — keep Gemini thinking budget below max_tokens (empty-success fix)
                     clamp_thinking_budget(b_extra)
                 return _stream_anthropic(
-                    backup_route.litellm_model, messages_list, b_extra,
+                    backup_route.litellm_model,
+                    messages_list,
+                    b_extra,
                     backup_route.provider.id,
-                    db, key_record.id, time.monotonic(), max_tokens,
+                    db,
+                    key_record.id,
+                    time.monotonic(),
+                    max_tokens,
                     cache_decision=None,  # don't store backup output under primary's key
                     llm_hint=llm_hint,
                     api_key_id=key_record.id,
@@ -218,6 +230,7 @@ async def dispatch_streaming(ctx: MessagesDispatchCtx):
             # path below. (Mirrors completions.py.)
             _hframes, _h_has_content, racer = await buffer_sse_until_content(_hfirst, racer)
             if _h_has_content:
+
                 async def _replay_hedged_stream(_fs=_hframes, _g=racer):
                     for _f in _fs:
                         yield _f
@@ -226,15 +239,19 @@ async def dispatch_streaming(ctx: MessagesDispatchCtx):
 
                 return StreamingResponse(
                     _replay_hedged_stream(),
-                    media_type="text/event-stream", headers=resp_headers,
+                    media_type="text/event-stream",
+                    headers=resp_headers,
                 )
             await racer.aclose()
             from app.routing.circuit_breaker import record_failure as _rec_fail
+
             _dead_id = route.provider.id if winner == "primary" else backup_route.provider.id
             await _rec_fail(_dead_id, billing_error=False)
             logger.warning(
                 "hedged stream empty-success (winner=%s provider=%s) — "
-                "falling through to guarded non-hedged path", winner, _dead_id,
+                "falling through to guarded non-hedged path",
+                winner,
+                _dead_id,
             )
     elif wait_ms is not None:
         observe_hedge_bucket_reject()
@@ -254,15 +271,23 @@ async def dispatch_streaming(ctx: MessagesDispatchCtx):
             _e, _cd = extra, cache_decision
         else:
             _e = {**_r.litellm_kwargs, "max_tokens": max_tokens}
-            if system: _e["system"] = system
-            if litellm_tools: _e["tools"] = litellm_tools
+            if system:
+                _e["system"] = system
+            if litellm_tools:
+                _e["tools"] = litellm_tools
             if _r.native_thinking_params:
                 _e.update(_r.native_thinking_params)
                 clamp_thinking_budget(_e)
             _cd = None  # don't store failover output under primary's key
         return _stream_anthropic(
-            _r.litellm_model, messages_list, _e, _r.provider.id,
-            db, key_record.id, time.monotonic(), max_tokens,
+            _r.litellm_model,
+            messages_list,
+            _e,
+            _r.provider.id,
+            db,
+            key_record.id,
+            time.monotonic(),
+            max_tokens,
             cache_decision=_cd,
             llm_hint=llm_hint,
             api_key_id=key_record.id,
@@ -273,12 +298,20 @@ async def dispatch_streaming(ctx: MessagesDispatchCtx):
         )
 
     from app.routing.aliases import is_logical_alias as _is_logical_alias
+
     _req_model = (alias.model_id if alias else parsed_slug.bare_model) or None
     _frames, _gen, _served_route = await stream_with_empty_guard(
-        start_stream=_start_anthropic_stream, route=route, db=db,
-        hint=hint, has_tools=has_tools, has_images=has_images,
-        key_type=key_record.key_type, api_key_id=key_record.id,
-        model_override=None if (is_auto or (alias is None and _is_logical_alias(_req_model))) else _req_model,
+        start_stream=_start_anthropic_stream,
+        route=route,
+        db=db,
+        hint=hint,
+        has_tools=has_tools,
+        has_images=has_images,
+        key_type=key_record.key_type,
+        api_key_id=key_record.id,
+        model_override=None
+        if (is_auto or (alias is None and _is_logical_alias(_req_model)))
+        else _req_model,
     )
     if _served_route is not route:
         resp_headers["X-Empty-Stream-Failover"] = "true"

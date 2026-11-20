@@ -20,24 +20,22 @@ Tests cover:
 6. Source-grep contract: messages.py inject + interception are wired
    AND streaming requests do NOT inject.
 """
+
 from __future__ import annotations
 
 import base64
 import io
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
 
 import pytest
 
-
 # ── Registry ────────────────────────────────────────────────────────
-
-
 from tests.unit._handler_surface import messages_handler_source
 
 
 def test_registry_contains_excel_tool():
     from app.proxy_tools import get_registry
+
     reg = get_registry()
     assert len(reg) >= 1
     names = {t.name for t in reg}
@@ -46,6 +44,7 @@ def test_registry_contains_excel_tool():
 
 def test_proxy_tool_dataclass_shape():
     from app.proxy_tools import ProxyTool, get_registry
+
     tool = get_registry()[0]
     assert isinstance(tool, ProxyTool)
     assert isinstance(tool.anthropic_schema, dict)
@@ -59,6 +58,7 @@ def test_proxy_tool_dataclass_shape():
 
 def test_inject_creates_tools_list_when_absent():
     from app.proxy_tools import inject_anthropic
+
     body: dict = {}
     inject_anthropic(body)
     assert isinstance(body["tools"], list)
@@ -67,6 +67,7 @@ def test_inject_creates_tools_list_when_absent():
 
 def test_inject_appends_to_existing_tools():
     from app.proxy_tools import inject_anthropic
+
     caller_tool = {"name": "caller_thing", "input_schema": {}}
     body = {"tools": [caller_tool]}
     inject_anthropic(body)
@@ -80,6 +81,7 @@ def test_inject_is_idempotent_against_self():
     duplicate. Prevents weird "two tools named the same" model
     behavior."""
     from app.proxy_tools import inject_anthropic
+
     body = {"tools": [{"name": "read_xlsx_to_markdown", "input_schema": {}}]}
     inject_anthropic(body)
     names = [t["name"] for t in body["tools"]]
@@ -91,12 +93,14 @@ def test_inject_is_idempotent_against_self():
 
 def test_find_returns_none_when_no_tool_use():
     from app.proxy_tools import find_proxy_tool_use
+
     assert find_proxy_tool_use([]) is None
     assert find_proxy_tool_use([{"type": "text", "text": "hi"}]) is None
 
 
 def test_find_returns_match_for_registered_tool():
     from app.proxy_tools import find_proxy_tool_use
+
     content = [
         {"type": "text", "text": "Let me look at that file."},
         {
@@ -116,12 +120,15 @@ def test_find_returns_match_for_registered_tool():
 
 def test_find_ignores_caller_tool_use():
     from app.proxy_tools import find_proxy_tool_use
-    content = [{
-        "type": "tool_use",
-        "id": "toolu_other",
-        "name": "caller_custom_tool",
-        "input": {},
-    }]
+
+    content = [
+        {
+            "type": "tool_use",
+            "id": "toolu_other",
+            "name": "caller_custom_tool",
+            "input": {},
+        }
+    ]
     assert find_proxy_tool_use(content) is None
 
 
@@ -130,6 +137,7 @@ def test_find_ignores_caller_tool_use():
 
 def test_build_tool_result_message_anthropic_shape():
     from app.proxy_tools import build_tool_result_message
+
     msg = build_tool_result_message("toolu_abc", "# Sheet: Sales\n| a | b |")
     assert msg["role"] == "user"
     assert isinstance(msg["content"], list)
@@ -145,6 +153,7 @@ def test_build_tool_result_message_anthropic_shape():
 def _make_test_xlsx_bytes() -> bytes:
     """Produce a tiny in-memory xlsx for the runner tests."""
     import openpyxl
+
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Sales"
@@ -159,6 +168,7 @@ def _make_test_xlsx_bytes() -> bytes:
 @pytest.mark.asyncio
 async def test_excel_runner_renders_b64_input():
     from app.proxy_tools.excel import EXCEL_TOOL
+
     raw = _make_test_xlsx_bytes()
     output = await EXCEL_TOOL.run({"file_b64": base64.b64encode(raw).decode()})
     assert "## Sheet: Sales" in output
@@ -172,6 +182,7 @@ async def test_excel_runner_renders_b64_input():
 @pytest.mark.asyncio
 async def test_excel_runner_rejects_bad_base64():
     from app.proxy_tools.excel import EXCEL_TOOL
+
     with pytest.raises(ValueError, match="not valid base64"):
         await EXCEL_TOOL.run({"file_b64": "not_valid_base64!!!@#$"})
 
@@ -179,6 +190,7 @@ async def test_excel_runner_rejects_bad_base64():
 @pytest.mark.asyncio
 async def test_excel_runner_rejects_non_http_url():
     from app.proxy_tools.excel import EXCEL_TOOL
+
     with pytest.raises(ValueError, match="must use http"):
         await EXCEL_TOOL.run({"url": "file:///etc/passwd"})
 
@@ -186,24 +198,30 @@ async def test_excel_runner_rejects_non_http_url():
 @pytest.mark.asyncio
 async def test_excel_runner_requires_input_source():
     from app.proxy_tools.excel import EXCEL_TOOL
+
     with pytest.raises(ValueError, match="file_b64 or url"):
         await EXCEL_TOOL.run({})
 
 
 @pytest.mark.asyncio
 async def test_excel_runner_respects_sheet_filter():
-    from app.proxy_tools.excel import EXCEL_TOOL
     import openpyxl
+
+    from app.proxy_tools.excel import EXCEL_TOOL
+
     wb = openpyxl.Workbook()
     wb.active.title = "Sheet1"
     wb.create_sheet("Other")
     wb["Sheet1"]["A1"] = "in-sheet-1"
     wb["Other"]["A1"] = "in-other"
-    buf = io.BytesIO(); wb.save(buf)
-    output = await EXCEL_TOOL.run({
-        "file_b64": base64.b64encode(buf.getvalue()).decode(),
-        "sheet": "Other",
-    })
+    buf = io.BytesIO()
+    wb.save(buf)
+    output = await EXCEL_TOOL.run(
+        {
+            "file_b64": base64.b64encode(buf.getvalue()).decode(),
+            "sheet": "Other",
+        }
+    )
     assert "in-other" in output
     assert "in-sheet-1" not in output
 
@@ -211,28 +229,36 @@ async def test_excel_runner_respects_sheet_filter():
 @pytest.mark.asyncio
 async def test_excel_runner_rejects_unknown_sheet():
     from app.proxy_tools.excel import EXCEL_TOOL
+
     raw = _make_test_xlsx_bytes()
-    output = await EXCEL_TOOL.run({
-        "file_b64": base64.b64encode(raw).decode(),
-        "sheet": "DoesNotExist",
-    })
+    output = await EXCEL_TOOL.run(
+        {
+            "file_b64": base64.b64encode(raw).decode(),
+            "sheet": "DoesNotExist",
+        }
+    )
     assert "error" in output.lower()
     assert "DoesNotExist" in output
 
 
 @pytest.mark.asyncio
 async def test_excel_runner_clamps_row_cap():
-    from app.proxy_tools.excel import EXCEL_TOOL
     import openpyxl
+
+    from app.proxy_tools.excel import EXCEL_TOOL
+
     wb = openpyxl.Workbook()
     ws = wb.active
     for i in range(500):
         ws.append([f"row{i}"])
-    buf = io.BytesIO(); wb.save(buf)
-    output = await EXCEL_TOOL.run({
-        "file_b64": base64.b64encode(buf.getvalue()).decode(),
-        "max_rows": 5,
-    })
+    buf = io.BytesIO()
+    wb.save(buf)
+    output = await EXCEL_TOOL.run(
+        {
+            "file_b64": base64.b64encode(buf.getvalue()).decode(),
+            "max_rows": 5,
+        }
+    )
     assert "row0" in output
     assert "row4" in output
     assert "row100" not in output
@@ -254,7 +280,7 @@ def test_messages_handler_injects_proxy_tools():
     assert "_proxy_tools_injected = False" in src
     idx = src.find("_proxy_tools_injected = False")
     assert idx != -1
-    window = src[idx: idx + 2000]
+    window = src[idx : idx + 2000]
     # Either v5.6.0 sync OR v5.7.1+ async injection must be present
     assert ("inject_anthropic(body)" in window) or ("inject_anthropic_async(body)" in window)
 
@@ -271,7 +297,7 @@ def test_messages_handler_intercepts_tool_use_in_response():
     # Hop cap pinned at 3
     assert "_proxy_hops < 3" in src
     # X-Proxy-Tool-Hops response header gives callers visibility
-    assert 'X-Proxy-Tool-Hops' in src
+    assert "X-Proxy-Tool-Hops" in src
 
 
 def test_openpyxl_in_requirements():

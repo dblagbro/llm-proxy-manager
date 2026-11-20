@@ -12,7 +12,9 @@ the operator to act on (refresh will handle it at day 1).
 Fix: gate on ELIGIBILITY (type supports auto-refresh + has token + no
 failure this sweep), not on recent success.
 """
+
 from __future__ import annotations
+
 from pathlib import Path
 
 
@@ -39,7 +41,7 @@ def test_v5172_recent_success_variable_gone():
 def test_failed_refresh_still_warns():
     src = Path("app/monitoring/cursor_oauth_expiry_monitor.py").read_text()
     assert "_refresh_failed" in src
-    assert 'startswith("failed:")' in src
+    assert 'startswith("failed:")' in "".join(src.split())
     assert "and not _refresh_failed" in src
 
 
@@ -56,10 +58,9 @@ def test_docstring_documents_the_fix():
 
 def test_version_bumped():
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m
     major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    assert (major, minor, patch) >= (5, 19, 2), (
-        f"expected >= 5.19.2, got {major}.{minor}.{patch}"
-    )
+    assert (major, minor, patch) >= (5, 19, 2), f"expected >= 5.19.2, got {major}.{minor}.{patch}"

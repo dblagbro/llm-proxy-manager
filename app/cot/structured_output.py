@@ -17,12 +17,12 @@ All code assumes `litellm` is importable; failures fall back to the
 un-validated answer rather than raising, so a broken provider doesn't
 360° the endpoint.
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import re
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 # ── Schema extraction ────────────────────────────────────────────────────────
 
 
-def extract_openai_schema(body: dict) -> Optional[dict]:
+def extract_openai_schema(body: dict) -> dict | None:
     """Pull a JSON Schema out of an OpenAI-format request body.
 
     Supports:
@@ -56,7 +56,7 @@ def extract_openai_schema(body: dict) -> Optional[dict]:
     return None
 
 
-def extract_anthropic_schema(body: dict) -> Optional[dict]:
+def extract_anthropic_schema(body: dict) -> dict | None:
     """Anthropic doesn't have a standardised response_format field; users
     typically use tool-use with a single tool whose input_schema is the
     desired output shape. We treat that pattern as "structured output"
@@ -77,7 +77,7 @@ def extract_anthropic_schema(body: dict) -> Optional[dict]:
 # ── Response parse + validate ────────────────────────────────────────────────
 
 
-def extract_json(text: str) -> Optional[dict]:
+def extract_json(text: str) -> dict | None:
     """Extract a JSON object from possibly-fenced, possibly-prose model output."""
     if not text:
         return None
@@ -99,13 +99,13 @@ def extract_json(text: str) -> Optional[dict]:
     end = stripped.rfind("}")
     if start >= 0 and end > start:
         try:
-            return json.loads(stripped[start:end + 1])
+            return json.loads(stripped[start : end + 1])
         except (ValueError, TypeError):
             pass
     return None
 
 
-def validate_against_schema(obj, schema: dict) -> Optional[str]:
+def validate_against_schema(obj, schema: dict) -> str | None:
     """Return None on pass, else a short human-readable error for repair feedback."""
     try:
         import jsonschema
@@ -160,8 +160,8 @@ async def call_with_schema(
     schema: dict,
     extra: dict,
     max_repairs: int = 2,
-    system_prefix: Optional[str] = None,
-) -> tuple[Optional[dict], str, int]:
+    system_prefix: str | None = None,
+) -> tuple[dict | None, str, int]:
     """Call the model enforcing `schema`. Returns (parsed_obj_or_None, raw_text, attempts).
 
     `parsed_obj_or_None` is the validated dict on success, None when validation
@@ -174,13 +174,20 @@ async def call_with_schema(
     working_system = (system_prefix + "\n\n" + schema_system) if system_prefix else schema_system
 
     working_messages = [{"role": "system", "content": working_system}] + list(messages)
-    kwargs = {k: v for k, v in extra.items() if k not in ("system", "stream", "response_format", "tools", "tool_choice")}
+    kwargs = {
+        k: v
+        for k, v in extra.items()
+        if k not in ("system", "stream", "response_format", "tools", "tool_choice")
+    }
 
     last_text = ""
     for attempt in range(1, max_repairs + 2):  # 1 initial + max_repairs retries
         try:
             resp = await acompletion_with_retry(
-                model=model, messages=working_messages, stream=False, **kwargs,
+                model=model,
+                messages=working_messages,
+                stream=False,
+                **kwargs,
             )
         except Exception as exc:
             logger.warning("structured_output.call_failed attempt=%d %s", attempt, exc)

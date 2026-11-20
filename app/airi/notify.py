@@ -13,11 +13,11 @@ recipient-resolution + rendering path against a live deployment without
 spamming the operator's inbox. The flag can be set per-call OR via the
 ``AIRI_NOTIFY_DRY_RUN`` env var (truthy values: ``1``/``true``/``yes``).
 """
+
 from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
 
 from app.config import settings
 
@@ -37,9 +37,13 @@ def _env_dry_run() -> bool:
     return v in ("1", "true", "yes", "on")
 
 
-async def airi_notify(subject: str, message: str, severity: str = "warning",
-                      category: str = "monitor",
-                      dry_run: bool = False) -> Optional[dict]:
+async def airi_notify(
+    subject: str,
+    message: str,
+    severity: str = "warning",
+    category: str = "monitor",
+    dry_run: bool = False,
+) -> dict | None:
     """Send an operator notification. Never raises — a notification failure
     must not break the evaluator.
 
@@ -66,9 +70,11 @@ async def airi_notify(subject: str, message: str, severity: str = "warning",
         try:
             from app.airi import notify_prefs
             from app.models.database import AsyncSessionLocal
+
             async with AsyncSessionLocal() as db:
                 recipients |= await notify_prefs.resolve_recipients(
-                    db, category=category, severity=severity)
+                    db, category=category, severity=severity
+                )
         except Exception as e:
             logger.warning("airi.notify pref-resolve failed err=%r", e)
 
@@ -76,7 +82,10 @@ async def airi_notify(subject: str, message: str, severity: str = "warning",
             logger.info(
                 "airi.notify DRY-RUN subject=%r severity=%s category=%s "
                 "would-send-to=%d recipient(s)",
-                subject, severity, category, len(recipients),
+                subject,
+                severity,
+                category,
+                len(recipients),
             )
             return {
                 "dry_run": True,
@@ -88,13 +97,23 @@ async def airi_notify(subject: str, message: str, severity: str = "warning",
             }
 
         from app.monitoring.notifications import send_alert
+
         for email in recipients:
             await send_alert(
-                severity, full_subject, body, None,
-                throttle_key=f"airi:{category}:{subject}:{email}", to=email,
+                severity,
+                full_subject,
+                body,
+                None,
+                throttle_key=f"airi:{category}:{subject}:{email}",
+                to=email,
             )
-        logger.info("airi.notify sent subject=%r severity=%s category=%s recipients=%d",
-                    subject, severity, category, len(recipients))
+        logger.info(
+            "airi.notify sent subject=%r severity=%s category=%s recipients=%d",
+            subject,
+            severity,
+            category,
+            len(recipients),
+        )
         return None
     except Exception as e:
         logger.warning("airi.notify failed subject=%r err=%r", subject, e)

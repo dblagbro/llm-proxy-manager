@@ -20,10 +20,10 @@ Anthropic memory tool commands handled in this phase:
 Phase 5 ships non-streaming only. Streaming write-back lands in Phase 5.5
 (needs assembled-block sniffing in app/api/_messages_streaming.py).
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +38,9 @@ async def maybe_extract_memory_writes(
     *,
     response_dict: dict,
     api_key_id: str,
-    conversation_id: Optional[str],
-    memory_tag_default: Optional[str] = None,
-    source_provider_id: Optional[str] = None,
+    conversation_id: str | None,
+    memory_tag_default: str | None = None,
+    source_provider_id: str | None = None,
 ) -> int:
     """Scan an Anthropic /v1/messages response for memory-tool writes
     and persist them. Returns the number of store mutations applied.
@@ -53,6 +53,7 @@ async def maybe_extract_memory_writes(
     """
     try:
         from app.config import settings
+
         if not getattr(settings, "caller_memory_enabled", False):
             return 0
         if not conversation_id:
@@ -67,19 +68,20 @@ async def maybe_extract_memory_writes(
         # derivation). source_company persists onto every memory row so
         # later compliance filtering can drop it for keys that have banned
         # the originating company.
-        source_company: Optional[str] = None
+        source_company: str | None = None
         if source_provider_id:
             from sqlalchemy import select
-            from app.models.db import Provider
+
             from app.compliance import provider_type_to_company
+            from app.models.db import Provider
+
             pq = select(Provider).where(Provider.id == source_provider_id)
             p = (await db.execute(pq)).scalar_one_or_none()
             if p is not None and getattr(p, "memory_disabled", False):
                 return 0
             if p is not None:
-                source_company = (
-                    getattr(p, "owner_company", None)
-                    or provider_type_to_company(getattr(p, "provider_type", None))
+                source_company = getattr(p, "owner_company", None) or provider_type_to_company(
+                    getattr(p, "provider_type", None)
                 )
 
         content = response_dict.get("content") or []
@@ -112,6 +114,7 @@ async def maybe_extract_memory_writes(
                 writes += 1
         try:
             from app.observability.prometheus import observe_memory_operation
+
             observe_memory_operation("extract", "applied" if writes > 0 else "skipped")
         except Exception:
             pass
@@ -119,6 +122,7 @@ async def maybe_extract_memory_writes(
     except Exception as e:
         try:
             from app.observability.prometheus import observe_memory_operation
+
             observe_memory_operation("extract", "degraded")
         except Exception:
             pass
@@ -131,13 +135,13 @@ async def maybe_extract_memory_writes(
 async def _apply_command(
     db,
     *,
-    cmd: Optional[str],
+    cmd: str | None,
     inp: dict,
     api_key_id: str,
     conversation_id: str,
-    memory_tag_default: Optional[str],
-    source_provider_id: Optional[str],
-    source_company: Optional[str] = None,
+    memory_tag_default: str | None,
+    source_provider_id: str | None,
+    source_company: str | None = None,
 ) -> bool:
     """Apply one memory-tool command to the store. Returns True if the
     store was mutated.
@@ -146,7 +150,7 @@ async def _apply_command(
     this write — persisted to every CallerMemory + CallerMemoryMarker row
     so compliance filtering at read time can drop banned origins.
     """
-    from app.memory.store import get, put, delete
+    from app.memory.store import delete, get, put
 
     # Path → memory_tag mapping. Anthropic memory tool addresses entries
     # by filesystem-style path (``/memories/user_facts.md``); we strip
@@ -248,7 +252,7 @@ def _path_to_tag(path: str) -> str:
     s = path.strip()
     for prefix in ("/memories/", "memories/"):
         if s.startswith(prefix):
-            s = s[len(prefix):]
+            s = s[len(prefix) :]
             break
     s = s.strip("/")
     return s or "default"

@@ -2,16 +2,17 @@
 Model capability scanner.
 Queries each provider's model list API and auto-infers capability profiles.
 """
+
 import logging
-from typing import Optional
+import random as _random
 
 import httpx
 import litellm
-
-from app.models.db import Provider, ModelCapability
-from app.routing.capability_inference import infer_capability_profile
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
+
+from app.models.db import ModelCapability, Provider
+from app.routing.capability_inference import infer_capability_profile
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ async def scan_provider_models(db: AsyncSession, provider: Provider) -> list[dic
     try:
         if provider.provider_type == "grok-web":
             from app.providers.grok_web import SUPPORTED_MODEL_ALIASES
+
             aliases_map = dict(SUPPORTED_MODEL_ALIASES)
     except ImportError:
         aliases_map = {}
@@ -68,13 +70,15 @@ async def scan_provider_models(db: AsyncSession, provider: Provider) -> list[dic
             aliases=aliases_map.get(model_id, []),
         )
         db.add(cap)
-        upserted.append({
-            "model_id": model_id,
-            "tasks": profile.tasks,
-            "cost_tier": profile.cost_tier,
-            "native_reasoning": profile.native_reasoning,
-            "aliases": aliases_map.get(model_id, []),
-        })
+        upserted.append(
+            {
+                "model_id": model_id,
+                "tasks": profile.tasks,
+                "cost_tier": profile.cost_tier,
+                "native_reasoning": profile.native_reasoning,
+                "aliases": aliases_map.get(model_id, []),
+            }
+        )
 
     await db.commit()
     logger.info(f"Scanned {len(upserted)} models for provider {provider.id}")
@@ -110,6 +114,7 @@ async def _fetch_model_list(provider: Provider) -> list[str]:
                 # Premium adds grok-4-super. Return the conservative two
                 # so all subscriptions get a usable scan result.
                 from app.providers.grok_web import SUPPORTED_MODELS
+
                 return list(SUPPORTED_MODELS)
             case _:
                 return []
@@ -135,9 +140,9 @@ async def _fetch_claude_oauth_models(provider: Provider) -> list[str]:
     v2.7.6: on 401, attempt one refresh-and-retry via refresh_and_persist.
     Caller (scan_provider_models) provides a DB session that we use to
     persist the rotated tokens. Falls back gracefully if the refresh fails."""
-    from app.providers.claude_oauth import build_headers, PLATFORM_BASE_URL
-    from app.providers.claude_oauth_flow import refresh_and_persist, OAuthFlowError
     from app.models.database import AsyncSessionLocal
+    from app.providers.claude_oauth import PLATFORM_BASE_URL, build_headers
+    from app.providers.claude_oauth_flow import OAuthFlowError, refresh_and_persist
 
     current_token = provider.api_key or ""
     refreshed = False
@@ -151,7 +156,10 @@ async def _fetch_claude_oauth_models(provider: Provider) -> list[str]:
             try:
                 async with AsyncSessionLocal() as db:
                     from sqlalchemy import select
-                    p = (await db.execute(select(Provider).where(Provider.id == provider.id))).scalar_one()
+
+                    p = (
+                        await db.execute(select(Provider).where(Provider.id == provider.id))
+                    ).scalar_one()
                     result = await refresh_and_persist(p, db)
                     current_token = result.access_token
                     refreshed = True
@@ -174,11 +182,13 @@ async def _fetch_codex_oauth_models(provider: Provider) -> list[str]:
 
     Mirrors the auto-refresh-on-401 retry from claude-oauth.
     """
-    from app.providers.codex_oauth import (
-        CODEX_MODELS_URL, CODEX_CLIENT_VERSION, build_headers,
-    )
-    from app.providers.codex_oauth_flow import refresh_and_persist, OAuthFlowError
     from app.models.database import AsyncSessionLocal
+    from app.providers.codex_oauth import (
+        CODEX_CLIENT_VERSION,
+        CODEX_MODELS_URL,
+        build_headers,
+    )
+    from app.providers.codex_oauth_flow import OAuthFlowError, refresh_and_persist
 
     cfg = provider.extra_config or {}
     account_id = cfg.get("chatgpt_account_id") if isinstance(cfg, dict) else None
@@ -191,7 +201,8 @@ async def _fetch_codex_oauth_models(provider: Provider) -> list[str]:
                 # /models is plain JSON, NOT SSE — override the default Accept
                 # that build_headers sets for the streaming /responses path.
                 headers=build_headers(
-                    current_token, chatgpt_account_id=account_id,
+                    current_token,
+                    chatgpt_account_id=account_id,
                     extra={"Accept": "application/json"},
                 ),
             )
@@ -199,7 +210,10 @@ async def _fetch_codex_oauth_models(provider: Provider) -> list[str]:
             try:
                 async with AsyncSessionLocal() as db:
                     from sqlalchemy import select
-                    p = (await db.execute(select(Provider).where(Provider.id == provider.id))).scalar_one()
+
+                    p = (
+                        await db.execute(select(Provider).where(Provider.id == provider.id))
+                    ).scalar_one()
                     result = await refresh_and_persist(p, db)
                     current_token = result.access_token
                     refreshed = True
@@ -309,9 +323,8 @@ def _vertex_default_models() -> list[str]:
 
 async def test_provider(provider: Provider) -> dict:
     """Send a minimal test request to verify provider is reachable."""
-    import litellm
-    from app.routing.router import build_litellm_model, build_litellm_kwargs
-    from app.routing.circuit_breaker import record_failure, record_success, is_billing_error
+    from app.routing.circuit_breaker import is_billing_error, record_failure, record_success
+    from app.routing.router import build_litellm_kwargs, build_litellm_model
 
     # v2.7.2: claude-oauth bypasses litellm entirely — OAuth tokens need
     # Bearer auth + specific beta flags + the CC system-prompt marker that
@@ -330,10 +343,31 @@ async def test_provider(provider: Provider) -> dict:
     # Pre-flight: catch the common "no API key configured" case before we hit
     # litellm and get a 600-char Python traceback back. Anthropic/OpenAI/Grok
     # store the key on the provider row; ollama and compatible can be keyless.
-    if provider.provider_type in ("anthropic", "openai", "google", "vertex", "grok", "cohere", "mistral", "groq", "together", "fireworks", "azure", "openrouter", "nvidia_nim") and not provider.api_key:
+    if (
+        provider.provider_type
+        in (
+            "anthropic",
+            "openai",
+            "google",
+            "vertex",
+            "grok",
+            "cohere",
+            "mistral",
+            "groq",
+            "together",
+            "fireworks",
+            "azure",
+            "openrouter",
+            "nvidia_nim",
+        )
+        and not provider.api_key
+    ):
         return {
             "success": False,
-            "error": f"No API key configured for this {provider.provider_type} provider. Open the Edit modal and paste a key.",
+            "error": (
+                f"No API key configured for this {provider.provider_type} provider. "
+                "Open the Edit modal and paste a key."
+            ),
             "model": model,
             "billing_error": False,
             "hint": "missing_api_key",
@@ -341,19 +375,20 @@ async def test_provider(provider: Provider) -> dict:
 
     # v3.0.32: shared helper. See resolve_chat_model_for_provider docstring
     # for the v3.0.27/30/31 bug history that motivated extracting this.
-    from app.routing.router import resolve_chat_model_for_provider
     from app.models.database import AsyncSessionLocal
+    from app.routing.router import resolve_chat_model_for_provider
+
     async with AsyncSessionLocal() as _resolve_db:
-        chat_model, skip_reason = await resolve_chat_model_for_provider(
-            _resolve_db, provider
-        )
+        chat_model, skip_reason = await resolve_chat_model_for_provider(_resolve_db, provider)
     if skip_reason is not None:
         return {
             "success": True,
-            "response": (f"Skipped — provider's default model "
-                         f"{provider.default_model!r} is embeddings-only and "
-                         "no chat models are scanned. Use POST /v1/embeddings "
-                         "to test the embeddings surface, or scan models first."),
+            "response": (
+                f"Skipped — provider's default model "
+                f"{provider.default_model!r} is embeddings-only and "
+                "no chat models are scanned. Use POST /v1/embeddings "
+                "to test the embeddings surface, or scan models first."
+            ),
             "model": provider.default_model,
             "embedding_only": True,
         }
@@ -395,13 +430,15 @@ async def _test_claude_oauth(provider: Provider) -> dict:
     Bearer auth, CC beta flags, and the required system-prompt marker.
     """
     import httpx
-    from app.providers.claude_oauth import build_headers, PLATFORM_BASE_URL
+
     from app.api._messages_streaming import _inject_claude_code_system
-    from app.routing.circuit_breaker import record_failure, record_success, is_billing_error
+    from app.providers.claude_oauth import PLATFORM_BASE_URL, build_headers
+    from app.routing.circuit_breaker import is_billing_error, record_failure, record_success
 
     # v5.2.2 / Batch V3 — central default lookup; vendor-neutral fallback
     # asymmetry was caught during the v5.2 audit.
     from app.routing.litellm_binding import PROVIDER_DEFAULT_MODELS
+
     model = provider.default_model or PROVIDER_DEFAULT_MODELS.get(
         getattr(provider, "provider_type", "claude-oauth"),
         "claude-sonnet-4-6",
@@ -416,11 +453,13 @@ async def _test_claude_oauth(provider: Provider) -> dict:
             "hint": "missing_api_key",
         }
 
-    body = _inject_claude_code_system({
-        "model": model,
-        "max_tokens": 8,
-        "messages": [{"role": "user", "content": "Reply with: OK"}],
-    })
+    body = _inject_claude_code_system(
+        {
+            "model": model,
+            "max_tokens": 8,
+            "messages": [{"role": "user", "content": "Reply with: OK"}],
+        }
+    )
     url = f"{PLATFORM_BASE_URL}/v1/messages?beta=true"
 
     # v5.0.21 — read per-provider 1M-context opt-out. Set on Max
@@ -429,19 +468,22 @@ async def _test_claude_oauth(provider: Provider) -> dict:
     # for long context requests."
     # v5.0.21 hotfix: identity-check rather than bool() — bool("false")
     # is True, which would silently invert operator intent.
-    disable_long_context = (
-        (getattr(provider, "extra_config", None) or {}).get("disable_long_context") is True
-    )
+    disable_long_context = (getattr(provider, "extra_config", None) or {}).get(
+        "disable_long_context"
+    ) is True
 
     # v2.7.6: refresh-and-retry once on 401 so admins see the real status
-    from app.providers.claude_oauth_flow import refresh_and_persist, OAuthFlowError
     from app.models.database import AsyncSessionLocal
+    from app.providers.claude_oauth_flow import OAuthFlowError, refresh_and_persist
+
     current_token = provider.api_key
     refreshed = False
     try:
         while True:
             headers = {
-                **build_headers(current_token, model=model, disable_long_context=disable_long_context),
+                **build_headers(
+                    current_token, model=model, disable_long_context=disable_long_context
+                ),
                 "Content-Type": "application/json",
             }
             async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as c:
@@ -450,7 +492,10 @@ async def _test_claude_oauth(provider: Provider) -> dict:
                 try:
                     async with AsyncSessionLocal() as db:
                         from sqlalchemy import select
-                        p = (await db.execute(select(Provider).where(Provider.id == provider.id))).scalar_one()
+
+                        p = (
+                            await db.execute(select(Provider).where(Provider.id == provider.id))
+                        ).scalar_one()
                         result = await refresh_and_persist(p, db)
                         current_token = result.access_token
                         refreshed = True
@@ -469,7 +514,9 @@ async def _test_claude_oauth(provider: Provider) -> dict:
                     "billing_error": billing,
                 }
             data = r.json()
-            text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+            text = "".join(
+                b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"
+            )
             await record_success(provider.id)
             return {"success": True, "response": text, "model": model}
     except httpx.HTTPError as e:
@@ -493,17 +540,21 @@ async def _test_codex_oauth(provider: Provider) -> dict:
     events to confirm a clean ``response.completed`` arrives. Refreshes
     once on 401 via the rotated tokens, mirroring the claude-oauth path.
     """
-    import httpx
     import json as _json
-    from app.providers.codex_oauth import (
-        CODEX_RESPONSES_URL, build_headers,
-    )
-    from app.providers.codex_oauth_flow import refresh_and_persist, OAuthFlowError
-    from app.routing.circuit_breaker import (
-        record_failure, record_success, is_billing_error,
-    )
+
+    import httpx
+
     from app.models.database import AsyncSessionLocal
-    from sqlalchemy import select
+    from app.providers.codex_oauth import (
+        CODEX_RESPONSES_URL,
+        build_headers,
+    )
+    from app.providers.codex_oauth_flow import OAuthFlowError, refresh_and_persist
+    from app.routing.circuit_breaker import (
+        is_billing_error,
+        record_failure,
+        record_success,
+    )
 
     model = provider.default_model or "gpt-5.5"
     if not provider.api_key:
@@ -521,10 +572,13 @@ async def _test_codex_oauth(provider: Provider) -> dict:
     body = {
         "model": model,
         "instructions": "Reply briefly.",
-        "input": [{
-            "type": "message", "role": "user",
-            "content": [{"type": "input_text", "text": "Reply with: OK"}],
-        }],
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Reply with: OK"}],
+            }
+        ],
         "stream": True,
         "store": False,
     }
@@ -539,7 +593,11 @@ async def _test_codex_oauth(provider: Provider) -> dict:
                     if r.status_code == 401 and not refreshed and provider.oauth_refresh_token:
                         try:
                             async with AsyncSessionLocal() as db:
-                                p = (await db.execute(select(Provider).where(Provider.id == provider.id))).scalar_one()
+                                p = (
+                                    await db.execute(
+                                        select(Provider).where(Provider.id == provider.id)
+                                    )
+                                ).scalar_one()
                                 result = await refresh_and_persist(p, db)
                                 current_token = result.access_token
                                 refreshed = True
@@ -553,8 +611,10 @@ async def _test_codex_oauth(provider: Provider) -> dict:
                         await record_failure(provider.id, billing_error=billing)
                         return {
                             "success": False,
-                            "error": err, "error_detail": err,
-                            "model": model, "billing_error": billing,
+                            "error": err,
+                            "error_detail": err,
+                            "model": model,
+                            "billing_error": billing,
                         }
                     text_parts: list[str] = []
                     async for line in r.aiter_lines():
@@ -579,15 +639,18 @@ async def _test_codex_oauth(provider: Provider) -> dict:
                     return {
                         "success": False,
                         "error": "stream ended without response.completed",
-                        "model": model, "billing_error": False,
+                        "model": model,
+                        "billing_error": False,
                     }
     except httpx.HTTPError as e:
         err_str = str(e)
         await record_failure(provider.id, billing_error=False)
         return {
             "success": False,
-            "error": err_str, "error_detail": err_str,
-            "model": model, "billing_error": False,
+            "error": err_str,
+            "error_detail": err_str,
+            "model": model,
+            "billing_error": False,
         }
 
 
@@ -599,7 +662,7 @@ async def _test_codex_oauth(provider: Provider) -> dict:
 # has the old test string on a signature list. Randomizing the prompt
 # defeats payload fingerprinting while keeping the response shape
 # easy to validate (any natural-language answer is "success").
-import random as _random
+
 _GROK_TEST_PROMPTS = (
     "What's your favorite color?",
     "What's a good name for a friendly robot?",
@@ -627,9 +690,12 @@ async def _test_grok_web(provider: Provider) -> dict:
     string that anti-bot signature-fingerprinted).
     """
     from app.providers.grok_web import (
-        complete_grok_web, GrokWebAuthError, GrokWebError,
+        GrokWebAuthError,
+        GrokWebError,
+        complete_grok_web,
     )
-    from app.routing.circuit_breaker import record_failure, record_success, is_billing_error
+    from app.routing.circuit_breaker import is_billing_error, record_failure, record_success
+
     model = provider.default_model or "grok-3"
     prompt = _random.choice(_GROK_TEST_PROMPTS)
     try:

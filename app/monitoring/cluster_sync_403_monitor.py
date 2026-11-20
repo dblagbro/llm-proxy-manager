@@ -7,7 +7,7 @@ rolling-1h ``recent_403_pct`` crosses ``cluster_sync_403_alert_threshold_pct``
 ``event_type=cluster_sync.403_rate_elevated``.
 
 The baseline-aware ceiling (70%) is set above the historical known-bad
-baseline of ~50% on tmrwww02 peer so the worker does not fire on the
+baseline of ~50% on the second gateway peer so the worker does not fire on the
 status-quo noise. When operator fixes the misconfig and the baseline drops
 to ~0%, the same threshold catches any future regression. If the baseline
 ever climbs above 70% as a "new normal" the operator just bumps
@@ -22,25 +22,26 @@ Min-sample guard: skips evaluation entirely when ``attempts_1h <
 cluster_sync_403_alert_min_attempts`` (default 4) so a single 403 in an
 idle window doesn't fire (1/1 = 100%).
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import random
 import time
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 WARMUP_DELAY_SEC = 90
 _STARTUP_JITTER_MAX_SEC = 30.0
-_TASK: Optional[asyncio.Task] = None
+_TASK: asyncio.Task | None = None
 _last_fired_at: float = 0.0
 
 
 def _enabled() -> bool:
     try:
         from app.config import settings
+
         return bool(getattr(settings, "cluster_sync_403_monitor_enabled", True))
     except Exception:
         return False
@@ -49,6 +50,7 @@ def _enabled() -> bool:
 def _interval_sec() -> int:
     try:
         from app.config import settings
+
         return int(getattr(settings, "cluster_sync_403_monitor_interval_sec", 300))
     except Exception:
         return 300
@@ -57,6 +59,7 @@ def _interval_sec() -> int:
 def _alert_threshold_pct() -> float:
     try:
         from app.config import settings
+
         return float(getattr(settings, "cluster_sync_403_alert_threshold_pct", 70.0))
     except Exception:
         return 70.0
@@ -65,6 +68,7 @@ def _alert_threshold_pct() -> float:
 def _alert_min_attempts() -> int:
     try:
         from app.config import settings
+
         return int(getattr(settings, "cluster_sync_403_alert_min_attempts", 4))
     except Exception:
         return 4
@@ -73,6 +77,7 @@ def _alert_min_attempts() -> int:
 def _alert_cooldown_sec() -> int:
     try:
         from app.config import settings
+
         return int(getattr(settings, "cluster_sync_403_alert_cooldown_sec", 3600))
     except Exception:
         return 3600
@@ -82,8 +87,8 @@ async def _scan_once() -> dict:
     """One scan. Returns the decision dict (for tests + heartbeat note)."""
     global _last_fired_at
 
-    from app.monitoring.cluster_sync_metrics import snapshot
     from app.monitoring.activity import log_event
+    from app.monitoring.cluster_sync_metrics import snapshot
 
     snap = snapshot()
     threshold = _alert_threshold_pct()
@@ -144,8 +149,10 @@ async def _scan_once() -> dict:
 async def _loop() -> None:
     """Worker loop. Runs while enabled; sleeps interval between scans."""
     from app.monitoring.worker_heartbeat import (
-        WorkerHeartbeat, register_expected_interval,
+        WorkerHeartbeat,
+        register_expected_interval,
     )
+
     hb = WorkerHeartbeat(name="cluster_sync_403_monitor")
     jitter = random.uniform(0.0, _STARTUP_JITTER_MAX_SEC)
     await asyncio.sleep(WARMUP_DELAY_SEC + jitter)

@@ -24,6 +24,7 @@ That is the lesson worth keeping: **a test that only passes when a declared
 dependency is missing is not testing the deployed configuration.** The pin below
 asserts the behaviour holds either way.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -53,8 +54,7 @@ def test_multi_value_dims_survive_parsing(header, expected):
     got = _dims(header)
     for key, value in expected.items():
         assert got.get(key) == value, (
-            f"{header!r}: {key} parsed as {got.get(key)!r}, expected {value!r}. "
-            f"All dims: {got}"
+            f"{header!r}: {key} parsed as {got.get(key)!r}, expected {value!r}. All dims: {got}"
         )
 
 

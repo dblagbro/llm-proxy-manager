@@ -19,12 +19,12 @@ Defaults locked from operator's design questions (chat 2026-05-05):
 
 Logged via activity_log so the operator can audit rotations + revert.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import time
-from typing import Optional
 
 from sqlalchemy import select
 
@@ -36,8 +36,8 @@ from app.monitoring.activity import log_event
 logger = logging.getLogger(__name__)
 
 
-_INTERVAL_SEC_DEFAULT = 300       # check every 5 min
-_COOLDOWN_SEC_DEFAULT = 1800      # 30 min between rotations on same pair
+_INTERVAL_SEC_DEFAULT = 300  # check every 5 min
+_COOLDOWN_SEC_DEFAULT = 1800  # 30 min between rotations on same pair
 
 
 def _interval_sec() -> int:
@@ -60,7 +60,7 @@ def _cooldown_sec() -> int:
 _LAST_ROTATION: dict[tuple[str, str], float] = {}
 
 
-def _hotter_pct(w: ProviderUsageWindow) -> Optional[float]:
+def _hotter_pct(w: ProviderUsageWindow) -> float | None:
     """Returns max(session_pct, weekly_pct) ignoring None. None if both null."""
     pcts = [v for v in (w.session_pct, w.weekly_pct) if v is not None]
     return max(pcts) if pcts else None
@@ -71,12 +71,14 @@ async def _rotate_one_group(provider_type: str) -> int:
     Returns 1 if a rotation happened, 0 otherwise."""
     async with AsyncSessionLocal() as db:
         res = await db.execute(
-            select(Provider).where(
+            select(Provider)
+            .where(
                 Provider.provider_type == provider_type,
                 Provider.enabled == True,  # noqa: E712
                 Provider.deleted_at.is_(None),
                 Provider.usage_tracking_enabled == True,  # noqa: E712
-            ).order_by(Provider.priority)
+            )
+            .order_by(Provider.priority)
         )
         providers = list(res.scalars().all())
         if len(providers) < 2:
@@ -110,8 +112,11 @@ async def _rotate_one_group(provider_type: str) -> int:
         # Threshold: use the MAX threshold across both providers' configs.
         # (Operator may set per-provider; pick the more permissive value so
         # neither side rotates more aggressively than its own setting.)
-        thresholds = [p.usage_rotation_threshold_pct for p in providers
-                      if p.usage_rotation_threshold_pct is not None]
+        thresholds = [
+            p.usage_rotation_threshold_pct
+            for p in providers
+            if p.usage_rotation_threshold_pct is not None
+        ]
         if not thresholds:
             return 0
         threshold_pct = max(thresholds)
@@ -178,11 +183,13 @@ async def _sweep_once() -> int:
     Returns count of rotations performed."""
     async with AsyncSessionLocal() as db:
         types_res = await db.execute(
-            select(Provider.provider_type).where(
+            select(Provider.provider_type)
+            .where(
                 Provider.enabled == True,  # noqa: E712
                 Provider.deleted_at.is_(None),
                 Provider.usage_tracking_enabled == True,  # noqa: E712
-            ).distinct()
+            )
+            .distinct()
         )
         types = [r[0] for r in types_res.all()]
 
@@ -198,6 +205,7 @@ async def _sweep_once() -> int:
 async def _loop() -> None:
     """Periodic loop. Boot-delayed 90s so usage_tracker has populated cache."""
     from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+
     hb = WorkerHeartbeat(name="usage_rotator")
     await asyncio.sleep(90)
     while True:
@@ -214,7 +222,7 @@ async def _loop() -> None:
         await asyncio.sleep(interval)
 
 
-_TASK: Optional[asyncio.Task] = None
+_TASK: asyncio.Task | None = None
 
 
 def start() -> None:

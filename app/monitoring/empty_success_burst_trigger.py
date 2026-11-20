@@ -2,9 +2,9 @@
 
 Pre-5.7.15 the AI provider supervisor only ran every 30 min. Between sweeps,
 a degrading upstream could throw bursts of empty-success streams that v5.7.13
-failover wrote to activity_log (via v5.7.14) but nothing acted on. The c1conv
+failover wrote to activity_log (via v5.7.14) but nothing acted on. The integration
 Gemini incident on 2026-06-17 sat in this gap: ~10 empty-successes in 14 min,
-no CB open, no supervisor action, just 502s back to coordinator-hub bots.
+no CB open, no supervisor action, just 502s back to integration client bots.
 
 This worker closes that gap. Cheap DB sweep every 60s:
 
@@ -22,12 +22,12 @@ Independent of ai_provider_supervisor — they share no state; the LLM
 classifier still runs every 30 min for slower deprioritize/disable
 decisions. This worker only handles the "happening RIGHT NOW" case.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import random
-from typing import Optional
 
 from sqlalchemy import text
 
@@ -35,12 +35,13 @@ logger = logging.getLogger(__name__)
 
 WARMUP_DELAY_SEC = 60
 _STARTUP_JITTER_MAX_SEC = 30.0
-_TASK: Optional[asyncio.Task] = None
+_TASK: asyncio.Task | None = None
 
 
 def _enabled() -> bool:
     try:
         from app.config import settings
+
         return bool(getattr(settings, "empty_success_burst_trigger_enabled", True))
     except Exception:
         return False
@@ -49,6 +50,7 @@ def _enabled() -> bool:
 def _interval_sec() -> int:
     try:
         from app.config import settings
+
         return int(getattr(settings, "empty_success_burst_interval_sec", 60))
     except Exception:
         return 60
@@ -57,6 +59,7 @@ def _interval_sec() -> int:
 def _window_sec() -> int:
     try:
         from app.config import settings
+
         return int(getattr(settings, "empty_success_burst_window_sec", 300))
     except Exception:
         return 300
@@ -65,6 +68,7 @@ def _window_sec() -> int:
 def _threshold() -> int:
     try:
         from app.config import settings
+
         return int(getattr(settings, "empty_success_burst_threshold", 3))
     except Exception:
         return 3
@@ -73,8 +77,8 @@ def _threshold() -> int:
 async def _scan_once() -> dict:
     """One scan. Returns counts dict for the heartbeat note + tests."""
     from app.models.database import AsyncSessionLocal
-    from app.routing.circuit_breaker import force_open, get_all_states, CBState
     from app.monitoring.activity import log_event
+    from app.routing.circuit_breaker import CBState, force_open, get_all_states
 
     window = _window_sec()
     threshold = _threshold()
@@ -118,7 +122,10 @@ async def _scan_once() -> dict:
                 logger.warning(
                     "empty_success_burst_trigger.opened provider=%s "
                     "count=%d window_sec=%d threshold=%d",
-                    provider_id, n, window, threshold,
+                    provider_id,
+                    n,
+                    window,
+                    threshold,
                 )
                 await log_event(
                     db,
@@ -138,7 +145,8 @@ async def _scan_once() -> dict:
             except Exception as e:
                 logger.warning(
                     "empty_success_burst_trigger.force_open_failed provider=%s err=%r",
-                    provider_id, e,
+                    provider_id,
+                    e,
                 )
     return out
 
@@ -146,6 +154,7 @@ async def _scan_once() -> dict:
 async def _scan_loop() -> None:
     """Periodic loop. No-op when ``empty_success_burst_trigger_enabled=False``."""
     from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+
     hb = WorkerHeartbeat(name="empty_success_burst_trigger")
     jitter = random.uniform(0.0, _STARTUP_JITTER_MAX_SEC)
     await asyncio.sleep(WARMUP_DELAY_SEC + jitter)

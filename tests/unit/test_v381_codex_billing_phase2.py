@@ -9,20 +9,21 @@ flow already maintains. Endpoint hardcoded to
 These tests verify the new behavior. Phase 1 cookie-paste assertions
 removed.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
-
 
 # ── Endpoint + auth posture ────────────────────────────────────────
 
 
 def test_endpoint_url_hardcoded():
     from app.providers.codex_billing import USAGE_ENDPOINT
+
     assert USAGE_ENDPOINT == "https://chatgpt.com/backend-api/wham/usage"
 
 
@@ -49,8 +50,13 @@ def test_fetch_does_not_require_oai_headers():
     # The headers dict ends at the matching }, find it
     end_idx = src.index("},", headers_idx) + 1
     headers_block = src[headers_idx:end_idx]
-    for forbidden in ("X-OAI-IS", "OAI-Session-Id", "OAI-Device-Id",
-                      "OAI-Client-Build-Number", "OAI-Client-Version"):
+    for forbidden in (
+        "X-OAI-IS",
+        "OAI-Session-Id",
+        "OAI-Device-Id",
+        "OAI-Client-Build-Number",
+        "OAI-Client-Version",
+    ):
         assert forbidden not in headers_block, (
             f"_fetch_with_token's headers dict includes {forbidden}; "
             f"the 2026-05-13 live test confirmed bearer-only suffices."
@@ -62,6 +68,7 @@ def test_fetch_does_not_require_oai_headers():
 
 def test_parse_extracts_five_hour_window():
     from app.providers.codex_billing import parse_usage_response
+
     body = {
         "rate_limit": {
             "primary_window": {
@@ -88,6 +95,7 @@ def test_parse_validates_window_duration():
     ``limit_window_seconds`` against the expected duration, so a
     swapped/mislabeled response doesn't silently mis-bin the data."""
     from app.providers.codex_billing import parse_usage_response
+
     body = {
         "rate_limit": {
             # Wrong duration in primary slot
@@ -107,6 +115,7 @@ def test_parse_handles_missing_rate_limit():
     """No rate_limit key in response → all extracted fields None
     (defensive — never raise on shape changes)."""
     from app.providers.codex_billing import parse_usage_response
+
     out = parse_usage_response({"plan_type": "prolite"})
     assert out["five_hour_utilization"] is None
     assert out["seven_day_utilization"] is None
@@ -116,6 +125,7 @@ def test_parse_handles_missing_rate_limit():
 
 def test_parse_handles_non_dict_input():
     from app.providers.codex_billing import parse_usage_response
+
     assert parse_usage_response(None) == {}
     assert parse_usage_response("not a dict") == {}
     assert parse_usage_response([1, 2, 3]) == {}
@@ -123,6 +133,7 @@ def test_parse_handles_non_dict_input():
 
 def test_parse_handles_non_numeric_used_percent():
     from app.providers.codex_billing import parse_usage_response
+
     body = {
         "rate_limit": {
             "primary_window": {
@@ -144,7 +155,7 @@ def test_fetch_attempts_refresh_on_401():
     fetch_usage must try ONE refresh via codex_oauth_flow then retry."""
     src = Path("app/providers/codex_billing.py").read_text()
     idx = src.index("async def fetch_usage")
-    body = src[idx:idx + 4000]
+    body = src[idx : idx + 4000]
     assert "http_status == 401" in body
     assert "refresh_and_persist" in body
     # Only ONE retry — no infinite loop on persistent 401
@@ -186,7 +197,7 @@ def test_credentials_endpoint_is_deprecated_noop():
     200 with a deprecated:true flag, and not error."""
     src = Path("app/api/codex_billing.py").read_text()
     idx = src.index("async def store_codex_credentials_legacy")
-    body = src[idx:idx + 2500]
+    body = src[idx : idx + 2500]
     assert '"deprecated": True' in body
     assert "no longer requires pasted cookies" in body
 
@@ -196,7 +207,7 @@ def test_refresh_endpoint_uses_oauth_token():
     firing, with a clear error if the provider hasn't been auth'd yet."""
     src = Path("app/api/codex_billing.py").read_text()
     idx = src.index("async def codex_refresh_now")
-    body = src[idx:idx + 2500]
+    body = src[idx : idx + 2500]
     assert "provider.api_key" in body
     assert "OAuth" in body or "oauth" in body
 
@@ -234,6 +245,7 @@ async def test_scrape_provider_returns_reason_when_no_oauth_token():
     """A provider with no api_key (= no OAuth access_token) gets a
     clear failure reason rather than crashing."""
     from app.providers.codex_billing import fetch_usage
+
     fake_provider = MagicMock()
     fake_provider.api_key = None
     result = await fetch_usage(fake_provider, None)
@@ -243,5 +255,6 @@ async def test_scrape_provider_returns_reason_when_no_oauth_token():
 
 def test_version_bumped():
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     assert parts >= (3, 8, 1)

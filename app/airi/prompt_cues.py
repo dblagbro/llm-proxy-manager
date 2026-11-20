@@ -22,10 +22,10 @@ Kept intentionally small + regex-based (not an LLM classifier) so it:
   2. Has no dependencies
   3. Is testable + auditable in a single grep
 """
+
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 # ── Cue vocabularies ─────────────────────────────────────────────────
 #
@@ -96,7 +96,7 @@ _STRICT_RE = _compile_alternation(_STRICT_CUES)
 _LENIENT_RE = _compile_alternation(_LENIENT_CUES)
 
 
-def classify_refuse_tolerance(user_text: Optional[str]) -> Optional[str]:
+def classify_refuse_tolerance(user_text: str | None) -> str | None:
     """Map a user message to a ``refuse-tolerance`` LMRH dim value.
 
     Returns:
@@ -122,7 +122,7 @@ def classify_refuse_tolerance(user_text: Optional[str]) -> Optional[str]:
     return None
 
 
-def build_lmrh_hint(refuse_tolerance: Optional[str]) -> Optional[str]:
+def build_lmrh_hint(refuse_tolerance: str | None) -> str | None:
     """Build an ``LMRH-Hint``-header-shaped string from a classified
     ``refuse-tolerance`` value. Returns ``None`` when nothing to inject.
 

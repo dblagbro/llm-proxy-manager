@@ -1,55 +1,54 @@
 """
 /v1/chat/completions — OpenAI-format endpoint (same path as v1).
 """
+
 import json
 import logging
 import time
-from typing import Optional
+from typing import Optional as Optional
 
-from fastapi import APIRouter, BackgroundTasks, Request, Depends, HTTPException, Header
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
+from fastapi.responses import StreamingResponse as StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.database import get_db
-from app.utils.disconnect_watchdog import watch_for_disconnect
-from app.routing.litellm_binding import OWN_DISPATCHER_PROVIDER_TYPES
-from app.routing.router import select_provider
-from app.routing.litellm_binding import clamp_thinking_budget
-from app.monitoring.helpers import record_outcome
+from app.api._completions_streaming import _stream_cot_openai, _webhook_completion_openai
+from app.api._completions_streaming import _stream_openai as _stream_openai
+from app.api._messages_streaming import buffer_sse_until_content as buffer_sse_until_content
+from app.api._messages_streaming import http_status_for_stream_error as http_status_for_stream_error
+from app.api._messages_streaming import preflight_sse as preflight_sse
+from app.api._messages_streaming import stream_with_empty_guard as stream_with_empty_guard
 from app.api.image_utils import has_images_openai, strip_images_openai
-from app.routing.aliases import resolve_alias
-from app.cot.tool_emulation import (
-    build_openai_tool_prompt,
-    normalize_openai_messages,
-    parse_tool_calls,
-    call_with_tool_prompt,
-    strip_thinking,
-)
-from app.cot.sse import (
-    openai_tool_sse,
-    openai_tools_sse,
-    openai_text_sse,
-    openai_tool_response,
-    openai_tools_response,
-    openai_text_response,
-)
-from app.api._completions_streaming import (
-    _stream_cot_openai, _stream_openai, _webhook_completion_openai,
-)
-from app.api._messages_streaming import (
-    preflight_sse, http_status_for_stream_error,
-    buffer_sse_until_content, stream_with_empty_guard,
-)
-from app.routing.retry import acompletion_with_retry
-from app.observability.otel import llm_span
 from app.cache.middleware import maybe_store
-from app.routing.hedging import (
-    should_hedge_header, wait_budget_ms, race_streams, try_acquire_hedge,
-)
-from app.observability.prometheus import (
-    observe_hedge_attempt, observe_hedge_win, observe_hedge_bucket_reject,
-)
 from app.config import settings as _cfg_settings
+from app.cot.sse import openai_text_response, openai_text_sse
+from app.cot.sse import openai_tool_response as openai_tool_response
+from app.cot.sse import openai_tool_sse as openai_tool_sse
+from app.cot.sse import openai_tools_response as openai_tools_response
+from app.cot.sse import openai_tools_sse as openai_tools_sse
+from app.cot.tool_emulation import build_openai_tool_prompt as build_openai_tool_prompt
+from app.cot.tool_emulation import call_with_tool_prompt as call_with_tool_prompt
+from app.cot.tool_emulation import normalize_openai_messages as normalize_openai_messages
+from app.cot.tool_emulation import parse_tool_calls as parse_tool_calls
+from app.cot.tool_emulation import strip_thinking as strip_thinking
+from app.models.database import get_db
+from app.monitoring.helpers import record_outcome
+from app.observability.otel import llm_span
+from app.observability.prometheus import observe_hedge_attempt as observe_hedge_attempt
+from app.observability.prometheus import observe_hedge_bucket_reject as observe_hedge_bucket_reject
+from app.observability.prometheus import observe_hedge_win as observe_hedge_win
+from app.routing.aliases import resolve_alias
+from app.routing.hedging import race_streams as race_streams
+from app.routing.hedging import should_hedge_header as should_hedge_header
+from app.routing.hedging import try_acquire_hedge as try_acquire_hedge
+from app.routing.hedging import wait_budget_ms as wait_budget_ms
+from app.routing.litellm_binding import (
+    OWN_DISPATCHER_PROVIDER_TYPES as OWN_DISPATCHER_PROVIDER_TYPES,
+)
+from app.routing.litellm_binding import clamp_thinking_budget
+from app.routing.retry import acompletion_with_retry
+from app.routing.router import select_provider as select_provider
+from app.utils.disconnect_watchdog import watch_for_disconnect
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -70,21 +69,21 @@ async def chat_completions(
     # during session.close(). Same fix as cluster.py v5.21.12. Do NOT reorder.
     db: AsyncSession = Depends(get_db),
     _watchdog: None = Depends(watch_for_disconnect),
-    authorization: Optional[str] = Header(None),
-    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
-    llm_hint: Optional[str] = Header(None, alias="llm-hint"),
-    x_session_id: Optional[str] = Header(None, alias="x-session-id"),
-    x_cot_iterations: Optional[str] = Header(None, alias="x-cot-iterations"),
-    x_cot_verify: Optional[str] = Header(None, alias="x-cot-verify"),
-    x_cot_samples: Optional[str] = Header(None, alias="x-cot-samples"),
-    x_cot_mode: Optional[str] = Header(None, alias="x-cot-mode"),
-    x_webhook_url: Optional[str] = Header(None, alias="x-webhook-url"),
-    x_cache: Optional[str] = Header(None, alias="x-cache"),
-    x_cache_ttl: Optional[str] = Header(None, alias="x-cache-ttl"),
-    x_hedge: Optional[str] = Header(None, alias="x-hedge"),
-    x_context_strategy: Optional[str] = Header(None, alias="x-context-strategy"),
-    x_conversation_id: Optional[str] = Header(None, alias="x-conversation-id"),
-    x_memory_tag: Optional[str] = Header(None, alias="x-memory-tag"),
+    authorization: str | None = Header(None),
+    x_api_key: str | None = Header(None, alias="x-api-key"),
+    llm_hint: str | None = Header(None, alias="llm-hint"),
+    x_session_id: str | None = Header(None, alias="x-session-id"),
+    x_cot_iterations: str | None = Header(None, alias="x-cot-iterations"),
+    x_cot_verify: str | None = Header(None, alias="x-cot-verify"),
+    x_cot_samples: str | None = Header(None, alias="x-cot-samples"),
+    x_cot_mode: str | None = Header(None, alias="x-cot-mode"),
+    x_webhook_url: str | None = Header(None, alias="x-webhook-url"),
+    x_cache: str | None = Header(None, alias="x-cache"),
+    x_cache_ttl: str | None = Header(None, alias="x-cache-ttl"),
+    x_hedge: str | None = Header(None, alias="x-hedge"),
+    x_context_strategy: str | None = Header(None, alias="x-context-strategy"),
+    x_conversation_id: str | None = Header(None, alias="x-conversation-id"),
+    x_memory_tag: str | None = Header(None, alias="x-memory-tag"),
 ):
     # Accept Bearer token or x-api-key (completions.py only — the
     # Anthropic-compatible /v1/messages requires x-api-key).
@@ -97,8 +96,11 @@ async def chat_completions(
     # helper does its own ``verify_api_key`` so we pass the resolved
     # ``token`` instead of repeating the auth dance.
     from app.api._handler_shared import prepare_request_context
+
     key_record = await prepare_request_context(
-        request, db, token,
+        request,
+        db,
+        token,
         endpoint="completions",
         x_conversation_id=x_conversation_id,
         x_memory_tag=x_memory_tag,
@@ -110,16 +112,22 @@ async def chat_completions(
     # alias). Returns the (possibly rebound) body + the four derived
     # values. Behavior unchanged.
     from app.api._handler_shared import normalize_request_body
+
     body, _orig_request_model, parsed_slug, is_auto, alias = await normalize_request_body(
-        body, x_webhook_url, db, endpoint="completions",
+        body,
+        x_webhook_url,
+        db,
+        endpoint="completions",
     )
     messages_list = body.get("messages", [])
     stream = body.get("stream", False)
     tools = body.get("tools")
 
     from app.api._request_pipeline import (
-        apply_privacy_filters, build_hint_with_auto_task,
-        apply_context_compression, build_base_response_headers,
+        apply_context_compression,
+        apply_privacy_filters,
+        build_base_response_headers,
+        build_hint_with_auto_task,
     )
 
     messages_list, _pii_masked_count = apply_privacy_filters(messages_list, body)
@@ -141,6 +149,7 @@ async def chat_completions(
     # was reached via the default-fallthrough path on a chat call.
     # a clear pointer than let it fail upstream.
     from app.routing.router import _is_embedding_model
+
     if _is_embedding_model(parsed_slug.bare_model):
         raise HTTPException(
             400,
@@ -155,8 +164,12 @@ async def chat_completions(
     # model resolution ride the existing alias path (the `daybreak` ModelAlias
     # row → approved provider, model_id codex-auto-review).
     from app.providers.daybreak import daybreak_gate
+
     _daybreak_access_programs = await daybreak_gate(
-        db, requested_model=body.get("model"), key_record=key_record, alias=alias,
+        db,
+        requested_model=body.get("model"),
+        key_record=key_record,
+        alias=alias,
         client_user_agent=request.headers.get("user-agent"),
     )
     if _daybreak_access_programs is not None and alias is not None:
@@ -173,28 +186,37 @@ async def chat_completions(
     # messages.py uses the actionable variant.
     # v3.0.38 still applies: claude-oauth is reachable from /v1/chat/completions
     # via the OpenAI↔Anthropic wire-format translator — no exclusion needed.
+    from app.api._compliance_handler import raise_for_no_substitute_exception
     from app.api._request_pipeline import (
-        select_provider_with_503, resolve_auto_model_into_body,
+        resolve_auto_model_into_body,
+        select_provider_with_503,
     )
+
     # v5.0.0 → v5.0.9 — `ComplianceNoSubstituteError` / `…NoLocalProviderError`
     # → 503 conversion extracted to ``_compliance_handler.raise_for_no_substitute_exception``.
     from app.compliance import ComplianceNoSubstituteError
-    from app.api._compliance_handler import raise_for_no_substitute_exception
+
     try:
         route = await select_provider_with_503(
-            db, hint,
-            has_tools=has_tools, has_images=has_images,
-            key_record=key_record, parsed_slug=parsed_slug, alias=alias,
+            db,
+            hint,
+            has_tools=has_tools,
+            has_images=has_images,
+            key_record=key_record,
+            parsed_slug=parsed_slug,
+            alias=alias,
             detailed_503=False,
             messages=body.get("messages"),
             # v5.22.13 — see messages.py; OpenAI shape carries max_tokens
             # (and max_completion_tokens on newer clients).
-            requested_max_tokens=(body.get("max_tokens")
-                                  or body.get("max_completion_tokens")),
+            requested_max_tokens=(body.get("max_tokens") or body.get("max_completion_tokens")),
         )
     except ComplianceNoSubstituteError as _exc:
         await raise_for_no_substitute_exception(
-            _exc, request=request, db=db, key_record=key_record,
+            _exc,
+            request=request,
+            db=db,
+            key_record=key_record,
             orig_request_model=_orig_request_model,
         )
     body = resolve_auto_model_into_body(body, route, is_auto)
@@ -206,9 +228,13 @@ async def chat_completions(
     # provider's memory_disabled flag. Silent degrade on any store error.
     if not getattr(route.provider, "memory_disabled", False):
         from app.memory.inject import maybe_inject_memory
+
         body, _mem_injected = await maybe_inject_memory(
-            db, body=body, api_key_id=key_record.id,
-            conversation_id=x_conversation_id, memory_tag=x_memory_tag,
+            db,
+            body=body,
+            api_key_id=key_record.id,
+            conversation_id=x_conversation_id,
+            memory_tag=x_memory_tag,
             endpoint="completions",
         )
         if _mem_injected:
@@ -245,6 +271,7 @@ async def chat_completions(
         if not _re_from_body:
             try:
                 from app.api._llmproxy_config_header import read_config_key
+
                 _re_from_blob = read_config_key(request, "reasoning_effort")
             except Exception:
                 pass
@@ -258,8 +285,11 @@ async def chat_completions(
     if route.vision_stripped:
         if _cfg_settings.vision_route_enabled:
             from app.api.vision_route import transcribe_openai
+
             messages_list, vision_routed_count = await transcribe_openai(
-                messages_list, db, exclude_provider_id=route.provider.id,
+                messages_list,
+                db,
+                exclude_provider_id=route.provider.id,
             )
         else:
             messages_list = strip_images_openai(messages_list)
@@ -294,15 +324,23 @@ async def chat_completions(
     # Budget visibility headers (soft-cap warning, remaining $ today/this hour)
     if key_record.budget_status is not None:
         from app.budget.tracker import warnings_for
+
         resp_headers.update(warnings_for(key_record.budget_status))
 
     # v5.0.0 → v5.0.9 — substitution disclosure extracted to
     # ``_compliance_handler.emit_substitution_disclosure_for_route``.
     from app.api._compliance_handler import emit_substitution_disclosure_for_route
-    _headers_to_merge, _compliance_disclosure, _compliance_wants_sse_prelude = (
-        await emit_substitution_disclosure_for_route(
-            request, db, route, key_record, _orig_request_model,
-        )
+
+    (
+        _headers_to_merge,
+        _compliance_disclosure,
+        _compliance_wants_sse_prelude,
+    ) = await emit_substitution_disclosure_for_route(
+        request,
+        db,
+        route,
+        key_record,
+        _orig_request_model,
     )
     if _headers_to_merge:
         resp_headers.update(_headers_to_merge)
@@ -332,8 +370,12 @@ async def chat_completions(
     # with the OAuth bearer + ChatGPT-Account-ID workspace header.
     if route.provider.provider_type == "ChatGPT-oauth-plan":
         from app.api._codex_oauth_dispatch import dispatch_codex_oauth
+
         return await dispatch_codex_oauth(
-            provider=route.provider, body=body, stream=stream, db=db,
+            provider=route.provider,
+            body=body,
+            stream=stream,
+            db=db,
             resp_headers=resp_headers,
             # v3.0.97 — pass through caller identity + hint so dispatch
             # can call record_outcome with the right tenant + lmrh_hint.
@@ -348,11 +390,17 @@ async def chat_completions(
     # grok-web branches above/below.
     if route.provider.provider_type == "claude-oauth":
         from app.api._completions_claude_oauth import dispatch_claude_oauth_openai
+
         return await dispatch_claude_oauth_openai(
-            route=route, body=body, stream=stream, db=db,
-            key_record=key_record, llm_hint=llm_hint,
+            route=route,
+            body=body,
+            stream=stream,
+            db=db,
+            key_record=key_record,
+            llm_hint=llm_hint,
             resp_headers=resp_headers,
-            x_conversation_id=x_conversation_id, x_memory_tag=x_memory_tag,
+            x_conversation_id=x_conversation_id,
+            x_memory_tag=x_memory_tag,
         )
 
     # v5.22.37 — dispatch + failover extracted to ``_completions_grok_web``;
@@ -360,9 +408,16 @@ async def chat_completions(
     # contract. ``extra`` and ``resp_headers`` are mutated in place there.
     if route.provider.provider_type == "grok-web":
         from app.api._completions_grok_web import dispatch_grok_web_with_failover
+
         _gw_resp, route = await dispatch_grok_web_with_failover(
-            route=route, body=body, stream=stream, db=db, hint=hint,
-            key_record=key_record, extra=extra, resp_headers=resp_headers,
+            route=route,
+            body=body,
+            stream=stream,
+            db=db,
+            hint=hint,
+            key_record=key_record,
+            extra=extra,
+            resp_headers=resp_headers,
             llm_hint=llm_hint,
         )
         if _gw_resp is not None:
@@ -378,6 +433,7 @@ async def chat_completions(
     # ``system=None`` (OpenAI puts system in messages[0]) and the
     # openai_text_* response builders.
     from app.api._request_pipeline import maybe_serve_from_cache
+
     cache_decision, cache_resp = await maybe_serve_from_cache(
         x_cache_header=x_cache,
         api_key_opt_in=bool(getattr(key_record, "semantic_cache_enabled", False)),
@@ -404,8 +460,13 @@ async def chat_completions(
     if x_webhook_url:
         background_tasks.add_task(
             _webhook_completion_openai,
-            x_webhook_url, route.litellm_model, messages_list, extra,
-            route.provider.id, db, key_record.id,
+            x_webhook_url,
+            route.litellm_model,
+            messages_list,
+            extra,
+            route.provider.id,
+            db,
+            key_record.id,
         )
         return JSONResponse(
             {"status": "queued", "webhook_url": x_webhook_url},
@@ -415,96 +476,39 @@ async def chat_completions(
 
     try:
         if route.tool_emulation_engaged:
-            # Wave 5 #23 — respect parallel_tool_calls=false from body
-            allow_parallel = body.get("parallel_tool_calls", True) is not False
-            # v4.1.1 — co-emulation: reasoning-prefix the tool prompt when
-            # CoT-E is also engaged so tools + reasoning are served together.
-            tool_prompt = build_openai_tool_prompt(
-                tools or [], allow_parallel=allow_parallel,
-                with_reasoning=route.cot_engaged,
+            from app.api._completions_tool_emulation import dispatch_tool_emulation
+
+            return await dispatch_tool_emulation(
+                body=body,
+                tools=tools,
+                route=route,
+                messages_list=messages_list,
+                extra=extra,
+                db=db,
+                key_record=key_record,
+                resp_headers=resp_headers,
+                stream=stream,
             )
-            norm_msgs = normalize_openai_messages(messages_list)
-            if norm_msgs and norm_msgs[0]["role"] == "system":
-                norm_msgs[0]["content"] = tool_prompt + "\n\n" + norm_msgs[0]["content"]
-            else:
-                norm_msgs = [{"role": "system", "content": tool_prompt}] + norm_msgs
-            emul_extra = {k: v for k, v in extra.items() if k != "tools"}
-            # v5.22.41 (BUG-095) — capture the upstream usage. Without this the
-            # emulated-response builders below fill in zeros and every cost
-            # derived from this request computes as $0.
-            _emul_usage: dict = {}
-            response_text = await call_with_tool_prompt(
-                route.litellm_model, norm_msgs, None, emul_extra,
-                usage_out=_emul_usage
-            )
-            tool_calls = parse_tool_calls(response_text)
-            if route.cot_engaged:
-                response_text = strip_thinking(response_text)
-            # v3.8.3 (#263) — emit telemetry with a synthetic OpenAI-shape
-            # response body so the meta extractor walks the same path it
-            # walks for native callers on /v1/chat/completions.
-            import json as _json
-            _emul_resp_body = {
-                "choices": [{
-                    "message": {
-                        "tool_calls": [
-                            {"function": {"name": tc.get("name", ""),
-                                          "arguments": _json.dumps(tc.get("input", {}))}}
-                            for tc in tool_calls
-                        ],
-                    },
-                }],
-            } if tool_calls else {"choices": [{"message": {"tool_calls": []}}]}
-            await record_outcome(
-                db, route.provider.id, route.litellm_model,
-                endpoint="completions", success=True,
-                t0=time.monotonic(), key_record_id=key_record.id,
-                response_body=_emul_resp_body,
-                tool_call_format="emulated",
-            )
-            if not allow_parallel and len(tool_calls) > 1:
-                tool_calls = tool_calls[:1]
-            if tool_calls:
-                resp_headers["X-Tool-Calls-Emitted"] = str(len(tool_calls))
-            if stream:
-                if len(tool_calls) >= 2:
-                    gen = openai_tools_sse(tool_calls)
-                elif len(tool_calls) == 1:
-                    gen = openai_tool_sse(tool_calls[0]["name"], tool_calls[0]["input"])
-                else:
-                    gen = openai_text_sse(response_text)
-                return StreamingResponse(gen, media_type="text/event-stream", headers=resp_headers)
-            else:
-                if len(tool_calls) >= 2:
-                    content = openai_tools_response(
-                        tool_calls, route.litellm_model,
-                        usage=_emul_usage,
-                    )
-                elif len(tool_calls) == 1:
-                    content = openai_tool_response(
-                        tool_calls[0]["name"], tool_calls[0]["input"], route.litellm_model,
-                        usage=_emul_usage,
-                    )
-                else:
-                    content = openai_text_response(
-                        response_text, route.litellm_model,
-                        usage=_emul_usage,
-                    )
-                # v3.6.1 — X-Quality-Hint for tool-emulation path
-                from app.api._quality_hint import merge_into_headers
-                merge_into_headers(resp_headers, content, endpoint="completions")
-                return JSONResponse(content=content, headers=resp_headers)
 
         # CoT-E engagement.
         # v3.5.x R2 (2026-05-09): orchestration extracted to
         # _request_pipeline.maybe_engage_cot. The OpenAI flow uses
         # _stream_cot_openai with the standard arg list — no extras.
         from app.api._request_pipeline import maybe_engage_cot
+
         cot_resp = await maybe_engage_cot(
-            route=route, stream=stream, db=db, key_record=key_record,
-            hint=hint, body=body, messages_list=messages_list, extra=extra,
-            x_cot_iterations=x_cot_iterations, x_cot_verify=x_cot_verify,
-            x_cot_samples=x_cot_samples, x_cot_mode=x_cot_mode,
+            route=route,
+            stream=stream,
+            db=db,
+            key_record=key_record,
+            hint=hint,
+            body=body,
+            messages_list=messages_list,
+            extra=extra,
+            x_cot_iterations=x_cot_iterations,
+            x_cot_verify=x_cot_verify,
+            x_cot_samples=x_cot_samples,
+            x_cot_mode=x_cot_mode,
             x_session_id=x_session_id,
             resp_headers=resp_headers,
             stream_cot_fn=_stream_cot_openai,
@@ -513,157 +517,36 @@ async def chat_completions(
             return cot_resp
 
         if stream:
-            lmrh_hedge = hint.get("hedge").value if (hint and hint.get("hedge")) else None
-            wants_hedge = (
-                _cfg_settings.hedge_enabled
-                and should_hedge_header(x_hedge, lmrh_hedge)
-            )
-            wait_ms = wait_budget_ms(route.provider.id) if wants_hedge else None
+            from app.api._completions_stream_dispatch import dispatch_stream
 
-            if wait_ms is not None and await try_acquire_hedge():
-                try:
-                    backup_route = await select_provider(
-                        db, hint, has_tools=has_tools, has_images=has_images,
-                        key_type=key_record.key_type,
-                        exclude_provider_id=route.provider.id,
-                        excluded_provider_types={"claude-oauth"},
-                    )
-                except Exception:
-                    backup_route = None
-                # v5.22.4 — release the connection this backup re-select opened
-                # before the hedged streams run (K1, symmetric to messages.py).
-                try:
-                    await db.commit()
-                except Exception:
-                    pass
-
-                if backup_route is not None:
-                    observe_hedge_attempt(route.provider.id, backup_route.provider.id)
-
-                    def _primary():
-                        return _stream_openai(
-                            route.litellm_model, messages_list, extra, route.provider.id,
-                            db, key_record.id, time.monotonic(), budget_total,
-                            cache_decision=cache_decision,
-                            compliance_disclosure=_compliance_disclosure,
-                            accept_compliance_events=_compliance_wants_sse_prelude,
-                        )
-
-                    def _backup():
-                        b_extra = {**backup_route.litellm_kwargs}
-                        if tools: b_extra["tools"] = tools
-                        if body.get("max_tokens"): b_extra["max_tokens"] = body["max_tokens"]
-                        if body.get("temperature") is not None: b_extra["temperature"] = body["temperature"]
-                        if backup_route.native_thinking_params:
-                            b_extra.update(backup_route.native_thinking_params)
-                            clamp_thinking_budget(b_extra)
-                        return _stream_openai(
-                            backup_route.litellm_model, messages_list, b_extra,
-                            backup_route.provider.id,
-                            db, key_record.id, time.monotonic(), budget_total,
-                            cache_decision=None,
-                            compliance_disclosure=_compliance_disclosure,
-                            accept_compliance_events=_compliance_wants_sse_prelude,
-                        )
-
-                    racer, winner = await race_streams(_primary, _backup, wait_ms)
-                    observe_hedge_win(winner)
-                    resp_headers["X-Hedged-Winner"] = winner
-                    # v3.10.16 BUG-001 — pre-flight the hedged stream so a
-                    # pre-stream upstream failure on the winning branch
-                    # surfaces as a real HTTP status, not a 200 + SSE
-                    # error frame (parity with the non-hedged path).
-                    _hfirst, _herr, racer = await preflight_sse(racer)
-                    if _herr is not None:
-                        await racer.aclose()
-                        raise HTTPException(
-                            http_status_for_stream_error(_herr),
-                            f"Upstream error before streaming began: {_herr}",
-                        )
-
-                    # v5.3.9 — empty-success guard on the hedged winner.
-                    # On a content-free 200 stream: record the breaker
-                    # failure and fall through to the guarded non-hedged
-                    # path below (which fails over across providers).
-                    _hframes, _h_has_content, racer = await buffer_sse_until_content(_hfirst, racer)
-                    if _h_has_content:
-                        async def _replay_hedged_stream(_fs=_hframes, _g=racer):
-                            for _f in _fs:
-                                yield _f
-                            async for _c in _g:
-                                yield _c
-
-                        return StreamingResponse(
-                            _replay_hedged_stream(),
-                            media_type="text/event-stream", headers=resp_headers,
-                        )
-                    await racer.aclose()
-                    from app.routing.circuit_breaker import record_failure as _rec_fail
-                    _dead_id = route.provider.id if winner == "primary" else backup_route.provider.id
-                    await _rec_fail(_dead_id, billing_error=False)
-                    logger.warning(
-                        "hedged stream empty-success (winner=%s provider=%s) — "
-                        "falling through to guarded non-hedged path", winner, _dead_id,
-                    )
-            elif wait_ms is not None:
-                observe_hedge_bucket_reject()
-
-            # v3.10.13 BUG-001 — pre-flight so a pre-stream upstream
-            # failure surfaces as a real HTTP status, not a 200 + a
-            # terminal SSE error frame. (Mirrors the /v1/messages path.)
-            # v5.3.9 — wrapped in stream_with_empty_guard: an upstream that
-            # answers 200 + a content-free SSE stream (observed: dead
-            # cursor-bridge sessions — 0 output tokens on 400+ requests)
-            # now records a breaker failure and fails over to the next
-            # provider instead of piping the emptiness to the caller.
-            def _start_openai_stream(_r):
-                if _r is route:
-                    _e, _cd = extra, cache_decision
-                else:
-                    _e = {**_r.litellm_kwargs}
-                    if tools: _e["tools"] = tools
-                    if body.get("max_tokens"): _e["max_tokens"] = body["max_tokens"]
-                    if body.get("temperature") is not None: _e["temperature"] = body["temperature"]
-                    if _r.native_thinking_params:
-                        _e.update(_r.native_thinking_params)
-                        clamp_thinking_budget(_e)
-                    _cd = None  # don't store failover output under primary's key
-                return _stream_openai(
-                    _r.litellm_model, messages_list, _e, _r.provider.id,
-                    db, key_record.id, time.monotonic(), budget_total,
-                    cache_decision=_cd,
-                    compliance_disclosure=_compliance_disclosure,
-                    accept_compliance_events=_compliance_wants_sse_prelude,
-                )
-
-            from app.routing.aliases import is_logical_alias as _is_logical_alias
-            _frames, _gen, _served_route = await stream_with_empty_guard(
-                start_stream=_start_openai_stream, route=route, db=db,
-                hint=hint, has_tools=has_tools, has_images=has_images,
-                key_type=key_record.key_type, api_key_id=key_record.id,
-                model_override=None if (is_auto or (alias is None and _is_logical_alias(requested_model))) else requested_model,
-            )
-            if _served_route is not route:
-                resp_headers["X-Empty-Stream-Failover"] = "true"
-                resp_headers["X-Empty-Stream-Failover-Target"] = _served_route.provider.provider_type
-
-            async def _replay_openai_stream(_fs=_frames, _g=_gen):
-                for _f in _fs:
-                    yield _f
-                async for _c in _g:
-                    yield _c
-
-            return StreamingResponse(
-                _replay_openai_stream(),
-                media_type="text/event-stream",
-                headers=resp_headers,
+            return await dispatch_stream(
+                route=route,
+                hint=hint,
+                x_hedge=x_hedge,
+                db=db,
+                has_tools=has_tools,
+                has_images=has_images,
+                key_record=key_record,
+                messages_list=messages_list,
+                extra=extra,
+                budget_total=budget_total,
+                cache_decision=cache_decision,
+                _compliance_disclosure=_compliance_disclosure,
+                _compliance_wants_sse_prelude=_compliance_wants_sse_prelude,
+                tools=tools,
+                body=body,
+                resp_headers=resp_headers,
+                alias=alias,
+                is_auto=is_auto,
+                requested_model=requested_model,
             )
         else:
             t0 = time.monotonic()
 
             # Wave 5 #24 — structured output repair loop for response_format
-            if (_cfg_settings.structured_output_enabled and not has_tools):
-                from app.cot.structured_output import extract_openai_schema, call_with_schema
+            if _cfg_settings.structured_output_enabled and not has_tools:
+                from app.cot.structured_output import call_with_schema, extract_openai_schema
+
                 schema = extract_openai_schema(body)
                 if schema is not None:
                     parsed, raw_text, attempts = await call_with_schema(
@@ -674,11 +557,19 @@ async def chat_completions(
                         max_repairs=_cfg_settings.structured_output_max_repairs,
                     )
                     resp_headers["X-Structured-Output-Attempts"] = str(attempts)
-                    resp_headers["X-Structured-Output-Status"] = "valid" if parsed is not None else "invalid"
+                    resp_headers["X-Structured-Output-Status"] = (
+                        "valid" if parsed is not None else "invalid"
+                    )
                     final_text = json.dumps(parsed) if parsed is not None else raw_text
                     await record_outcome(
-                        db, route.provider.id, route.litellm_model, endpoint="completions",
-                        success=True, t0=t0, key_record_id=key_record.id, provider_name=route.provider.name
+                        db,
+                        route.provider.id,
+                        route.litellm_model,
+                        endpoint="completions",
+                        success=True,
+                        t0=t0,
+                        key_record_id=key_record.id,
+                        provider_name=route.provider.name,
                     )
                     try:
                         await maybe_store(cache_decision, final_text)
@@ -688,15 +579,21 @@ async def chat_completions(
                     # is exactly the validated JSON (no wrapper fences).
                     return JSONResponse(
                         content={
-                            "id": f"chatcmpl-struct-{int(time.monotonic()*1000)}",
+                            "id": f"chatcmpl-struct-{int(time.monotonic() * 1000)}",
                             "object": "chat.completion",
                             "model": route.litellm_model,
-                            "choices": [{
-                                "index": 0,
-                                "message": {"role": "assistant", "content": final_text},
-                                "finish_reason": "stop",
-                            }],
-                            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "message": {"role": "assistant", "content": final_text},
+                                    "finish_reason": "stop",
+                                }
+                            ],
+                            "usage": {
+                                "prompt_tokens": 0,
+                                "completion_tokens": 0,
+                                "total_tokens": 0,
+                            },
                         },
                         headers=resp_headers,
                     )
@@ -714,22 +611,29 @@ async def chat_completions(
                     local_extra["temperature"] = body["temperature"]
                 if r.native_thinking_params:
                     local_extra.update(r.native_thinking_params)
-                    if "reasoning_effort" in r.native_thinking_params and body.get("reasoning_effort"):
+                    if "reasoning_effort" in r.native_thinking_params and body.get(
+                        "reasoning_effort"
+                    ):
                         local_extra["reasoning_effort"] = body["reasoning_effort"]
                     clamp_thinking_budget(local_extra)
                 return await acompletion_with_retry(
-                    model=r.litellm_model, messages=messages_list,
-                    stream=False, **local_extra,
+                    model=r.litellm_model,
+                    messages=messages_list,
+                    stream=False,
+                    **local_extra,
                 )
 
             if _cfg_settings.fallback_enabled:
                 result, final_route, chain = await try_ranked_non_streaming(
-                    db, hint,
-                    has_tools=has_tools, has_images=has_images,
+                    db,
+                    hint,
+                    has_tools=has_tools,
+                    has_images=has_images,
                     key_type=key_record.key_type,
                     pinned_provider_id=alias.provider_id if alias else None,
                     model_override=alias.model_id if alias else None,
-                    primary_route=route, call_fn=_call_with_route,
+                    primary_route=route,
+                    call_fn=_call_with_route,
                 )
                 if len(chain.attempts) > 1:
                     resp_headers["X-Fallback-Chain"] = chain.as_header()
@@ -738,8 +642,10 @@ async def chat_completions(
                     route = final_route
             else:
                 result = await acompletion_with_retry(
-                    model=route.litellm_model, messages=messages_list,
-                    stream=False, **extra,
+                    model=route.litellm_model,
+                    messages=messages_list,
+                    stream=False,
+                    **extra,
                 )
             in_tok = getattr(result.usage, "prompt_tokens", 0)
             out_tok = getattr(result.usage, "completion_tokens", 0)
@@ -749,9 +655,14 @@ async def chat_completions(
             except Exception:
                 pass
             await record_outcome(
-                db, route.provider.id, route.litellm_model,
-                endpoint="completions", success=True,
-                in_tok=in_tok, out_tok=out_tok, t0=t0,
+                db,
+                route.provider.id,
+                route.litellm_model,
+                endpoint="completions",
+                success=True,
+                in_tok=in_tok,
+                out_tok=out_tok,
+                t0=t0,
                 key_record_id=key_record.id,
                 provider_name=route.provider.name,
                 # v3.0.35: body capture + diagnostic fields for self-serve
@@ -769,6 +680,7 @@ async def chat_completions(
                 resp_headers["X-Token-Budget-Remaining"] = str(max(0, budget_total - out_tok))
             # v3.6.1 — X-Quality-Hint thin-content detector
             from app.api._quality_hint import merge_into_headers
+
             _result_body = result.model_dump()
             # v5.0.24 / Batch 3 — empty-success guard (BUG-053). Some
             # bridges (cursor-bridge confirmed; pattern likely broader)
@@ -777,19 +689,22 @@ async def chat_completions(
             # upstream failure so the routing layer can record + skip.
             # See app/api/_response_validators.py for the heuristic.
             from app.api._response_validators import (
-                looks_like_empty_success_failure,
                 empty_success_failure_message,
+                looks_like_empty_success_failure,
             )
+
             if looks_like_empty_success_failure(response_dict=_result_body):
                 msg = empty_success_failure_message(_result_body)
                 logger.warning(
                     "completions.empty_success_blocked provider=%s err=%s",
-                    route.provider.name, msg,
+                    route.provider.name,
+                    msg,
                 )
                 # Record failure + trip CB so subsequent requests skip
                 # this provider during the cool-off window.
                 try:
                     from app.routing.circuit_breaker import record_failure
+
                     await record_failure(route.provider.id, billing_error=False)
                 except Exception:
                     pass
@@ -800,6 +715,7 @@ async def chat_completions(
             # contract as the messages.py path.
             try:
                 from app.capability_scout.suggestion_emit import apply_suggestion_header
+
                 await apply_suggestion_header(db, key_record.id, resp_headers)
             except Exception:
                 pass
@@ -807,10 +723,13 @@ async def chat_completions(
             # v5.16.0 (#512) — also read via consolidated x-llmproxy-config
             # blob; individual header wins on precedence.
             try:
-                from app.capability_scout.accept_handler import process_accept_header
                 from app.api._llmproxy_config_header import read_config_key
+                from app.capability_scout.accept_handler import process_accept_header
+
                 _accept_value = read_config_key(
-                    request, "accept_mcp", header_fallback="X-Proxy-Accept-MCP",
+                    request,
+                    "accept_mcp",
+                    header_fallback="X-Proxy-Accept-MCP",
                 )
                 if _accept_value is not None:
                     if isinstance(_accept_value, list):
@@ -824,12 +743,14 @@ async def chat_completions(
             # v5.16.0 — echo parsed config blob.
             try:
                 from app.api._llmproxy_config_header import emit_config_applied_header
+
                 emit_config_applied_header(resp_headers, request)
             except Exception:
                 pass
             # v5.14.0 — response-hook runner. See messages.py for contract.
             try:
-                from app.api._response_hook_runner import apply_response_hooks, HookContext
+                from app.api._response_hook_runner import HookContext, apply_response_hooks
+
                 await apply_response_hooks(
                     handler_id="completions",
                     resp_headers=resp_headers,
@@ -837,7 +758,9 @@ async def chat_completions(
                         requested_model=body.get("model") if isinstance(body, dict) else None,
                         served_model=getattr(route, "litellm_model", None),
                         api_key_id=getattr(key_record, "id", None),
-                        provider_id=getattr(route.provider, "id", None) if hasattr(route, "provider") else None,
+                        provider_id=getattr(route.provider, "id", None)
+                        if hasattr(route, "provider")
+                        else None,
                         substituted=bool(getattr(route, "compliance_substituted", False)),
                         key_record=key_record,
                         request=request,
@@ -854,9 +777,13 @@ async def chat_completions(
         # Absent attribute (fallback disabled / primary raised) → ``route``.
         failed_route = getattr(e, "_llmproxy_attributed_route", None) or route
         await record_outcome(
-            db, failed_route.provider.id, failed_route.litellm_model,
-            endpoint="completions", success=False,
-            key_record_id=key_record.id, error_str=err_str,
+            db,
+            failed_route.provider.id,
+            failed_route.litellm_model,
+            endpoint="completions",
+            success=False,
+            key_record_id=key_record.id,
+            error_str=err_str,
             provider_name=failed_route.provider.name,
             request_body=body,
             requested_model=requested_model,
@@ -866,6 +793,7 @@ async def chat_completions(
         # v3.5.8 BUG-007/008 fix — sanitize before sending to client.
         from app.api._input_validation import sanitize_upstream_error
         from app.routing.circuit_breaker import classify_error
+
         cls = classify_error(err_str or "")
         clean = sanitize_upstream_error(err_str)
         status_code = 400 if cls == "bad_request" else 502
@@ -876,13 +804,17 @@ async def chat_completions(
         # v5.0.9 — upstream-error disclosure extracted to
         # ``_compliance_handler.disclosure_headers_for_upstream_error``.
         from app.api._compliance_handler import disclosure_headers_for_upstream_error
+
         error_headers = await disclosure_headers_for_upstream_error(
-            request, db, route, key_record, _orig_request_model, status_code,
+            request,
+            db,
+            route,
+            key_record,
+            _orig_request_model,
+            status_code,
         )
         raise HTTPException(
             status_code,
             f"Upstream provider error ({cls}): {clean}",
             headers=error_headers or None,
         )
-
-

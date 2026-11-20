@@ -1,6 +1,8 @@
 """Unit tests for shadow-traffic sampling (Wave 3 #16)."""
+
 import sys
 import types
+
 import pytest
 
 _stub = types.ModuleType("litellm")
@@ -13,7 +15,7 @@ if not hasattr(sys.modules["litellm"], "aembedding"):
 if not hasattr(sys.modules["litellm"], "RateLimitError"):
     sys.modules["litellm"].RateLimitError = type("RateLimitError", (Exception,), {})
 
-from app.routing.shadow import should_shadow, _embed_cosine
+from app.routing.shadow import _embed_cosine, should_shadow  # noqa: E402
 
 
 class TestShouldShadow:
@@ -46,7 +48,6 @@ class TestEmbedCosine:
     @pytest.mark.asyncio
     async def test_litellm_exception_returns_none(self, monkeypatch):
         """If litellm.aembedding raises, _embed_cosine returns None (never raises)."""
-        import app.routing.shadow as shadow_mod
         import litellm
 
         async def _fail(*args, **kwargs):

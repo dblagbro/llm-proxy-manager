@@ -1,6 +1,8 @@
 """Unit tests for named rate-limit tiers (Wave 6)."""
+
 import sys
 import types
+
 import pytest
 
 _stub = types.ModuleType("litellm")
@@ -9,8 +11,10 @@ sys.modules.setdefault("litellm", _stub)
 if not hasattr(sys.modules["litellm"], "RateLimitError"):
     sys.modules["litellm"].RateLimitError = type("RateLimitError", (Exception,), {})
 
-from app.auth.rate_limit_tiers import (
-    get_tier, list_tiers, tier_names, RateLimitTier,
+from app.auth.rate_limit_tiers import (  # noqa: E402
+    get_tier,
+    list_tiers,
+    tier_names,
 )
 
 

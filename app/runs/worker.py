@@ -9,7 +9,8 @@ which loops:
     while not terminal:
         if status == 'queued': advance(START)
         if status == 'running': call_model(); on text → advance(MODEL_RETURNED_TEXT)
-                                              on tool_use → advance(MODEL_RETURNED_TOOL); wait_for_event
+                                              on tool_use → advance(MODEL_RETURNED_TOOL)
+                                              wait_for_event
         if status == 'requires_tool': wait_for_event (tool_result POST sets it)
         if status == 'terminal': emit terminal event, return
 
@@ -26,16 +27,16 @@ Cluster sticky: the worker only runs on the node whose
 ``settings.cluster_node_id`` matches ``run.owner_node_id``. R5 wires the
 handoff; for now non-owner nodes just don't pick up work.
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
 import time
-from typing import Optional
 
 import httpx
-import litellm
+import litellm as litellm
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -43,12 +44,21 @@ from app.config import settings
 from app.models.database import AsyncSessionLocal
 from app.models.db import Run, RunEvent, RunMessage
 from app.routing.circuit_breaker import is_billing_error
-from app.routing.lmrh import LMRHHint, parse_hint  # parse_hint is unused here but kept for parity
+from app.routing.lmrh import LMRHHint as LMRHHint
+from app.routing.lmrh import (
+    parse_hint as parse_hint,  # parse_hint is unused here but kept for parity
+)
 from app.routing.retry import acompletion_with_retry
 from app.routing.router import select_provider
 from app.runs.state import (
-    EventKind, ErrorKind, InvalidTransition, RunCtx, RunStatus,
+    ErrorKind,
+    EventKind,
+    RunCtx,
+    RunStatus,
     advance,
+)
+from app.runs.state import (
+    InvalidTransition as InvalidTransition,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,6 +87,7 @@ def _rl_reset(run_id: str) -> None:
     rate_limit module being importable but mid-reload."""
     try:
         from app.runs.rate_limit import reset as _rl_reset_inner
+
         _rl_reset_inner(run_id)
     except Exception:
         pass
@@ -89,7 +100,7 @@ def _now() -> float:
 # ── Per-call timeout helper (the headline B.7 fix) ──────────────────────────
 
 
-def _per_call_deadline_sec(provider_timeout: Optional[int], deadline_ts: float) -> float:
+def _per_call_deadline_sec(provider_timeout: int | None, deadline_ts: float) -> float:
     """Pick the tighter of (per-provider read timeout, run remaining time).
 
     Connect-timeout is enforced inside the httpx client litellm uses; we
@@ -121,10 +132,10 @@ async def _emit(db: AsyncSession, run_id: str, kind: str, payload: dict) -> None
     replay across worker restart). The DB row's seq is the canonical
     one — we read it back so the broker stays consistent."""
     from sqlalchemy import func
+
     from app.runs import event_bus
-    res = await db.execute(
-        select(func.max(RunEvent.seq)).where(RunEvent.run_id == run_id)
-    )
+
+    res = await db.execute(select(func.max(RunEvent.seq)).where(RunEvent.run_id == run_id))
     seq = (res.scalar() or 0) + 1
     ts = _now()
     db.add(RunEvent(run_id=run_id, seq=seq, kind=kind, payload=payload, ts=ts))
@@ -159,6 +170,7 @@ async def _persist_transition(db: AsyncSession, run: Run, transition) -> None:
     # debounced; awaits ack window for terminal — caller already committed).
     try:
         from app.runs.replication import replicate
+
         await replicate(run, terminal=transition.status.terminal)
     except Exception as e:
         # Replication failure must not break the run loop — peers reconcile
@@ -168,8 +180,7 @@ async def _persist_transition(db: AsyncSession, run: Run, transition) -> None:
 
 async def _load_messages(db: AsyncSession, run_id: str) -> list[dict]:
     res = await db.execute(
-        select(RunMessage).where(RunMessage.run_id == run_id)
-        .order_by(RunMessage.seq.asc())
+        select(RunMessage).where(RunMessage.run_id == run_id).order_by(RunMessage.seq.asc())
     )
     out = []
     for m in res.scalars().all():
@@ -177,19 +188,22 @@ async def _load_messages(db: AsyncSession, run_id: str) -> list[dict]:
     return out
 
 
-async def _append_assistant_message(
-    db: AsyncSession, run_id: str, content
-) -> int:
+async def _append_assistant_message(db: AsyncSession, run_id: str, content) -> int:
     """Append an assistant message row; return its seq."""
     from sqlalchemy import func
-    res = await db.execute(
-        select(func.max(RunMessage.seq)).where(RunMessage.run_id == run_id)
-    )
+
+    res = await db.execute(select(func.max(RunMessage.seq)).where(RunMessage.run_id == run_id))
     seq = (res.scalar() or 0) + 1
-    db.add(RunMessage(
-        run_id=run_id, seq=seq, role="assistant",
-        content=content, tokens=0, created_at=_now(),
-    ))
+    db.add(
+        RunMessage(
+            run_id=run_id,
+            seq=seq,
+            role="assistant",
+            content=content,
+            tokens=0,
+            created_at=_now(),
+        )
+    )
     return seq
 
 
@@ -213,12 +227,13 @@ async def _call_model_once(
     """
     # ``select_provider`` accepts a single ``exclude_provider_id``; for the
     # multi-provider case we walk it manually like fallback.py does.
-    seed: Optional[str] = next(iter(excluded_provider_ids), None)
-    last_exc: Optional[Exception] = None
+    seed: str | None = next(iter(excluded_provider_ids), None)
+    last_exc: Exception | None = None
     for _attempt in range(8):  # safety cap; real cap is fallback_max_providers
         try:
             route = await select_provider(
-                db, hint=None,
+                db,
+                hint=None,
                 has_tools=bool(run.tools_spec),
                 has_images=False,
                 key_type="standard",
@@ -238,31 +253,38 @@ async def _call_model_once(
             continue
 
         # Emit model_call_start
-        body_estimate_bytes = len(
-            json.dumps({"messages": messages, "model": route.litellm_model})
+        body_estimate_bytes = len(json.dumps({"messages": messages, "model": route.litellm_model}))
+        await _emit(
+            db,
+            run.id,
+            "model_call_start",
+            {
+                "provider_id": route.provider.id,
+                "provider_name": route.provider.name,
+                "model": route.litellm_model,
+                "attempt": len(excluded_provider_ids) + 1,
+                "tokens_in_estimate": body_estimate_bytes // 4,  # rough char→token
+            },
         )
-        await _emit(db, run.id, "model_call_start", {
-            "provider_id": route.provider.id,
-            "provider_name": route.provider.name,
-            "model": route.litellm_model,
-            "attempt": len(excluded_provider_ids) + 1,
-            "tokens_in_estimate": body_estimate_bytes // 4,  # rough char→token
-        })
         await db.commit()  # flush event so SSE consumers see it before the call
 
         from app.routing.aliases import effective_timeout_sec
-        deadline = _per_call_deadline_sec(
-            effective_timeout_sec(route.provider), run.deadline_ts
-        )
+
+        deadline = _per_call_deadline_sec(effective_timeout_sec(route.provider), run.deadline_ts)
         kwargs = dict(route.litellm_kwargs or {})
         # R3: translate Anthropic-format tools to the provider's native shape
         # (or fall back to PBTC emulation if native_tools=false on this
         # provider's capability profile). The worker keeps the canonical
         # Anthropic-format tools_spec on the Run row; per-call we adapt.
-        emulation_prompt: Optional[str] = None
+        emulation_prompt: str | None = None
         if run.tools_spec:
             from app.runs.tools import adapt_tools_for_route
-            native_tools = bool(getattr(route.profile, "native_tools", True)) if hasattr(route, "profile") else True
+
+            native_tools = (
+                bool(getattr(route.profile, "native_tools", True))
+                if hasattr(route, "profile")
+                else True
+            )
             tools_arg, emulation_prompt = adapt_tools_for_route(
                 run.tools_spec,
                 litellm_model=route.litellm_model,
@@ -291,22 +313,33 @@ async def _call_model_once(
                 ),
                 timeout=deadline,
             )
-        except (asyncio.TimeoutError, httpx.ConnectTimeout,
-                httpx.ReadTimeout, httpx.PoolTimeout) as e:
+        except (TimeoutError, httpx.ConnectTimeout, httpx.ReadTimeout, httpx.PoolTimeout) as e:
             latency = time.monotonic() - t0
-            await _emit(db, run.id, "model_call_end", {
-                "provider_id": route.provider.id,
-                "latency_ms": int(latency * 1000),
-                "status": "timeout",
-                "error": type(e).__name__,
-                "tokens_in": 0, "tokens_out": 0,
-                "bytes_in": body_estimate_bytes, "bytes_out": 0,
-            })
-            await _emit(db, run.id, "provider_failed", {
-                "provider_id": route.provider.id,
-                "error": f"{type(e).__name__}: {str(e) or 'no message'}",
-                "will_retry": True,
-            })
+            await _emit(
+                db,
+                run.id,
+                "model_call_end",
+                {
+                    "provider_id": route.provider.id,
+                    "latency_ms": int(latency * 1000),
+                    "status": "timeout",
+                    "error": type(e).__name__,
+                    "tokens_in": 0,
+                    "tokens_out": 0,
+                    "bytes_in": body_estimate_bytes,
+                    "bytes_out": 0,
+                },
+            )
+            await _emit(
+                db,
+                run.id,
+                "provider_failed",
+                {
+                    "provider_id": route.provider.id,
+                    "error": f"{type(e).__name__}: {str(e) or 'no message'}",
+                    "will_retry": True,
+                },
+            )
             await db.commit()
             excluded_provider_ids.add(route.provider.id)
             seed = route.provider.id
@@ -314,22 +347,34 @@ async def _call_model_once(
             continue
         except Exception as e:
             latency = time.monotonic() - t0
-            await _emit(db, run.id, "model_call_end", {
-                "provider_id": route.provider.id,
-                "latency_ms": int(latency * 1000),
-                "status": "error",
-                "error": f"{type(e).__name__}: {str(e) or 'no message'}",
-                "tokens_in": 0, "tokens_out": 0,
-                "bytes_in": body_estimate_bytes, "bytes_out": 0,
-            })
+            await _emit(
+                db,
+                run.id,
+                "model_call_end",
+                {
+                    "provider_id": route.provider.id,
+                    "latency_ms": int(latency * 1000),
+                    "status": "error",
+                    "error": f"{type(e).__name__}: {str(e) or 'no message'}",
+                    "tokens_in": 0,
+                    "tokens_out": 0,
+                    "bytes_in": body_estimate_bytes,
+                    "bytes_out": 0,
+                },
+            )
             await db.commit()
             if is_billing_error(str(e)):
                 raise BillingHardStop(str(e)) from e
-            await _emit(db, run.id, "provider_failed", {
-                "provider_id": route.provider.id,
-                "error": f"{type(e).__name__}: {str(e) or 'no message'}",
-                "will_retry": True,
-            })
+            await _emit(
+                db,
+                run.id,
+                "provider_failed",
+                {
+                    "provider_id": route.provider.id,
+                    "error": f"{type(e).__name__}: {str(e) or 'no message'}",
+                    "will_retry": True,
+                },
+            )
             await db.commit()
             excluded_provider_ids.add(route.provider.id)
             seed = route.provider.id
@@ -349,13 +394,20 @@ async def _call_model_once(
             bytes_out = len(json.dumps(resp_dict)) if resp_dict else 0
         except Exception:
             bytes_out = 0
-        await _emit(db, run.id, "model_call_end", {
-            "provider_id": route.provider.id,
-            "latency_ms": int(latency * 1000),
-            "status": "ok",
-            "tokens_in": in_tok, "tokens_out": out_tok,
-            "bytes_in": body_estimate_bytes, "bytes_out": bytes_out,
-        })
+        await _emit(
+            db,
+            run.id,
+            "model_call_end",
+            {
+                "provider_id": route.provider.id,
+                "latency_ms": int(latency * 1000),
+                "status": "ok",
+                "tokens_in": in_tok,
+                "tokens_out": out_tok,
+                "bytes_in": body_estimate_bytes,
+                "bytes_out": bytes_out,
+            },
+        )
         run.tokens_in = (run.tokens_in or 0) + in_tok
         run.tokens_out = (run.tokens_out or 0) + out_tok
         run.last_provider_id = route.provider.id
@@ -398,18 +450,20 @@ def _extract_assistant_content(resp) -> list[dict]:
             args = json.loads(getattr(fn, "arguments", "{}") or "{}")
         except Exception:
             args = {}
-        blocks.append({
-            "type": "tool_use",
-            "id": getattr(tc, "id", None) or f"toolu_{int(time.time()*1000)}",
-            "name": getattr(fn, "name", "") or "",
-            "input": args,
-        })
+        blocks.append(
+            {
+                "type": "tool_use",
+                "id": getattr(tc, "id", None) or f"toolu_{int(time.time() * 1000)}",
+                "name": getattr(fn, "name", "") or "",
+                "input": args,
+            }
+        )
     if not blocks:
         blocks.append({"type": "text", "text": ""})
     return blocks
 
 
-def _first_tool_use(blocks: list[dict]) -> Optional[dict]:
+def _first_tool_use(blocks: list[dict]) -> dict | None:
     for b in blocks:
         if b.get("type") == "tool_use":
             return b
@@ -440,17 +494,22 @@ _STEP_RETURN = "return"
 _STEP_WAIT = "wait"
 
 
-async def _step_check_deadline(db, run, ctx) -> Optional[str]:
+async def _step_check_deadline(db, run, ctx) -> str | None:
     """If the deadline has passed, transition to EXPIRED + emit + return.
     Otherwise None (caller proceeds)."""
     if ctx.status.terminal or _now() < run.deadline_ts:
         return None
     t = advance(ctx, EventKind.DEADLINE_EXCEEDED, _now())
     await _persist_transition(db, run, t)
-    await _emit(db, run.id, "expired", {
-        "deadline_ts": run.deadline_ts,
-        "total_ms": int((run.completed_at - run.created_at) * 1000),
-    })
+    await _emit(
+        db,
+        run.id,
+        "expired",
+        {
+            "deadline_ts": run.deadline_ts,
+            "total_ms": int((run.completed_at - run.created_at) * 1000),
+        },
+    )
     await db.commit()
     return _STEP_RETURN
 
@@ -470,7 +529,8 @@ async def _peek_next_model(db, run) -> str:
     80%-context threshold check."""
     try:
         peek_route = await select_provider(
-            db, hint=None,
+            db,
+            hint=None,
             has_tools=bool(run.tools_spec),
             has_images=False,
             key_type="standard",
@@ -486,9 +546,11 @@ async def _maybe_compact_run(db, run, run_id, messages):
     context. Returns (possibly-rewritten-messages, did_compact)."""
     next_model = await _peek_next_model(db, run)
     try:
-        from app.runs.compaction import maybe_compact, apply_compaction_to_db
+        from app.runs.compaction import apply_compaction_to_db, maybe_compact
+
         compaction = await maybe_compact(
-            db, run_id=run.id,
+            db,
+            run_id=run.id,
             run_compaction_model=run.compaction_model,
             next_call_model=next_model,
             messages=messages,
@@ -500,7 +562,9 @@ async def _maybe_compact_run(db, run, run_id, messages):
     if compaction is None:
         return messages, False
     await apply_compaction_to_db(
-        db, run_id=run.id, new_messages=compaction["new_messages"],
+        db,
+        run_id=run.id,
+        new_messages=compaction["new_messages"],
     )
     run.context_summarized_at_turn = run.model_calls or 0
     await _emit(db, run.id, "context_compacted", compaction["event"])
@@ -514,10 +578,12 @@ async def _wait_for_rate_limit_slot(run):
     on first throttled attempt (R6 lock-in)."""
     try:
         from app.runs import rate_limit as _rl
+
         async def _emit_rl(payload):
             async with AsyncSessionLocal() as _rl_db:
                 await _emit(_rl_db, run.id, "rate_limited", payload)
                 await _rl_db.commit()
+
         await _rl.acquire(run.id, emit_callback=_emit_rl)
     except Exception as e:
         logger.info("runs.rate_limit.skip run=%s err=%s", run.id, e)
@@ -526,15 +592,23 @@ async def _wait_for_rate_limit_slot(run):
 async def _fail_run(db, run, ctx, exc, kind):
     """Common failure path used by all 3 model-call exception classes.
     Advances FSM to FAILED with the right error_kind, emits ``failed``."""
-    t = advance(ctx, EventKind.PROVIDER_EXHAUSTED if kind is ErrorKind.PROVIDER
-                else EventKind.INTERNAL_ERROR, _now(),
-                {"detail": str(exc) or repr(exc)})
+    t = advance(
+        ctx,
+        EventKind.PROVIDER_EXHAUSTED if kind is ErrorKind.PROVIDER else EventKind.INTERNAL_ERROR,
+        _now(),
+        {"detail": str(exc) or repr(exc)},
+    )
     await _persist_transition(db, run, t)
-    await _emit(db, run.id, "failed", {
-        "error": str(exc),
-        "kind": kind.value,
-        "last_provider_used": run.last_provider_id,
-    })
+    await _emit(
+        db,
+        run.id,
+        "failed",
+        {
+            "error": str(exc),
+            "kind": kind.value,
+            "last_provider_used": run.last_provider_id,
+        },
+    )
     await db.commit()
 
 
@@ -547,7 +621,9 @@ async def _step_running(db, run, run_id, ctx, excluded_provider_ids) -> str:
 
     try:
         resp, _pid, _model, _lat = await _call_model_once(
-            db, run, messages,
+            db,
+            run,
+            messages,
             excluded_provider_ids=excluded_provider_ids,
         )
     except ProviderExhausted as e:
@@ -582,28 +658,43 @@ async def _handle_tool_use(db, run, tool_use) -> str:
         run.current_tool_use_id = tool_use["id"]
         run.current_tool_name = tool_use["name"]
         run.current_tool_input = tool_use["input"]
-        await _emit(db, run.id, "tool_use_requested", {
-            "tool_use_id": tool_use["id"],
-            "name": tool_use["name"],
-            "input": tool_use["input"],
-        })
+        await _emit(
+            db,
+            run.id,
+            "tool_use_requested",
+            {
+                "tool_use_id": tool_use["id"],
+                "name": tool_use["name"],
+                "input": tool_use["input"],
+            },
+        )
         await db.commit()
         return _STEP_CONTINUE  # outer loop sees REQUIRES_TOOL → waits
 
     if t.status is RunStatus.FAILED and t.error_kind is ErrorKind.TOOL_LOOP_EXCEEDED:
-        await _emit(db, run.id, "failed", {
-            "error": t.error_message,
-            "kind": ErrorKind.TOOL_LOOP_EXCEEDED.value,
-            "last_provider_used": run.last_provider_id,
-        })
+        await _emit(
+            db,
+            run.id,
+            "failed",
+            {
+                "error": t.error_message,
+                "kind": ErrorKind.TOOL_LOOP_EXCEEDED.value,
+                "last_provider_used": run.last_provider_id,
+            },
+        )
         await db.commit()
         return _STEP_RETURN
 
     if t.status is RunStatus.EXPIRED:
-        await _emit(db, run.id, "expired", {
-            "deadline_ts": run.deadline_ts,
-            "total_ms": int((run.completed_at - run.created_at) * 1000),
-        })
+        await _emit(
+            db,
+            run.id,
+            "expired",
+            {
+                "deadline_ts": run.deadline_ts,
+                "total_ms": int((run.completed_at - run.created_at) * 1000),
+            },
+        )
         await db.commit()
         return _STEP_RETURN
 
@@ -618,15 +709,25 @@ async def _handle_terminal_text(db, run, blocks) -> str:
     await _persist_transition(db, run, t)
     if t.status is RunStatus.COMPLETED:
         run.result_text = _terminal_text(blocks)
-        await _emit(db, run.id, "completed", {
-            "result_text": run.result_text,
-            "total_ms": int((run.completed_at - run.created_at) * 1000),
-        })
+        await _emit(
+            db,
+            run.id,
+            "completed",
+            {
+                "result_text": run.result_text,
+                "total_ms": int((run.completed_at - run.created_at) * 1000),
+            },
+        )
     elif t.status is RunStatus.EXPIRED:
-        await _emit(db, run.id, "expired", {
-            "deadline_ts": run.deadline_ts,
-            "total_ms": int((run.completed_at - run.created_at) * 1000),
-        })
+        await _emit(
+            db,
+            run.id,
+            "expired",
+            {
+                "deadline_ts": run.deadline_ts,
+                "total_ms": int((run.completed_at - run.created_at) * 1000),
+            },
+        )
     await db.commit()
     return _STEP_RETURN
 
@@ -695,7 +796,7 @@ async def _drive(run_id: str) -> None:
             # Tick at most every 5s so deadline-pasted runs catch the expire.
             timeout = max(0.1, min(5.0, run.deadline_ts - _now()))
             await asyncio.wait_for(wakeup.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
         wakeup.clear()
 
@@ -712,7 +813,8 @@ def spawn(run_id: str) -> asyncio.Task:
 
     def _cleanup(_t: asyncio.Task) -> None:
         _TASKS.pop(run_id, None)
-        _WAKEUPS.pop(run_id, None); _rl_reset(run_id)
+        _WAKEUPS.pop(run_id, None)
+        _rl_reset(run_id)
 
     task.add_done_callback(_cleanup)
     return task
@@ -735,14 +837,19 @@ async def recover_orphans() -> int:
         )
         runs = list(res.scalars().all())
         for r in runs:
-            await _emit(db, r.id, "run_recovered", {
-                "prior_status": r.status,
-                "recovered_from_node_id": node_id,
-                # We don't track the down-time precisely — best estimate is
-                # since-updated_at, since the worker writes updated_at on
-                # every transition.
-                "downtime_ms": int((_now() - (r.updated_at or _now())) * 1000),
-            })
+            await _emit(
+                db,
+                r.id,
+                "run_recovered",
+                {
+                    "prior_status": r.status,
+                    "recovered_from_node_id": node_id,
+                    # We don't track the down-time precisely — best estimate is
+                    # since-updated_at, since the worker writes updated_at on
+                    # every transition.
+                    "downtime_ms": int((_now() - (r.updated_at or _now())) * 1000),
+                },
+            )
         await db.commit()
 
     for r in runs:

@@ -13,14 +13,15 @@ mid-negotiation means the integrating AI starts over. v5.8.1 could
 move state to ``activity_log`` for cluster-wide durability if a
 real-world integration ever needs it.
 """
+
 from __future__ import annotations
 
 import hmac
 import logging
 import secrets
 import time
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import UTC, datetime
+from typing import Any
 
 import httpx
 
@@ -29,15 +30,14 @@ logger = logging.getLogger(__name__)
 
 # In-memory session store: conv_id -> {messages: [...], project_name: str, started_at: float}
 # Sessions older than 1 hour are auto-pruned on next access.
-_SESSIONS: Dict[str, Dict[str, Any]] = {}
+_SESSIONS: dict[str, dict[str, Any]] = {}
 _SESSION_TTL_SEC = 3600
 
 
 def _prune_old_sessions() -> None:
     now = time.time()
     expired = [
-        cid for cid, s in _SESSIONS.items()
-        if now - s.get("started_at", 0) > _SESSION_TTL_SEC
+        cid for cid, s in _SESSIONS.items() if now - s.get("started_at", 0) > _SESSION_TTL_SEC
     ]
     for cid in expired:
         _SESSIONS.pop(cid, None)
@@ -50,6 +50,7 @@ def verify_passphrase(supplied: str) -> bool:
     blank (unconfigured), or the supplied value doesn't match.
     """
     from app.config import settings
+
     if not settings.integration_enabled:
         return False
     if not settings.integration_passphrase:
@@ -64,6 +65,7 @@ def verify_passphrase(supplied: str) -> bool:
 
 def _build_system_prompt() -> str:
     from app.config import settings
+
     return (
         "You are the management AI for llm-proxy v2 — a multi-provider "
         "LLM gateway. Another AI (an autonomous agent integrating a new "
@@ -104,7 +106,7 @@ def _build_system_prompt() -> str:
     )
 
 
-def _create_api_key_tool_schema() -> Dict[str, Any]:
+def _create_api_key_tool_schema() -> dict[str, Any]:
     return {
         "name": "create_api_key",
         "description": (
@@ -127,7 +129,9 @@ def _create_api_key_tool_schema() -> Dict[str, Any]:
                 },
                 "daily_budget_usd": {
                     "type": "number",
-                    "description": "Daily soft cap. Will be clamped to integration_max_daily_budget_usd.",
+                    "description": (
+                        "Daily soft cap. Will be clamped to integration_max_daily_budget_usd."
+                    ),
                 },
                 "mcp_tools_allow": {
                     "type": ["array", "null"],
@@ -149,7 +153,9 @@ def _create_api_key_tool_schema() -> Dict[str, Any]:
                 },
                 "notes": {
                     "type": "string",
-                    "description": "Human-readable notes about the integration. Stored on the key row.",
+                    "description": (
+                        "Human-readable notes about the integration. Stored on the key row."
+                    ),
                 },
             },
             "required": ["name", "key_type", "daily_budget_usd"],
@@ -157,7 +163,7 @@ def _create_api_key_tool_schema() -> Dict[str, Any]:
     }
 
 
-async def _call_management_llm(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+async def _call_management_llm(messages: list[dict[str, Any]]) -> dict[str, Any]:
     """Call the proxy's own /v1/messages with the management system
     prompt + create_api_key tool. Returns the parsed response dict.
 
@@ -197,7 +203,8 @@ async def _call_management_llm(messages: List[Dict[str, Any]]) -> Dict[str, Any]
     if resp.status_code != 200:
         logger.warning(
             "integration_chat.llm_http_error status=%d body=%s",
-            resp.status_code, resp.text[:300],
+            resp.status_code,
+            resp.text[:300],
         )
         raise RuntimeError(
             f"Management LLM returned {resp.status_code}; integration "
@@ -206,7 +213,7 @@ async def _call_management_llm(messages: List[Dict[str, Any]]) -> Dict[str, Any]
     return resp.json()
 
 
-def _extract_tool_call(llm_response: Dict[str, Any]) -> Optional[Tuple[str, Dict[str, Any]]]:
+def _extract_tool_call(llm_response: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
     """If the LLM emitted a tool_use, return ``(tool_use_id, input)``;
     else None. Anthropic shape: ``content`` is a list of blocks."""
     content = llm_response.get("content") or []
@@ -218,7 +225,7 @@ def _extract_tool_call(llm_response: Dict[str, Any]) -> Optional[Tuple[str, Dict
     return None
 
 
-def _extract_text(llm_response: Dict[str, Any]) -> str:
+def _extract_text(llm_response: dict[str, Any]) -> str:
     content = llm_response.get("content") or []
     texts = []
     for block in content:
@@ -231,8 +238,8 @@ async def _provision_api_key(
     db,
     *,
     project_name: str,
-    tool_input: Dict[str, Any],
-) -> Dict[str, Any]:
+    tool_input: dict[str, Any],
+) -> dict[str, Any]:
     """Mint an API key with the configuration the management LLM proposed.
 
     Clamps daily_budget_usd to integration_max_daily_budget_usd. Audits
@@ -244,7 +251,9 @@ async def _provision_api_key(
     from app.monitoring.activity import log_event
 
     # Clamp + sanitize
-    requested_budget = float(tool_input.get("daily_budget_usd") or settings.integration_default_daily_budget_usd)
+    requested_budget = float(
+        tool_input.get("daily_budget_usd") or settings.integration_default_daily_budget_usd
+    )
     capped_budget = max(0.50, min(requested_budget, settings.integration_max_daily_budget_usd))
     name = (tool_input.get("name") or f"integration:{project_name}")[:120]
     notes = (tool_input.get("notes") or "")[:500]
@@ -271,8 +280,7 @@ async def _provision_api_key(
         debug_echo_enabled=False,
         system_prompt_mcp_augmentation=system_prompt_mcp_augmentation,
         mcp_tools_allow=(
-            __import__("json").dumps(mcp_tools_allow)
-            if mcp_tools_allow is not None else None
+            __import__("json").dumps(mcp_tools_allow) if mcp_tools_allow is not None else None
         ),
     )
     db.add(key)
@@ -323,10 +331,10 @@ async def handle_chat(
     db,
     *,
     passphrase: str,
-    conversation_id: Optional[str],
+    conversation_id: str | None,
     project_name: str,
     message: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Single-turn handler. Returns the response dict.
 
     Returns 401 (via raised HTTPException) on bad passphrase. Returns
@@ -334,6 +342,7 @@ async def handle_chat(
     on success.
     """
     from fastapi import HTTPException
+
     from app.config import settings
 
     if not verify_passphrase(passphrase):
@@ -365,10 +374,12 @@ async def handle_chat(
         )
 
     # Append user turn
-    session["messages"].append({
-        "role": "user",
-        "content": message,
-    })
+    session["messages"].append(
+        {
+            "role": "user",
+            "content": message,
+        }
+    )
 
     # Call the management LLM
     try:
@@ -379,15 +390,17 @@ async def handle_chat(
 
     # Persist assistant turn (whatever blocks the LLM produced)
     assistant_content = llm_resp.get("content") or []
-    session["messages"].append({
-        "role": "assistant",
-        "content": assistant_content,
-    })
+    session["messages"].append(
+        {
+            "role": "assistant",
+            "content": assistant_content,
+        }
+    )
 
     # Did the LLM call the create_api_key tool?
     tool_call = _extract_tool_call(llm_resp)
     text_response = _extract_text(llm_resp)
-    provisioned: Optional[Dict[str, Any]] = None
+    provisioned: dict[str, Any] | None = None
 
     if tool_call is not None:
         tool_use_id, tool_input = tool_call
@@ -409,7 +422,8 @@ async def handle_chat(
         except Exception as exc:
             logger.error(
                 "integration_chat.provision_failed project=%s err=%r",
-                session.get("project_name"), exc,
+                session.get("project_name"),
+                exc,
             )
             text_response = (
                 f"I tried to mint the key but the provisioning step "
@@ -421,7 +435,5 @@ async def handle_chat(
         "response": text_response,
         "provisioned": provisioned,
         "turn_count": len([m for m in session["messages"] if m["role"] == "user"]),
-        "session_started_at": datetime.fromtimestamp(
-            session["started_at"], tz=timezone.utc
-        ).isoformat(),
+        "session_started_at": datetime.fromtimestamp(session["started_at"], tz=UTC).isoformat(),
     }

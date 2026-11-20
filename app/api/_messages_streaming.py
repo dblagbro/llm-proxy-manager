@@ -26,23 +26,65 @@ imports keep working unchanged):
   _stream_claude_oauth           — streaming claude-oauth dispatch
   + internal helpers + timeout constants
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import time
-from typing import AsyncIterator, Optional
+from collections.abc import AsyncIterator
 
-import httpx
+import httpx as httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.cot.pipeline import run_cot_pipeline
-from app.cot.sse import FINISH_TO_STOP, to_anthropic_response, extract_cache_tokens
-from app.routing.retry import acompletion_with_retry
-from app.monitoring.helpers import record_outcome
-from app.cache.middleware import maybe_store
+# ── Claude OAuth re-exports (v4.4.12 split) ──────────────────────────────────
+# The claude-oauth dispatch helpers were extracted into a sibling module to
+# keep this file under 1,000 LOC (pre-split: 979 LOC). Existing
+# ``from app.api._messages_streaming import _stream_claude_oauth, ...``
+# imports continue to work unchanged via these re-exports.
+from app.api._messages_streaming_oauth import (
+    _ALLOWED_SYS_MARKERS as _ALLOWED_SYS_MARKERS,
+)
+from app.api._messages_streaming_oauth import (
+    _CLAUDE_CODE_SYS_MARKER as _CLAUDE_CODE_SYS_MARKER,
+)
+from app.api._messages_streaming_oauth import (
+    _CLAUDE_OAUTH_STREAM_TIMEOUT as _CLAUDE_OAUTH_STREAM_TIMEOUT,
+)
+from app.api._messages_streaming_oauth import (
+    _CLAUDE_OAUTH_TIMEOUT as _CLAUDE_OAUTH_TIMEOUT,
+)
+from app.api._messages_streaming_oauth import (
+    _complete_claude_oauth as _complete_claude_oauth,
+)
+from app.api._messages_streaming_oauth import (
+    _count_cache_control_markers as _count_cache_control_markers,
+)
+from app.api._messages_streaming_oauth import (
+    _inject_claude_code_system as _inject_claude_code_system,
+)
+from app.api._messages_streaming_oauth import (
+    _oauth_complete_timeout as _oauth_complete_timeout,
+)
+from app.api._messages_streaming_oauth import (
+    _prepare_claude_oauth_request as _prepare_claude_oauth_request,
+)
+from app.api._messages_streaming_oauth import (
+    _refresh_oauth_token as _refresh_oauth_token,
+)
+from app.api._messages_streaming_oauth import (
+    _stream_claude_oauth as _stream_claude_oauth,
+)
 from app.api.webhook import post_webhook
-from app.providers.claude_oauth import build_headers as _claude_oauth_headers, PLATFORM_BASE_URL
+from app.cache.middleware import maybe_store
+from app.cot.pipeline import run_cot_pipeline
+from app.cot.sse import FINISH_TO_STOP, extract_cache_tokens, to_anthropic_response
+from app.monitoring.helpers import record_outcome
+from app.providers import claude_oauth as _claude_oauth_module
+from app.providers.claude_oauth import PLATFORM_BASE_URL as PLATFORM_BASE_URL
+from app.routing.retry import acompletion_with_retry
+
+_claude_oauth_headers = _claude_oauth_module.build_headers
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +97,6 @@ def _exc_str(e: BaseException) -> str:
     is blank."""
     s = str(e) if e else ""
     return s if s else f"{type(e).__name__} (no message)"
-
-
 
 
 async def _stream_cot_anthropic(
@@ -74,25 +114,27 @@ async def _stream_cot_anthropic(
     samples: int = 1,
     task_branch: str | None = None,
     requested_model: str = "",  # v3.0.44: caller's bare model id for activity log
-    llm_hint: Optional[str] = None,  # v3.0.59: capture in event_meta.lmrh_hint
+    llm_hint: str | None = None,  # v3.0.59: capture in event_meta.lmrh_hint
     # v3.10.11 (#267) — caller-memory write-back for the CoT streaming
     # path (the one streaming path that was missing it). When
     # ``conversation_id`` is set, memory-tool tool_use blocks are
     # accumulated across the SSE passthrough and fed through the same
     # maybe_extract_memory_writes() the other streaming paths use.
-    conversation_id: Optional[str] = None,
-    memory_tag: Optional[str] = None,
+    conversation_id: str | None = None,
+    memory_tag: str | None = None,
     # v5.0.0 — compliance substitution SSE prelude (decision 15 + 28).
-    compliance_disclosure: Optional[dict] = None,
+    compliance_disclosure: dict | None = None,
     accept_compliance_events: bool = False,
 ) -> AsyncIterator[bytes]:
     """Pass-through wrapper around run_cot_pipeline; records metrics after completion."""
     import json as _json
+
     in_tok = out_tok = 0
     cache_creation = cache_read = 0
     t0 = time.monotonic()
     if compliance_disclosure and accept_compliance_events:
         from app.compliance import sse_prelude_anthropic
+
         yield sse_prelude_anthropic(compliance_disclosure)
     # v3.10.11 — accumulate memory-tool tool_use blocks across the SSE
     # passthrough, keyed by content-block index, so the assembled
@@ -107,9 +149,16 @@ async def _stream_cot_anthropic(
     reset_cot_usage()
     try:
         async for chunk in run_cot_pipeline(
-            model, messages, session_id, extra, max_iterations, force_verify,
-            critique_model=critique_model, critique_kwargs=critique_kwargs,
-            samples=samples, task_branch=task_branch,
+            model,
+            messages,
+            session_id,
+            extra,
+            max_iterations,
+            force_verify,
+            critique_model=critique_model,
+            critique_kwargs=critique_kwargs,
+            samples=samples,
+            task_branch=task_branch,
         ):
             yield chunk
             for line in chunk.decode(errors="ignore").splitlines():
@@ -125,13 +174,17 @@ async def _stream_cot_anthropic(
                     usage = evt.get("usage", {})
                     in_tok = usage.get("input_tokens", in_tok)
                     out_tok = usage.get("output_tokens", out_tok)
-                    cache_creation = usage.get("cache_creation_input_tokens", cache_creation) or cache_creation
+                    cache_creation = (
+                        usage.get("cache_creation_input_tokens", cache_creation) or cache_creation
+                    )
                     cache_read = usage.get("cache_read_input_tokens", cache_read) or cache_read
                 elif etype == "content_block_start":
                     cb = evt.get("content_block") or {}
                     if cb.get("type") == "tool_use":
                         tool_acc[evt.get("index")] = {
-                            "id": cb.get("id", ""), "name": cb.get("name", ""), "json": "",
+                            "id": cb.get("id", ""),
+                            "name": cb.get("name", ""),
+                            "json": "",
                         }
                 elif etype == "content_block_delta":
                     delta = evt.get("delta") or {}
@@ -140,11 +193,21 @@ async def _stream_cot_anthropic(
         # v5.22.20 — internal CoT calls bill upstream but never reach this
         # SSE stream, so fold them in before recording.
         in_tok, out_tok = fold_cot_usage(in_tok, out_tok, provider_id)
-        await record_outcome(db, provider_id, model, success=True,
-                             in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id,
-                             cache_creation=cache_creation, cache_read=cache_read,
-                             requested_model=requested_model or None,
-                             had_lmrh_hint=bool(llm_hint), lmrh_hint_raw=llm_hint or None)
+        await record_outcome(
+            db,
+            provider_id,
+            model,
+            success=True,
+            in_tok=in_tok,
+            out_tok=out_tok,
+            t0=t0,
+            key_record_id=key_record_id,
+            cache_creation=cache_creation,
+            cache_read=cache_read,
+            requested_model=requested_model or None,
+            had_lmrh_hint=bool(llm_hint),
+            lmrh_hint_raw=llm_hint or None,
+        )
         # v3.10.11 — caller-memory write-back. Mirror the other streaming
         # paths: call extract whenever the caller opted into memory
         # (conversation_id set), even with no memory-tool blocks, so the
@@ -157,11 +220,16 @@ async def _stream_cot_anthropic(
                         parsed = _json.loads(slot["json"]) if slot["json"] else {}
                     except ValueError:
                         parsed = {}
-                    content_blocks.append({
-                        "type": "tool_use", "id": slot["id"],
-                        "name": slot["name"], "input": parsed,
-                    })
+                    content_blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": slot["id"],
+                            "name": slot["name"],
+                            "input": parsed,
+                        }
+                    )
                 from app.memory.extract import maybe_extract_memory_writes
+
                 await maybe_extract_memory_writes(
                     db,
                     response_dict={"content": content_blocks},
@@ -173,39 +241,59 @@ async def _stream_cot_anthropic(
             except Exception:
                 pass  # never break the stream's success path
     except Exception as e:
-        await record_outcome(db, provider_id, model, success=False,
-                             key_record_id=key_record_id, error_str=_exc_str(e),
-                             requested_model=requested_model or None,
-                             had_lmrh_hint=bool(llm_hint), lmrh_hint_raw=llm_hint or None)
-        yield (b'data: ' + json.dumps({"type": "error", "error": {"message": _exc_str(e)}}).encode() + b'\n\n')
+        await record_outcome(
+            db,
+            provider_id,
+            model,
+            success=False,
+            key_record_id=key_record_id,
+            error_str=_exc_str(e),
+            requested_model=requested_model or None,
+            had_lmrh_hint=bool(llm_hint),
+            lmrh_hint_raw=llm_hint or None,
+        )
+        yield (
+            b"data: "
+            + json.dumps({"type": "error", "error": {"message": _exc_str(e)}}).encode()
+            + b"\n\n"
+        )
         yield b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'
 
 
 async def _stream_anthropic(
-    model: str, messages: list, extra: dict, provider_id: str,
-    db: AsyncSession, key_record_id: str, t0: float, budget_total: int = 0,
+    model: str,
+    messages: list,
+    extra: dict,
+    provider_id: str,
+    db: AsyncSession,
+    key_record_id: str,
+    t0: float,
+    budget_total: int = 0,
     cache_decision=None,
-    llm_hint: Optional[str] = None,  # v3.0.59
+    llm_hint: str | None = None,  # v3.0.59
     # v3.9.14 (#267 Phase 5.5 follow-up) — memory write-back for the
     # litellm streaming Anthropic path. Same shape as _stream_claude_oauth:
     # when conversation_id is set, accumulate tool_use blocks across the
     # SSE stream + feed the assembled response dict through the same
     # maybe_extract_memory_writes() the non-streaming path uses. No-op
     # when conversation_id is None.
-    api_key_id: Optional[str] = None,
-    conversation_id: Optional[str] = None,
-    memory_tag: Optional[str] = None,
+    api_key_id: str | None = None,
+    conversation_id: str | None = None,
+    memory_tag: str | None = None,
     # v5.0.0 — compliance substitution SSE prelude (decision 15 + 28).
     # When both are set, emit ``event: compliance_substitution`` BEFORE
     # ``message_start`` (opt-in via ``Accept-Compliance-Events: true``).
-    compliance_disclosure: Optional[dict] = None,
+    compliance_disclosure: dict | None = None,
     accept_compliance_events: bool = False,
 ) -> AsyncIterator[bytes]:
     try:
         if compliance_disclosure and accept_compliance_events:
             from app.compliance import sse_prelude_anthropic
+
             yield sse_prelude_anthropic(compliance_disclosure)
-        response = await acompletion_with_retry(model=model, messages=messages, stream=True, **extra)
+        response = await acompletion_with_retry(
+            model=model, messages=messages, stream=True, **extra
+        )
         index = 0
         text_started = False
         tool_started = False
@@ -264,9 +352,14 @@ async def _stream_anthropic(
                     ).encode()
                     tool_started = True
                     # v3.9.14 — seed accumulator for memory extraction
-                    tool_calls_acc.setdefault(tool_id, {
-                        "id": tool_id, "name": tool_name, "input_str": "",
-                    })
+                    tool_calls_acc.setdefault(
+                        tool_id,
+                        {
+                            "id": tool_id,
+                            "name": tool_name,
+                            "input_str": "",
+                        },
+                    )
                 args_fragment = getattr(fn, "arguments", "") or ""
                 if args_fragment:
                     escaped = json.dumps(args_fragment)[1:-1]
@@ -283,13 +376,19 @@ async def _stream_anthropic(
             if not text_started and content:
                 if not ttft_ms:
                     ttft_ms = (time.monotonic() - t0) * 1000
-                yield f'data: {{"type":"content_block_start","index":{index},"content_block":{{"type":"text","text":""}}}}\n\n'.encode()
+                yield (
+                    f'data: {{"type":"content_block_start","index":{index},'
+                    f'"content_block":{{"type":"text","text":""}}}}\n\n'
+                ).encode()
                 text_started = True
             if content:
                 streamed_chars += len(content)
                 full_text_buf.append(content)
                 escaped = json.dumps(content)[1:-1]
-                yield f'data: {{"type":"content_block_delta","index":{index},"delta":{{"type":"text_delta","text":"{escaped}"}}}}\n\n'.encode()
+                yield (
+                    f'data: {{"type":"content_block_delta","index":{index},'
+                    f'"delta":{{"type":"text_delta","text":"{escaped}"}}}}\n\n'
+                ).encode()
 
         # v4.4.5 BUG-056 — ensure the Anthropic streaming protocol
         # always emits at least one content_block_start/_stop pair.
@@ -302,7 +401,10 @@ async def _stream_anthropic(
         # object; without it they emit empty / null content. Emit
         # an explicit empty text block in that case.
         if not text_started and not tool_started:
-            yield f'data: {{"type":"content_block_start","index":{index},"content_block":{{"type":"text","text":""}}}}\n\n'.encode()
+            yield (
+                f'data: {{"type":"content_block_start","index":{index},'
+                f'"content_block":{{"type":"text","text":""}}}}\n\n'
+            ).encode()
             yield f'data: {{"type":"content_block_stop","index":{index}}}\n\n'.encode()
         else:
             yield f'data: {{"type":"content_block_stop","index":{index}}}\n\n'.encode()
@@ -338,11 +440,21 @@ async def _stream_anthropic(
         # See _completions_streaming.py for context (Vercel-AI-SDK consumer
         # incompatibility). Budget remains on X-Token-Budget-Remaining header.
         yield b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'
-        await record_outcome(db, provider_id, model, success=True,
-                             in_tok=input_tokens, out_tok=output_tokens, t0=t0,
-                             key_record_id=key_record_id, ttft_ms=ttft_ms,
-                             cache_creation=cache_creation, cache_read=cache_read,
-                             had_lmrh_hint=bool(llm_hint), lmrh_hint_raw=llm_hint or None)
+        await record_outcome(
+            db,
+            provider_id,
+            model,
+            success=True,
+            in_tok=input_tokens,
+            out_tok=output_tokens,
+            t0=t0,
+            key_record_id=key_record_id,
+            ttft_ms=ttft_ms,
+            cache_creation=cache_creation,
+            cache_read=cache_read,
+            had_lmrh_hint=bool(llm_hint),
+            lmrh_hint_raw=llm_hint or None,
+        )
         # v3.9.14 (#267 Phase 5.5 follow-up) — memory write-back for the
         # litellm streaming path. Assemble a non-streaming-shape response
         # dict from the accumulated tool_use blocks + feed through the
@@ -360,12 +472,14 @@ async def _stream_anthropic(
                         # malformed JSON — skip this block rather than
                         # corrupting the extractor's view of intent
                         continue
-                    content_list.append({
-                        "type": "tool_use",
-                        "id": tc.get("id"),
-                        "name": tc.get("name"),
-                        "input": parsed,
-                    })
+                    content_list.append(
+                        {
+                            "type": "tool_use",
+                            "id": tc.get("id"),
+                            "name": tc.get("name"),
+                            "input": parsed,
+                        }
+                    )
                 if content_list:
                     assembled = {
                         "id": "msg_proxy_stream",
@@ -379,6 +493,7 @@ async def _stream_anthropic(
                         },
                     }
                     from app.memory.extract import maybe_extract_memory_writes
+
                     await maybe_extract_memory_writes(
                         db,
                         response_dict=assembled,
@@ -399,10 +514,21 @@ async def _stream_anthropic(
             except Exception:
                 pass
     except Exception as e:
-        await record_outcome(db, provider_id, model, success=False,
-                             key_record_id=key_record_id, error_str=_exc_str(e),
-                             had_lmrh_hint=bool(llm_hint), lmrh_hint_raw=llm_hint or None)
-        yield (b'data: ' + json.dumps({"type": "error", "error": {"message": _exc_str(e)}}).encode() + b'\n\n')
+        await record_outcome(
+            db,
+            provider_id,
+            model,
+            success=False,
+            key_record_id=key_record_id,
+            error_str=_exc_str(e),
+            had_lmrh_hint=bool(llm_hint),
+            lmrh_hint_raw=llm_hint or None,
+        )
+        yield (
+            b"data: "
+            + json.dumps({"type": "error", "error": {"message": _exc_str(e)}}).encode()
+            + b"\n\n"
+        )
         yield b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'
 
 
@@ -414,7 +540,7 @@ async def _webhook_completion_anthropic(
     provider_id: str,
     db: AsyncSession,
     key_record_id: str,
-    llm_hint: Optional[str] = None,  # v3.0.59
+    llm_hint: str | None = None,  # v3.0.59
 ) -> None:
     """Run a non-streaming completion and POST the result to webhook_url."""
     t0 = time.monotonic()
@@ -423,40 +549,40 @@ async def _webhook_completion_anthropic(
         in_tok = getattr(result.usage, "prompt_tokens", 0)
         out_tok = getattr(result.usage, "completion_tokens", 0)
         cache_creation, cache_read = extract_cache_tokens(result.usage)
-        await record_outcome(db, provider_id, model, success=True,
-                             in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id,
-                             cache_creation=cache_creation, cache_read=cache_read,
-                             had_lmrh_hint=bool(llm_hint), lmrh_hint_raw=llm_hint or None)
-        await post_webhook(webhook_url, {
-            "provider": provider_id,
-            "model": model,
-            "response": to_anthropic_response(result),
-        })
+        await record_outcome(
+            db,
+            provider_id,
+            model,
+            success=True,
+            in_tok=in_tok,
+            out_tok=out_tok,
+            t0=t0,
+            key_record_id=key_record_id,
+            cache_creation=cache_creation,
+            cache_read=cache_read,
+            had_lmrh_hint=bool(llm_hint),
+            lmrh_hint_raw=llm_hint or None,
+        )
+        await post_webhook(
+            webhook_url,
+            {
+                "provider": provider_id,
+                "model": model,
+                "response": to_anthropic_response(result),
+            },
+        )
     except Exception as exc:
-        await record_outcome(db, provider_id, model, success=False,
-                             key_record_id=key_record_id, error_str=_exc_str(exc),
-                             had_lmrh_hint=bool(llm_hint), lmrh_hint_raw=llm_hint or None)
+        await record_outcome(
+            db,
+            provider_id,
+            model,
+            success=False,
+            key_record_id=key_record_id,
+            error_str=_exc_str(exc),
+            had_lmrh_hint=bool(llm_hint),
+            lmrh_hint_raw=llm_hint or None,
+        )
         await post_webhook(webhook_url, {"error": _exc_str(exc), "model": model})
-
-
-# ── Claude OAuth re-exports (v4.4.12 split) ──────────────────────────────────
-# The claude-oauth dispatch helpers were extracted into a sibling module to
-# keep this file under 1,000 LOC (pre-split: 979 LOC). Existing
-# ``from app.api._messages_streaming import _stream_claude_oauth, ...``
-# imports continue to work unchanged via these re-exports.
-from app.api._messages_streaming_oauth import (  # noqa: E402
-    _inject_claude_code_system,
-    _count_cache_control_markers,
-    _prepare_claude_oauth_request,
-    _oauth_complete_timeout,
-    _refresh_oauth_token,
-    _complete_claude_oauth,
-    _stream_claude_oauth,
-    _CLAUDE_CODE_SYS_MARKER,
-    _ALLOWED_SYS_MARKERS,
-    _CLAUDE_OAUTH_TIMEOUT,
-    _CLAUDE_OAUTH_STREAM_TIMEOUT,
-)
 
 
 # ── SSE-guard re-exports (v5.22.36 split) ────────────────────────────────────
@@ -469,9 +595,9 @@ from app.api._messages_streaming_oauth import (  # noqa: E402
 # modules, all of which keep working unchanged through these re-exports.
 from app.api._sse_guard import (  # noqa: E402,F401
     _sse_frame_error,
-    preflight_sse,
-    http_status_for_stream_error,
     _sse_frame_has_content,
     buffer_sse_until_content,
+    http_status_for_stream_error,
+    preflight_sse,
     stream_with_empty_guard,
 )
