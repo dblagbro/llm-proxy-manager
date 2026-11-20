@@ -168,12 +168,9 @@ def test_completions_emulated_path_passes_tool_call_format():
 
 
 def test_grok_web_native_tools_backfill_migration_present():
-    import ast
+    from tests.unit._migration_source import migration_sql
 
-    tree = ast.parse(Path("app/models/database.py").read_text())
-    constants = {
-        n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)
-    }
+    constants = migration_sql(Path("app/models/database.py").read_text())
     assert (
         "UPDATE model_capabilities SET native_tools=0 "
         "WHERE provider_id IN (SELECT id FROM providers WHERE provider_type='grok-web')"

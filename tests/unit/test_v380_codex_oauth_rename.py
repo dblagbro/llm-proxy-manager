@@ -115,13 +115,22 @@ def test_no_codex_oauth_string_literal_in_frontend():
 # ── DB migration ───────────────────────────────────────────────────
 
 
-def test_migration_renames_existing_rows():
-    import ast
+def test_migration_scan_excludes_detached_sql():
+    from tests.unit._migration_source import migration_sql
 
-    tree = ast.parse(Path("app/models/database.py").read_text())
-    constants = {
-        n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)
-    }
+    source = """
+async def init_db():
+    detached = 'not executed'
+    for stmt in ['executed']:
+        await conn.exec_driver_sql(stmt)
+"""
+    assert migration_sql(source) == {"executed"}
+
+
+def test_migration_renames_existing_rows():
+    from tests.unit._migration_source import migration_sql
+
+    constants = migration_sql(Path("app/models/database.py").read_text())
     assert (
         "UPDATE providers SET provider_type='ChatGPT-oauth-plan' WHERE provider_type='codex-oauth'"
         in constants

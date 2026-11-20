@@ -136,14 +136,11 @@ def test_assembled_response_shape_matches_extractor_contract():
                 if isinstance(key, ast.Constant) and isinstance(key.value, str)
             }
             type_value = fields.get("type")
-            if (
-                isinstance(type_value, ast.Constant)
-                and type_value.value == "tool_use"
-                and "id" in fields
-            ):
+            if isinstance(type_value, ast.Constant) and type_value.value == "tool_use":
                 sites.append(fields)
     assert sites, "no tool_use assembly site found in streaming source"
     for fields in sites:
+        assert "id" in fields, "a tool_use assembly block is missing the id key"
         assert "name" in fields, "a tool_use assembly block is missing the name key"
         assert "input" in fields, "a tool_use assembly block is missing the input key"
 
